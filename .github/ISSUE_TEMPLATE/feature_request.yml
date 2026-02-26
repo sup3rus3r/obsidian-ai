@@ -1,0 +1,61 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched [existing issues](https://github.com/sup3rus3r/obsidian-ai/issues) and this has not been requested
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem does this feature solve? Who is affected and how?
+      placeholder: I'm trying to do X but currently there's no way to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you'd like to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent Builder
+        - Multi-Agent Teams
+        - Workflow / Scheduler
+        - LLM Provider Support
+        - RAG / Knowledge Base
+        - MCP / Tool Integration
+        - Human-in-the-Loop
+        - Authentication / Security
+        - Admin / RBAC
+        - API
+        - Frontend / UI
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative solutions or workarounds you've considered.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, examples from other tools, or any other relevant information.
