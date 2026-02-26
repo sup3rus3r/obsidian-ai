@@ -829,6 +829,14 @@ obsidian-ai/
 - [ ] **Agent templates** — Curated starter configs for common use cases (customer support, code review, research)
 - [ ] **Collaborative sessions** — Multiple users in the same agent chat simultaneously
 
+### Messaging Channels
+
+- [ ] **Telegram** — Connect any agent to a Telegram bot (via `@BotFather` token); the agent responds to direct messages and group mentions, with full tool execution, RAG, HITL approval, and session history working natively
+- [ ] **WhatsApp** — Connect any agent to a WhatsApp account via QR code scan; the agent handles direct messages and group chats using the WhatsApp Web multi-device protocol — no Meta Business account required
+- [ ] **Channel session continuity** — Each external chat (Telegram chat ID, WhatsApp contact) maps to a persistent Obsidian AI session; the agent remembers previous conversations and applies long-term memory across channel interactions
+- [ ] **Channel HITL** — When a channel-connected agent triggers a HITL-flagged tool, execution pauses; the approval card surfaces in the Obsidian AI web UI and the channel user receives a "waiting for approval" message until resolved
+- [ ] **Additional channels** — Discord, Slack, Signal, and Matrix following the same channel plugin architecture once Telegram and WhatsApp are stable
+
 ---
 
 ## Contributing

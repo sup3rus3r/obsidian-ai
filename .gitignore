@@ -6,3 +6,4 @@ package-lock.json
 *.db
 __pycache__
 .next
+obsidianchannels.md
