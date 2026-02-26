@@ -1,0 +1,8 @@
+node_modules
+package-lock.json
+.env
+.env.*
+.env.local
+*.db
+__pycache__
+.next

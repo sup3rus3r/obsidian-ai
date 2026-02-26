@@ -1,0 +1,19 @@
+{
+  "name": "learning_scheduler",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"npm run api\"",
+    "api": "cd backend && uv run uvicorn main:app --reload"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
+    "concurrently": "^9.2.1",
+    "tailwindcss": "^4.1.18"
+  }
+}
