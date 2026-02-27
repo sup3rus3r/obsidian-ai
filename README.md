@@ -6,7 +6,7 @@
 
 Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workflows — all from one unified control plane. Supports OpenAI, Anthropic, Google Gemini, Ollama, OpenRouter, and any OpenAI-compatible endpoint.
 
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20NC-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/sup3rus3r/obsidian-ai?style=social)](https://github.com/sup3rus3r/obsidian-ai/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/sup3rus3r/obsidian-ai?style=social)](https://github.com/sup3rus3r/obsidian-ai/network/members)
 [![GitHub Issues](https://img.shields.io/github/issues/sup3rus3r/obsidian-ai)](https://github.com/sup3rus3r/obsidian-ai/issues)
@@ -985,9 +985,10 @@ Found a bug or have a feature request? [Open an issue](https://github.com/sup3ru
 
 ## License
 
-This project is licensed under the **PolyForm Noncommercial License 1.0.0**.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
-- **Personal use** — Free to use for personal projects, research, experimentation, hobby projects, and non-commercial purposes.
-- **Commercial use** — Not permitted. You may not sell this software, offer it as a paid service, or use it in a commercial product without explicit written permission from the author.
+- **Free to use** — Use, study, and modify for any purpose.
+- **Copyleft** — If you distribute this software or run it as a network service, you must make the complete source code available under the same AGPL-3.0 terms.
+- **No additional restrictions** — You cannot impose further restrictions on recipients' exercise of the rights granted by this license.
 
 See the [LICENSE](LICENSE) file for the full terms.

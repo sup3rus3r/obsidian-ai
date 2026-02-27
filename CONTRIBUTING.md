@@ -241,7 +241,7 @@ You will receive a response as quickly as possible. Please allow time to patch t
 
 ## License
 
-By contributing to Obsidian AI, you agree that your contributions will be licensed under the **PolyForm Noncommercial License 1.0.0** — the same license that governs the project.
+By contributing to Obsidian AI, you agree that your contributions will be licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — the same license that governs the project.
 
 See the [LICENSE](LICENSE) file for full terms.
 
