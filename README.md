@@ -76,7 +76,7 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
 Most AI agent frameworks are code-only libraries that require deep programming knowledge. **Obsidian AI** provides a complete visual interface for building, managing, and running AI agents — no SDK glue code required.
 
 - **No vendor lock-in** — Swap between OpenAI, Anthropic, Google, Ollama, or any OpenAI-compatible provider without changing a single line of agent configuration.
-- **Visual orchestration** — Create multi-agent teams and multi-step workflows from the dashboard. No YAML, no DAGs, no boilerplate.
+- **Visual orchestration** — Create multi-agent teams, sequential pipelines, and parallel DAG workflows from a drag-and-drop canvas. No YAML, no code, no boilerplate.
 - **Production-ready security** — JWT auth, TOTP 2FA, AES end-to-end encryption, Fernet secrets vault, role-based access control, and rate limiting out of the box.
 - **Self-hosted & open-source** — Run entirely on your own infrastructure. Your data never leaves your servers.
 - **MCP-native** — First-class Model Context Protocol support for connecting external tools and services to your agents.
