@@ -22,7 +22,8 @@ export function ModelSelector() {
   const teams = usePlaygroundStore((s) => s.teams)
   const providers = usePlaygroundStore((s) => s.providers)
 
-  const getModelLabel = (modelId: string) => {
+  const getModelLabel = (modelId: string | null | undefined) => {
+    if (!modelId) return "No model"
     const parts = modelId.split("/")
     return parts[parts.length - 1]
   }
@@ -70,7 +71,7 @@ export function ModelSelector() {
             >
               <span className="text-xs font-medium">{agent.name}</span>
               <span className="text-[10px] text-muted-foreground font-mono">
-                {provider ? getModelLabel(provider.model_id) : "No model"}
+                {getModelLabel(agent.model_id || provider?.model_id)}
               </span>
             </div>
           ))}
@@ -113,14 +114,14 @@ export function ModelSelector() {
         <button className="flex items-center gap-1.5 text-xs bg-muted hover:bg-muted/80 px-2.5 py-1 rounded-md text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
           <Cpu className="h-3 w-3" />
           <span className="max-w-[150px] truncate">
-            {currentProvider ? getModelLabel(currentProvider.model_id) : "No model"}
+            {getModelLabel(selectedAgent.model_id || currentProvider?.model_id)}
           </span>
           <ChevronDown className="h-3 w-3 opacity-50" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-64">
         <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          Switch Model
+          Switch Provider
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         {providers.map((provider) => (
@@ -134,7 +135,7 @@ export function ModelSelector() {
           >
             <span className="text-xs font-medium">{provider.name}</span>
             <span className="text-[10px] text-muted-foreground font-mono">
-              {provider.model_id}
+              {provider.provider_type}
             </span>
           </DropdownMenuItem>
         ))}

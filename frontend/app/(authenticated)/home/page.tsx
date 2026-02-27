@@ -150,7 +150,7 @@ export default function HomePage() {
   const getProviderLabel = (providerId?: string) => {
     if (!providerId) return null
     const p = playgroundProviders.find((prov) => prov.id === providerId)
-    return p ? p.model_id.split("/").pop()?.split("-").slice(0, 2).join("-") : null
+    return p?.model_id ? p.model_id.split("/").pop()?.split("-").slice(0, 2).join("-") : null
   }
 
   if (isLoading) {

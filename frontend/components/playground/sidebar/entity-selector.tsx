@@ -82,7 +82,7 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onExportAge
                 onClick={onImportAgent}
                 title="Import agent from JSON"
               >
-                <Upload className="h-3.5= w-3.5=" />
+                <Upload className="h-3 w-3" />
               </Button>
             )}
             <Button variant="ghost" size="icon-sm" className="h-6 w-6 cursor-pointer" onClick={onAdd}>
@@ -136,11 +136,16 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onExportAge
                       </div>
                     )}
                   </div>
-                  {provider && (
-                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 flex-shrink-0">
-                      {provider.model_id.split("/").pop()?.split("-").slice(0, 2).join("-") ?? provider.model_id}
-                    </Badge>
-                  )}
+                  {(() => {
+                    const modelId = ("model_id" in entity ? entity.model_id : null) || provider?.model_id
+                    if (!modelId) return null
+                    const label = modelId.split("/").pop()?.split("-").slice(0, 2).join("-") ?? modelId
+                    return (
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 flex-shrink-0">
+                        {label}
+                      </Badge>
+                    )
+                  })()}
                 </button>
                 {mode === "agent" && onEditAgent && !hideEditAgent && (
                   <Button

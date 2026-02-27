@@ -45,6 +45,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [description, setDescription] = useState("")
   const [systemPrompt, setSystemPrompt] = useState("")
   const [providerId, setProviderId] = useState("")
+  const [modelId, setModelId] = useState("")
   const [selectedTools, setSelectedTools] = useState<string[]>([])
   const [selectedMCPServers, setSelectedMCPServers] = useState<string[]>([])
   const [selectedKBs, setSelectedKBs] = useState<string[]>([])
@@ -70,6 +71,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setDescription(agent.description || "")
       setSystemPrompt(agent.system_prompt || "")
       setProviderId(agent.provider_id || "")
+      setModelId(agent.model_id || "")
       setSelectedTools(agent.tools || [])
       setSelectedMCPServers(agent.mcp_server_ids || [])
       setSelectedKBs(agent.knowledge_base_ids || [])
@@ -93,6 +95,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           description: description || undefined,
           system_prompt: systemPrompt || undefined,
           provider_id: providerId || undefined,
+          model_id: modelId || undefined,
           tools: selectedTools,
           mcp_server_ids: selectedMCPServers,
           knowledge_base_ids: selectedKBs,
@@ -107,6 +110,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           description: description || undefined,
           system_prompt: systemPrompt || undefined,
           provider_id: providerId || undefined,
+          model_id: modelId || undefined,
           tools: selectedTools.length > 0 ? selectedTools : undefined,
           mcp_server_ids: selectedMCPServers.length > 0 ? selectedMCPServers : undefined,
           knowledge_base_ids: selectedKBs.length > 0 ? selectedKBs : undefined,
@@ -164,6 +168,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     setDescription("")
     setSystemPrompt("")
     setProviderId("")
+    setModelId("")
     setSelectedTools([])
     setSelectedMCPServers([])
     setSelectedKBs([])
@@ -231,7 +236,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="agent-provider">Model / Provider</Label>
+            <Label htmlFor="agent-provider">Provider</Label>
             <Select value={providerId} onValueChange={setProviderId}>
               <SelectTrigger>
                 <SelectValue placeholder="Select a provider..." />
@@ -244,7 +249,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                 ) : (
                   providers.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
-                      {p.name} ({p.model_id})
+                      {p.name}
                     </SelectItem>
                   ))
                 )}
@@ -255,6 +260,26 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                 Add a provider first to connect this agent to an LLM.
               </p>
             )}
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="agent-model-id">Model ID</Label>
+            <Input
+              id="agent-model-id"
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              placeholder={
+                providers.find((p) => p.id === providerId)?.provider_type === "anthropic"
+                  ? "e.g. claude-sonnet-4-6"
+                  : providers.find((p) => p.id === providerId)?.provider_type === "google"
+                  ? "e.g. gemini-2.0-flash"
+                  : providers.find((p) => p.id === providerId)?.provider_type === "ollama"
+                  ? "e.g. llama3"
+                  : providers.find((p) => p.id === providerId)?.provider_type === "openrouter"
+                  ? "e.g. openai/gpt-4o"
+                  : "e.g. gpt-4o"
+              }
+            />
           </div>
 
           <div className="grid gap-2">

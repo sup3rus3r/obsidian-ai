@@ -105,7 +105,7 @@ class LLMProviderCreate(BaseModel):
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     secret_id: Optional[str] = None   # Use a saved secret instead of api_key
-    model_id: str
+    model_id: Optional[str] = None   # Deprecated: model is now set on the agent
     config: Optional[dict] = None
 
 class LLMProviderUpdate(BaseModel):
@@ -122,7 +122,7 @@ class LLMProviderResponse(BaseModel):
     name: str
     provider_type: str
     base_url: Optional[str] = None
-    model_id: str
+    model_id: Optional[str] = None
     is_active: bool
     config: Optional[dict] = None
     secret_id: Optional[str] = None
@@ -144,6 +144,7 @@ class AgentCreate(BaseModel):
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     provider_id: Optional[str] = None
+    model_id: Optional[str] = None
     tools: Optional[list[str]] = None
     mcp_server_ids: Optional[list[str]] = None
     knowledge_base_ids: Optional[list[str]] = None
@@ -156,6 +157,7 @@ class AgentUpdate(BaseModel):
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     provider_id: Optional[str] = None
+    model_id: Optional[str] = None
     tools: Optional[list[str]] = None
     mcp_server_ids: Optional[list[str]] = None
     knowledge_base_ids: Optional[list[str]] = None
@@ -169,6 +171,7 @@ class AgentResponse(BaseModel):
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     provider_id: Optional[str] = None
+    model_id: Optional[str] = None
     tools: Optional[list[str]] = None
     mcp_server_ids: Optional[list[str]] = None
     knowledge_base_ids: Optional[list[str]] = None
@@ -188,7 +191,8 @@ class AgentExportData(BaseModel):
     name: str
     description: Optional[str] = None
     system_prompt: Optional[str] = None
-    provider_model_id: Optional[str] = None
+    model_id: Optional[str] = None
+    provider_model_id: Optional[str] = None   # kept for backward-compat: used to match provider on import
     tools: Optional[list[str]] = None
     mcp_servers: Optional[list[str]] = None
     knowledge_bases: Optional[list[str]] = None
@@ -203,6 +207,36 @@ class AgentExportEnvelope(BaseModel):
 
 class AgentImportResponse(BaseModel):
     agent: AgentResponse
+    warnings: list[str]
+
+
+# ============================================================================
+# Provider Import / Export Schemas
+# ============================================================================
+
+class ProviderExportData(BaseModel):
+    name: str
+    provider_type: str
+    base_url: Optional[str] = None
+    model_id: Optional[str] = None
+    config: Optional[dict] = None
+
+class ProviderExportEnvelope(BaseModel):
+    aios_export_version: str = "1"
+    exported_at: str
+    provider: ProviderExportData
+
+class ProviderBulkExportEnvelope(BaseModel):
+    aios_export_version: str = "1"
+    exported_at: str
+    providers: list[ProviderExportData]
+
+class ProviderImportResult(BaseModel):
+    provider: LLMProviderResponse
+    warnings: list[str]
+
+class ProviderBulkImportResult(BaseModel):
+    providers: list[LLMProviderResponse]
     warnings: list[str]
 
 

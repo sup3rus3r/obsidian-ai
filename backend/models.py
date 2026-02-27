@@ -41,7 +41,7 @@ class LLMProvider(Base):
     base_url      = Column(String, nullable=True)
     api_key       = Column(String, nullable=True)          # encrypted at rest
     secret_id     = Column(Integer, nullable=True)         # FK to user_secrets (optional)
-    model_id      = Column(String, nullable=False)
+    model_id      = Column(String, nullable=True)
     is_active     = Column(Boolean, default=True)
     config_json   = Column(Text, nullable=True)            # JSON: {temperature, max_tokens, ...}
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
@@ -61,6 +61,7 @@ class Agent(Base):
     tools_json    = Column(Text, nullable=True)            # JSON array of tool definition IDs
     mcp_servers_json = Column(Text, nullable=True)         # JSON array of MCP server IDs
     knowledge_base_ids_json = Column(Text, nullable=True)  # JSON array of knowledge base IDs
+    model_id      = Column(String, nullable=True)              # model to use, e.g. "claude-sonnet-4-6"
     hitl_confirmation_tools_json = Column(Text, nullable=True)  # JSON array of tool names requiring HITL
     allow_tool_creation = Column(Boolean, default=False, nullable=False)  # agent can propose new tools
     config_json   = Column(Text, nullable=True)            # JSON: {temperature, max_tokens, ...}

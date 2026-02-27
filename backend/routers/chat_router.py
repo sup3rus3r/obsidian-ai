@@ -1241,7 +1241,7 @@ def _build_memory_injection_dicts(memories: list[dict]) -> str:
     return f"\n\n## What I know about you:\n{lines}"
 
 
-async def _reflect_and_store_sqlite(agent_id: int, provider_record, session_id: int, user_id: int):
+async def _reflect_and_store_sqlite(agent_id: int, provider_record, agent_model_id: str | None, session_id: int, user_id: int):
     """Background task: reflect on a completed session and store memories (SQLite)."""
     from database import SessionLocal
     db = SessionLocal()
@@ -1292,7 +1292,7 @@ async def _reflect_and_store_sqlite(agent_id: int, provider_record, session_id: 
             provider_type=provider_record.provider_type,
             api_key=api_key,
             base_url=provider_record.base_url,
-            model_id=provider_record.model_id,
+            model_id=agent_model_id or provider_record.model_id or "gpt-4o",
             config=config,
         )
 
@@ -1380,7 +1380,7 @@ async def _reflect_and_store_sqlite(agent_id: int, provider_record, session_id: 
         db.close()
 
 
-async def _reflect_and_store_mongo(agent_id: str, provider_record: dict, session_id: str, user_id: str):
+async def _reflect_and_store_mongo(agent_id: str, provider_record: dict, agent_model_id: str | None, session_id: str, user_id: str):
     """Background task: reflect on a completed session and store memories (MongoDB)."""
     from database_mongo import get_database
     mongo_db = get_database()
@@ -1422,7 +1422,7 @@ async def _reflect_and_store_mongo(agent_id: str, provider_record: dict, session
             provider_type=provider_record["provider_type"],
             api_key=api_key,
             base_url=provider_record.get("base_url"),
-            model_id=provider_record["model_id"],
+            model_id=agent_model_id or provider_record.get("model_id") or "gpt-4o",
             config=config,
         )
 
@@ -1616,7 +1616,7 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     ).order_by(SessionModel.updated_at.desc()).first()
     if _prior_session:
         asyncio.create_task(_reflect_and_store_sqlite(
-            agent.id, provider_record, _prior_session.id, int(current_user.user_id)
+            agent.id, provider_record, agent.model_id, _prior_session.id, int(current_user.user_id)
         ))
 
     api_key = decrypt_api_key(provider_record.api_key) if provider_record.api_key else None
@@ -1625,7 +1625,7 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
         provider_type=provider_record.provider_type,
         api_key=api_key,
         base_url=provider_record.base_url,
-        model_id=provider_record.model_id,
+        model_id=agent.model_id or provider_record.model_id or "gpt-4o",
         config=config,
     )
 
@@ -1651,7 +1651,7 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     else:
         response = await llm.chat(messages, system_prompt=system_prompt, tools=tools)
         latency_ms = int((time.time() - start_time) * 1000)
-        metadata = json.dumps({"model": provider_record.model_id, "provider": provider_record.provider_type, "latency_ms": latency_ms})
+        metadata = json.dumps({"model": agent.model_id, "provider": provider_record.provider_type, "latency_ms": latency_ms})
         assistant_msg = Message(
             session_id=int(request.session_id),
             role="assistant",
@@ -1939,7 +1939,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     return
 
             _tc.record_llm_span(
-                model_name=provider_record.model_id,
+                model_name=(agent.model_id if agent else None) or provider_record.model_id,
                 usage=token_usage,
                 duration_ms=int((time.time() - _llm_round_start) * 1000),
                 round_number=_round,
@@ -2166,7 +2166,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
         input_tokens = token_usage.get("input_tokens", 0)
         output_tokens = token_usage.get("output_tokens", 0)
         metadata = {
-            "model": provider_record.model_id,
+            "model": (agent.model_id if agent else None) or provider_record.model_id,
             "provider": provider_record.provider_type,
             "latency_ms": latency_ms,
             "input_tokens": input_tokens,
@@ -2235,7 +2235,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 role="assistant",
                 content=full_content,
                 agent_id=agent_id,
-                metadata_json=json.dumps({"model": provider_record.model_id, "error": str(e), "latency_ms": latency_ms}),
+                metadata_json=json.dumps({"model": (agent.model_id if agent else None) or provider_record.model_id, "error": str(e), "latency_ms": latency_ms}),
             )
             db.add(assistant_msg)
             db.commit()
@@ -2316,7 +2316,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                         return
 
                 _tc.record_llm_span(
-                    model_name=provider_record.model_id,
+                    model_name=(agent.model_id if agent else None) or provider_record.model_id,
                     usage=token_usage,
                     duration_ms=int((time.time() - _llm_round_start) * 1000),
                     round_number=_round,
@@ -2496,7 +2496,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
             input_tokens = token_usage.get("input_tokens", 0)
             output_tokens = token_usage.get("output_tokens", 0)
             metadata = {
-                "model": provider_record.model_id, "provider": provider_record.provider_type,
+                "model": (agent.model_id if agent else None) or provider_record.model_id, "provider": provider_record.provider_type,
                 "latency_ms": latency_ms, "input_tokens": input_tokens, "output_tokens": output_tokens,
             }
             reasoning_json = json.dumps([{"type": "thinking", "content": "".join(reasoning_parts)}]) if reasoning_parts else None
@@ -2546,7 +2546,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                 latency_ms = int((time.time() - start_time) * 1000)
                 assistant_msg = Message(
                     session_id=session_id, role="assistant", content=full_content, agent_id=agent_id,
-                    metadata_json=json.dumps({"model": provider_record.model_id, "error": str(e), "latency_ms": latency_ms}),
+                    metadata_json=json.dumps({"model": (agent.model_id if agent else None) or provider_record.model_id, "error": str(e), "latency_ms": latency_ms}),
                 )
                 db.add(assistant_msg)
                 db.commit()
@@ -2557,15 +2557,15 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
 # Team chat mode handlers (SQLite)
 # ---------------------------------------------------------------------------
 
-def _create_llm_for_provider(provider_record):
-    """Create an LLM provider instance from a provider DB record."""
+def _create_llm_for_provider(provider_record, model_id: str):
+    """Create an LLM provider instance from a provider DB record and agent-specified model_id."""
     api_key = decrypt_api_key(provider_record.api_key) if provider_record.api_key else None
     config = json.loads(provider_record.config_json) if provider_record.config_json else None
     return create_provider_from_config(
         provider_type=provider_record.provider_type,
         api_key=api_key,
         base_url=provider_record.base_url,
-        model_id=provider_record.model_id,
+        model_id=model_id,
         config=config,
     )
 
@@ -2661,7 +2661,7 @@ async def _team_chat_coordinate(agents_with_providers, messages, db, session_id,
     try:
         # Use the first agent's provider as the router LLM
         router_agent, router_provider = agents_with_providers[0]
-        router_llm = _create_llm_for_provider(router_provider)
+        router_llm = _create_llm_for_provider(router_provider, router_agent.model_id or router_provider.model_id or "gpt-4o")
 
         # Build the agent selection prompt
         agent_descriptions = []
@@ -2707,7 +2707,7 @@ async def _team_chat_coordinate(agents_with_providers, messages, db, session_id,
         }
 
         # Stream the selected agent's response using _stream_response
-        sel_llm = _create_llm_for_provider(sel_provider)
+        sel_llm = _create_llm_for_provider(sel_provider, sel_agent.model_id or sel_provider.model_id or "gpt-4o")
         tools = _build_tools_for_llm(sel_agent, db)
         mcp_configs = _load_mcp_server_configs(sel_agent, db)
 
@@ -2739,7 +2739,7 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
 
         # Collect responses from all agents in parallel (with tool execution)
         async def get_agent_response(agent, provider):
-            llm = _create_llm_for_provider(provider)
+            llm = _create_llm_for_provider(provider, agent.model_id or provider.model_id or "gpt-4o")
             tools = _build_tools_for_llm(agent, db)
             mcp_configs = _load_mcp_server_configs(agent, db)
             if mcp_configs:
@@ -2774,7 +2774,7 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
 
         # Use the first available provider as the synthesizer
         synth_agent, synth_provider = agents_with_providers[0]
-        synth_llm = _create_llm_for_provider(synth_provider)
+        synth_llm = _create_llm_for_provider(synth_provider, synth_agent.model_id or synth_provider.model_id or "gpt-4o")
 
         # Build synthesis prompt
         responses_text = "\n\n".join(
@@ -2812,7 +2812,7 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
         latency_ms = int((time.time() - start_time) * 1000)
         contributing_agents = [{"id": str(r["agent_id"]), "name": r["agent_name"]} for r in agent_responses]
         metadata = {
-            "model": synth_provider.model_id,
+            "model": synth_agent.model_id or synth_provider.model_id,
             "provider": synth_provider.provider_type,
             "latency_ms": latency_ms,
             "team_mode": "route",
@@ -2865,7 +2865,7 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
                 "data": json.dumps({"agent_id": str(ag.id), "agent_name": ag.name, "step": "responding"}),
             }
 
-            llm = _create_llm_for_provider(pr)
+            llm = _create_llm_for_provider(pr, ag.model_id or pr.model_id or "gpt-4o")
             tools = _build_tools_for_llm(ag, db)
             mcp_configs = _load_mcp_server_configs(ag, db)
 
@@ -2952,8 +2952,8 @@ async def _build_tools_for_llm_mongo(agent, mongo_db) -> list[dict] | None:
     return tools if tools else None
 
 
-def _create_llm_for_mongo_provider(provider_record):
-    """Create an LLM provider instance from a MongoDB provider document."""
+def _create_llm_for_mongo_provider(provider_record, model_id: str):
+    """Create an LLM provider instance from a MongoDB provider document and agent-specified model_id."""
     api_key = decrypt_api_key(provider_record["api_key"]) if provider_record.get("api_key") else None
     config_str = provider_record.get("config_json")
     config = json.loads(config_str) if isinstance(config_str, str) and config_str else config_str
@@ -2961,7 +2961,7 @@ def _create_llm_for_mongo_provider(provider_record):
         provider_type=provider_record["provider_type"],
         api_key=api_key,
         base_url=provider_record.get("base_url"),
-        model_id=provider_record["model_id"],
+        model_id=model_id,
         config=config,
     )
 
@@ -3098,13 +3098,13 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
     if _prior_unprocessed:
         _prior_s = sorted(_prior_unprocessed, key=lambda s: s.get("updated_at") or s["created_at"], reverse=True)[0]
         asyncio.create_task(_reflect_and_store_mongo(
-            _agent_id_str, provider_record, str(_prior_s["_id"]), _user_id_str
+            _agent_id_str, provider_record, agent.get("model_id"), str(_prior_s["_id"]), _user_id_str
         ))
 
     # Inject long-term memories into the system prompt
     _agent_memories_mongo = await AgentMemoryCollection.find_by_agent_user(mongo_db, _agent_id_str, _user_id_str)
 
-    llm = _create_llm_for_mongo_provider(provider_record)
+    llm = _create_llm_for_mongo_provider(provider_record, agent.get("model_id") or provider_record.get("model_id") or "gpt-4o")
     _edit_target_mongo = _edit_target_mongo_early
     system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + _build_artifact_context(past_messages)
     tools = await _build_tools_for_llm_mongo(agent, mongo_db)
@@ -3121,7 +3121,7 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
     else:
         response = await llm.chat(messages, system_prompt=system_prompt, tools=tools)
         latency_ms = int((time.time() - start_time) * 1000)
-        metadata = {"model": provider_record["model_id"], "provider": provider_record["provider_type"], "latency_ms": latency_ms}
+        metadata = {"model": agent.get("model_id") or provider_record.get("model_id"), "provider": provider_record["provider_type"], "latency_ms": latency_ms}
         msg = await MessageCollection.create(mongo_db, {
             "session_id": request.session_id,
             "role": "assistant",
@@ -3175,7 +3175,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
         await _save_trace_span_mongo(mongo_db, {
             "session_id": session_id,
             "span_type": "llm_call",
-            "name": provider_record["model_id"],
+            "name": (agent.get("model_id") if agent else None) or provider_record.get("model_id"),
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
             "duration_ms": duration_ms,
@@ -3402,7 +3402,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
         input_tokens = token_usage.get("input_tokens", 0)
         output_tokens = token_usage.get("output_tokens", 0)
         metadata = {
-            "model": provider_record["model_id"], "provider": provider_record["provider_type"],
+            "model": (agent.get("model_id") if agent else None) or provider_record.get("model_id"), "provider": provider_record["provider_type"],
             "latency_ms": latency_ms, "input_tokens": input_tokens, "output_tokens": output_tokens,
         }
         reasoning_json = json.dumps([{"type": "thinking", "content": "".join(reasoning_parts)}]) if reasoning_parts else None
@@ -3496,7 +3496,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
             await _save_trace_span_mongo(mongo_db, {
                 "session_id": session_id,
                 "span_type": "llm_call",
-                "name": provider_record["model_id"],
+                "name": (agent.get("model_id") if agent else None) or provider_record.get("model_id"),
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
                 "duration_ms": duration_ms,
@@ -3719,7 +3719,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
             input_tokens = token_usage.get("input_tokens", 0)
             output_tokens = token_usage.get("output_tokens", 0)
             metadata = {
-                "model": provider_record["model_id"], "provider": provider_record["provider_type"],
+                "model": (agent.get("model_id") if agent else None) or provider_record.get("model_id"), "provider": provider_record["provider_type"],
                 "latency_ms": latency_ms, "input_tokens": input_tokens, "output_tokens": output_tokens,
             }
             reasoning_json = json.dumps([{"type": "thinking", "content": "".join(reasoning_parts)}]) if reasoning_parts else None
@@ -3780,7 +3780,7 @@ async def _team_chat_coordinate_mongo(agents_with_providers, messages, mongo_db,
     """Coordinate mode (MongoDB): router picks the best agent, that agent responds."""
     try:
         router_agent, router_provider = agents_with_providers[0]
-        router_llm = _create_llm_for_mongo_provider(router_provider)
+        router_llm = _create_llm_for_mongo_provider(router_provider, router_agent.get("model_id") or router_provider.get("model_id") or "gpt-4o")
 
         agent_descriptions = []
         for ag, pr in agents_with_providers:
@@ -3822,7 +3822,7 @@ async def _team_chat_coordinate_mongo(agents_with_providers, messages, mongo_db,
             "data": json.dumps({"agent_id": str(sel_agent["_id"]), "agent_name": sel_name, "step": "responding"}),
         }
 
-        sel_llm = _create_llm_for_mongo_provider(sel_provider)
+        sel_llm = _create_llm_for_mongo_provider(sel_provider, sel_agent.get("model_id") or sel_provider.get("model_id") or "gpt-4o")
         tools = await _build_tools_for_llm_mongo(sel_agent, mongo_db)
         mcp_configs = await _load_mcp_server_configs_mongo(sel_agent, mongo_db)
 
@@ -3852,7 +3852,7 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
         }
 
         async def get_agent_response(agent, provider):
-            llm = _create_llm_for_mongo_provider(provider)
+            llm = _create_llm_for_mongo_provider(provider, agent.get("model_id") or provider.get("model_id") or "gpt-4o")
             tools = await _build_tools_for_llm_mongo(agent, mongo_db)
             mcp_configs = await _load_mcp_server_configs_mongo(agent, mongo_db)
             if mcp_configs:
@@ -3885,7 +3885,7 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
             return
 
         synth_agent, synth_provider = agents_with_providers[0]
-        synth_llm = _create_llm_for_mongo_provider(synth_provider)
+        synth_llm = _create_llm_for_mongo_provider(synth_provider, synth_agent.get("model_id") or synth_provider.get("model_id") or "gpt-4o")
 
         responses_text = "\n\n".join(
             f"**{r['agent_name']}:**\n{r['response']}" for r in agent_responses
@@ -3920,7 +3920,7 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
         latency_ms = int((time.time() - start_time) * 1000)
         contributing_agents = [{"id": r["agent_id"], "name": r["agent_name"]} for r in agent_responses]
         metadata = {
-            "model": synth_provider["model_id"],
+            "model": synth_agent.get("model_id") or synth_provider.get("model_id"),
             "provider": synth_provider["provider_type"],
             "latency_ms": latency_ms,
             "team_mode": "route",
@@ -3965,7 +3965,7 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
                 "data": json.dumps({"agent_id": str(ag["_id"]), "agent_name": name, "step": "responding"}),
             }
 
-            llm = _create_llm_for_mongo_provider(pr)
+            llm = _create_llm_for_mongo_provider(pr, ag.get("model_id") or pr.get("model_id") or "gpt-4o")
             tools = await _build_tools_for_llm_mongo(ag, mongo_db)
             mcp_configs = await _load_mcp_server_configs_mongo(ag, mongo_db)
 

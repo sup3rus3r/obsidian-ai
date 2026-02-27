@@ -8,13 +8,17 @@ export const AppRoutes = {
     ToggleRole          : () => "/api/user/toggle-role",
 
     // Providers
-    ListProviders       : () => "/api/providers",
-    CreateProvider      : () => "/api/providers",
-    GetProvider         : (id: string) => `/api/providers/${id}`,
-    UpdateProvider      : (id: string) => `/api/providers/${id}`,
-    DeleteProvider      : (id: string) => `/api/providers/${id}`,
-    TestProvider        : (id: string) => `/api/providers/${id}/test`,
-    ListModels          : (id: string) => `/api/providers/${id}/models`,
+    ListProviders           : () => "/api/providers",
+    CreateProvider          : () => "/api/providers",
+    GetProvider             : (id: string) => `/api/providers/${id}`,
+    UpdateProvider          : (id: string) => `/api/providers/${id}`,
+    DeleteProvider          : (id: string) => `/api/providers/${id}`,
+    TestProvider            : (id: string) => `/api/providers/${id}/test`,
+    ListModels              : (id: string) => `/api/providers/${id}/models`,
+    ExportProvider          : (id: string) => `/api/providers/${id}/export`,
+    ExportAllProviders      : () => "/api/providers/export",
+    ImportProvider          : () => "/api/providers/import",
+    ImportProvidersBulk     : () => "/api/providers/import/bulk",
 
     // Agents
     ListAgents          : () => "/api/agents",

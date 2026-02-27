@@ -797,7 +797,7 @@ function SecretsCard({ session }: { session: any }) {
                 id="create-secret-name"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
-                placeholder="e.g., OpenAI API Key"
+                placeholder="e.g., OPENAI_API_KEY"
                 required
               />
             </div>

@@ -28,6 +28,7 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
 
 ---
 
+
 ## Table of Contents
 
 - [Why Obsidian AI?](#why-obsidian-ai)
@@ -63,6 +64,7 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
 - [API Reference](#api-reference)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
+- [Updates](#updates)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
@@ -782,6 +784,64 @@ obsidian-ai/
 
 ---
 
+## Updates
+
+Recent additions shipped to the platform.
+
+---
+
+### Provider Import / Export
+
+Export and import LLM endpoint configurations as portable JSON files, making it easy to replicate your provider setup across instances or share it with teammates.
+
+**How it works:**
+
+- **Single export** — Download any individual provider as a JSON file from its row in the Endpoints panel (Download icon per row)
+- **Bulk export** — Download all providers in a single JSON file via the header-level DownloadCloud button
+- **Import** — Upload a previously exported JSON file using the Upload button; the importer auto-detects whether it's a single provider or a bulk envelope and calls the correct endpoint
+- **API key handling** — API keys are **always excluded** from exports for security reasons; after import, each provider's key field is blank and must be re-entered by the user
+- **Name deduplication** — On import, if a provider with the same name already exists it is updated in place; otherwise a new provider is created
+- **Permission-gated** — Import is only available to users with the `manage_providers` permission
+
+**Export file formats:**
+
+Single provider:
+```json
+{
+  "aios_export_version": "1",
+  "exported_at": "2026-01-01T00:00:00Z",
+  "provider": {
+    "name": "My OpenAI",
+    "provider_type": "openai",
+    "model_id": "gpt-4o",
+    "base_url": null,
+    "config": {}
+  }
+}
+```
+
+Bulk (all providers):
+```json
+{
+  "aios_export_version": "1",
+  "exported_at": "2026-01-01T00:00:00Z",
+  "providers": [
+    { "name": "My OpenAI", "provider_type": "openai", "model_id": "gpt-4o", ... },
+    { "name": "Local Ollama", "provider_type": "ollama", "model_id": "llama3.2", ... }
+  ]
+}
+```
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/providers/export` | GET | Bulk export all providers |
+| `/providers/{id}/export` | GET | Export a single provider |
+| `/providers/import` | POST | Import a single or bulk provider JSON |
+
+---
+
 ## Roadmap
 
 > Planned features, not in any particular order of priority.
@@ -821,7 +881,7 @@ obsidian-ai/
 
 ### Developer Experience
 
-- [ ] **Provider Import / Export** — Export endpoint configurations (name, type, model ID, base URL, config) as portable JSON and import them on any instance; API keys are intentionally excluded and must be re-entered on import
+- [x] **Provider Import / Export** — Export endpoint configurations (name, type, model ID, base URL, config) as portable JSON and import them on any instance; API keys are intentionally excluded and must be re-entered on import
 - [ ] **Agent versioning** — Snapshot agent configs and roll back to previous versions
 
 ### UX & Productivity

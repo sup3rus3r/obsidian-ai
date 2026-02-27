@@ -117,7 +117,7 @@ async def run_scheduled_workflow_sqlite(schedule_id: int):
                 provider_type=provider.provider_type,
                 api_key=api_key,
                 base_url=provider.base_url,
-                model_id=provider.model_id,
+                model_id=agent.model_id or provider.model_id or "gpt-4o",
                 config=config,
             )
 
@@ -453,7 +453,7 @@ async def run_scheduled_workflow_mongo(schedule_id: str):
                 provider_type=provider["provider_type"],
                 api_key=api_key,
                 base_url=provider.get("base_url"),
-                model_id=provider["model_id"],
+                model_id=agent.get("model_id") or provider.get("model_id") or "gpt-4o",
                 config=config,
             )
 

@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useState } from "react"
-
+import Logo from "../ui/logo"
 const navLinks: { label: string; href: string }[] = []
 
 export function Header() {
@@ -37,10 +37,7 @@ export function Header() {
           onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
           className="flex items-center gap-2.5 cursor-pointer"
         >
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-            <Cpu className="h-4.5 w-4.5 text-primary-foreground" />
-          </div>
-          <span className="text-lg font-bold tracking-tight">Obsidian AI</span>
+          <Logo className={'h-8'}/>
         </button>
 
         {/* Desktop Nav */}

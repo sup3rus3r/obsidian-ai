@@ -13,7 +13,7 @@ import {
 import { Cpu } from "lucide-react";
 import { encryptPayload } from "@/lib/crypto";
 import { AppRoutes } from "@/app/api/routes";
-
+import Logo from "@/components/ui/logo";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -125,10 +125,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center">
       <div className="p-8 rounded-md border w-full max-w-md">
         <div className="flex items-center justify-center gap-2.5 mb-8">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-            <Cpu className="h-5 w-5 text-primary-foreground" />
-          </div>
-          <span className="text-xl font-bold tracking-tight">Obsidian AI</span>
+          <Logo className={'h-8'}/>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

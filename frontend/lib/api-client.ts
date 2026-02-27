@@ -133,6 +133,94 @@ class ApiClient {
     return result.models || []
   }
 
+  async exportProvider(id: string, name: string): Promise<void> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const response = await fetch(AppRoutes.ExportProvider(id), { headers })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Export failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${name.replace(/[^a-z0-9\-_ ]/gi, "_")}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  async exportAllProviders(): Promise<void> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const response = await fetch(AppRoutes.ExportAllProviders(), { headers })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Export failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "providers_export.json"
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  async importProvider(file: File): Promise<{ provider: LLMProvider; warnings: string[] }> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const formData = new FormData()
+    formData.append("file", file)
+    const response = await fetch(AppRoutes.ImportProvider(), {
+      method: "POST",
+      headers,
+      body: formData,
+    })
+    if (!response.ok) {
+      if (response.status === 401) {
+        signOut({ callbackUrl: "/login" })
+        throw new Error("Session expired. Redirecting to login...")
+      }
+      const error = await response.json().catch(() => ({ detail: "Import failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    return response.json()
+  }
+
+  async importProvidersBulk(file: File): Promise<{ providers: LLMProvider[]; warnings: string[] }> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const formData = new FormData()
+    formData.append("file", file)
+    const response = await fetch(AppRoutes.ImportProvidersBulk(), {
+      method: "POST",
+      headers,
+      body: formData,
+    })
+    if (!response.ok) {
+      if (response.status === 401) {
+        signOut({ callbackUrl: "/login" })
+        throw new Error("Session expired. Redirecting to login...")
+      }
+      const error = await response.json().catch(() => ({ detail: "Import failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    return response.json()
+  }
+
   // ============= Agents =============
   async listAgents(): Promise<Agent[]> {
     const result = await this.request<ListResponse<Agent>>(AppRoutes.ListAgents())

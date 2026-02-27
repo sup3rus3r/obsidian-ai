@@ -21,7 +21,9 @@ import type { Agent, MCPServer } from "@/types/playground"
 export function Sidebar() {
   const mode = usePlaygroundStore((s) => s.mode)
   const agents = usePlaygroundStore((s) => s.agents)
+  const providers = usePlaygroundStore((s) => s.providers)
   const setAgents = usePlaygroundStore((s) => s.setAgents)
+  const setProviders = usePlaygroundStore((s) => s.setProviders)
   const setSelectedAgent = usePlaygroundStore((s) => s.setSelectedAgent)
   const permissions = usePermissionsStore((s) => s.permissions)
   const [providerDialogOpen, setProviderDialogOpen] = useState(false)
@@ -32,6 +34,56 @@ export function Sidebar() {
   const [mcpServerDialogOpen, setMCPServerDialogOpen] = useState(false)
   const [editingMCPServer, setEditingMCPServer] = useState<MCPServer | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
+  const providerImportInputRef = useRef<HTMLInputElement>(null)
+
+  const handleExportProvider = async (providerId: string, providerName: string) => {
+    try {
+      await apiClient.exportProvider(providerId, providerName)
+      toast.success(`Exported "${providerName}"`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Export failed")
+    }
+  }
+
+  const handleExportAllProviders = async () => {
+    try {
+      await apiClient.exportAllProviders()
+      toast.success(`Exported ${providers.length} provider${providers.length !== 1 ? "s" : ""}`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Export failed")
+    }
+  }
+
+  const handleImportProvider = () => {
+    providerImportInputRef.current?.click()
+  }
+
+  const handleProviderImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ""
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      // Re-create File from the already-read text so the API client can send it as FormData
+      const reFile = new File([text], file.name, { type: "application/json" })
+      if (parsed.provider) {
+        const { provider, warnings } = await apiClient.importProvider(reFile)
+        setProviders([...providers, provider])
+        toast.success(`Imported "${provider.name}" — add an API key to activate`)
+        warnings.forEach((w) => toast.warning(w))
+      } else if (parsed.providers) {
+        const { providers: imported, warnings } = await apiClient.importProvidersBulk(reFile)
+        setProviders([...providers, ...imported])
+        toast.success(`Imported ${imported.length} provider${imported.length !== 1 ? "s" : ""} — add API keys to activate`)
+        warnings.forEach((w) => toast.warning(w))
+      } else {
+        toast.error("Invalid provider export file")
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Import failed")
+    }
+  }
 
   const handleEditAgent = (agentId: string) => {
     const agent = agents.find((a) => a.id === agentId)
@@ -82,17 +134,23 @@ export function Sidebar() {
         className="hidden"
         onChange={handleImportFileChange}
       />
+      {/* Hidden file input for provider import (single + bulk auto-detected) */}
+      <input
+        ref={providerImportInputRef}
+        type="file"
+        accept=".json"
+        className="hidden"
+        onChange={handleProviderImportFileChange}
+      />
 
       <div className="flex flex-col h-full w-88 min-w-0 bg-sidebar text-sidebar-foreground overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center h-12 px-4 border-b border-sidebar-border">
-          <h1 className="text-sm font-semibold tracking-tight">Obsidian AI</h1>
-        </div>
-
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
           <div className="flex flex-col gap-4 p-3">
             <EndpointConfig
               onAddProvider={() => setProviderDialogOpen(true)}
+              onExportProvider={handleExportProvider}
+              onImportProvider={permissions.manage_providers ? handleImportProvider : undefined}
+              onExportAllProviders={handleExportAllProviders}
               hideAdd={!permissions.manage_providers}
             />
             <ModeToggle />

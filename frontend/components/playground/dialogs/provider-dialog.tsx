@@ -48,7 +48,6 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
   const [providerType, setProviderType] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
   const [apiKey, setApiKey] = useState("")
-  const [modelId, setModelId] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "connected" | "failed">("idle")
@@ -84,7 +83,7 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
   }
 
   const handleCreate = async () => {
-    if (!session?.accessToken || !name || !providerType || !modelId) return
+    if (!session?.accessToken || !name || !providerType) return
     setLoading(true)
     setError("")
     try {
@@ -92,7 +91,6 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
         name,
         provider_type: providerType,
         base_url: baseUrl || undefined,
-        model_id: modelId,
       }
 
       if (selectedType?.needsKey) {
@@ -120,7 +118,6 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
     setProviderType("")
     setBaseUrl("")
     setApiKey("")
-    setModelId("")
     setKeySource("manual")
     setSelectedSecretId("")
     setTestStatus("idle")
@@ -241,26 +238,6 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
             </div>
           )}
 
-          <div className="grid gap-2">
-            <Label htmlFor="model-id">Model ID</Label>
-            <Input
-              id="model-id"
-              value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-              placeholder={
-                providerType === "ollama"
-                  ? "llama3.2"
-                  : providerType === "openai"
-                  ? "gpt-4o"
-                  : providerType === "anthropic"
-                  ? "claude-sonnet-4-20250514"
-                  : providerType === "google"
-                  ? "gemini-2.0-flash"
-                  : "model-name"
-              }
-            />
-          </div>
-
           {/* Connection test status */}
           {testStatus !== "idle" && (
             <div className="flex items-center gap-2 text-sm">
@@ -292,7 +269,7 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleCreate} disabled={loading || !name || !providerType || !modelId}>
+          <Button onClick={handleCreate} disabled={loading || !name || !providerType}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
             Create Provider
           </Button>

@@ -51,6 +51,7 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
             description=agent.get("description"),
             system_prompt=agent.get("system_prompt"),
             provider_id=str(agent["provider_id"]) if agent.get("provider_id") else None,
+            model_id=agent.get("model_id"),
             tools=tools,
             mcp_server_ids=mcp_server_ids,
             knowledge_base_ids=knowledge_base_ids,
@@ -75,6 +76,7 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
         description=agent.description,
         system_prompt=agent.system_prompt,
         provider_id=str(agent.provider_id) if agent.provider_id else None,
+        model_id=agent.model_id,
         tools=tools,
         mcp_server_ids=mcp_server_ids,
         knowledge_base_ids=knowledge_base_ids,
@@ -107,6 +109,7 @@ async def create_agent(
             "description": data.description,
             "system_prompt": data.system_prompt,
             "provider_id": data.provider_id,
+            "model_id": data.model_id,
             "tools_json": tools_str,
             "mcp_servers_json": mcp_servers_str,
             "knowledge_base_ids_json": kb_ids_str,
@@ -123,6 +126,7 @@ async def create_agent(
         description=data.description,
         system_prompt=data.system_prompt,
         provider_id=int(data.provider_id) if data.provider_id else None,
+        model_id=data.model_id,
         tools_json=tools_str,
         mcp_servers_json=mcp_servers_str,
         knowledge_base_ids_json=kb_ids_str,
@@ -273,13 +277,6 @@ async def export_agent(
         if not agent or agent.get("user_id") not in allowed_ids:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        # Resolve provider → model_id
-        provider_model_id = None
-        if agent.get("provider_id"):
-            provider = await LLMProviderCollection.find_by_id(mongo_db, str(agent["provider_id"]))
-            if provider:
-                provider_model_id = provider.get("model_id")
-
         # Resolve tool IDs → names
         tool_ids = json.loads(agent["tools_json"]) if agent.get("tools_json") else []
         tool_names = []
@@ -314,7 +311,7 @@ async def export_agent(
             name=agent["name"],
             description=agent.get("description"),
             system_prompt=agent.get("system_prompt"),
-            provider_model_id=provider_model_id,
+            model_id=agent.get("model_id"),
             tools=tool_names or None,
             mcp_servers=mcp_names or None,
             knowledge_bases=kb_names or None,
@@ -342,13 +339,6 @@ async def export_agent(
     ).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Resolve provider → model_id
-    provider_model_id = None
-    if agent.provider_id:
-        provider = db.query(LLMProvider).filter(LLMProvider.id == agent.provider_id).first()
-        if provider:
-            provider_model_id = provider.model_id
 
     # Resolve tool IDs → names
     tool_ids = json.loads(agent.tools_json) if agent.tools_json else []
@@ -381,7 +371,7 @@ async def export_agent(
         name=agent.name,
         description=agent.description,
         system_prompt=agent.system_prompt,
-        provider_model_id=provider_model_id,
+        model_id=agent.model_id,
         tools=tool_names or None,
         mcp_servers=mcp_names or None,
         knowledge_bases=kb_names or None,
@@ -428,7 +418,7 @@ async def import_agent(
     if DATABASE_TYPE == "mongo":
         mongo_db = get_database()
 
-        # Resolve provider by model_id
+        # Resolve provider by name/type (provider_model_id used as fallback legacy key)
         resolved_provider_id = None
         if agent_data.get("provider_model_id"):
             providers = await LLMProviderCollection.find_by_user(mongo_db, current_user.user_id)
@@ -437,7 +427,7 @@ async def import_agent(
                     resolved_provider_id = str(p["_id"])
                     break
             if not resolved_provider_id:
-                warnings.append(f"Provider with model '{agent_data['provider_model_id']}' not found — provider unset")
+                warnings.append(f"No provider found matching legacy model '{agent_data['provider_model_id']}' — provider unset")
 
         # Resolve tool names → IDs
         resolved_tool_ids = []
@@ -475,6 +465,7 @@ async def import_agent(
             "description": agent_data.get("description"),
             "system_prompt": agent_data.get("system_prompt"),
             "provider_id": resolved_provider_id,
+            "model_id": agent_data.get("model_id") or agent_data.get("provider_model_id"),
             "tools_json": json.dumps(resolved_tool_ids) if resolved_tool_ids else None,
             "mcp_servers_json": json.dumps(resolved_mcp_ids) if resolved_mcp_ids else None,
             "knowledge_base_ids_json": json.dumps(resolved_kb_ids) if resolved_kb_ids else None,
@@ -485,7 +476,7 @@ async def import_agent(
         return AgentImportResponse(agent=_agent_to_response(created, is_mongo=True), warnings=warnings)
 
     # SQLite path
-    # Resolve provider by model_id
+    # Resolve provider by legacy model_id match (backward-compat for old exports)
     resolved_provider_id = None
     if agent_data.get("provider_model_id"):
         provider = db.query(LLMProvider).filter(
@@ -496,7 +487,7 @@ async def import_agent(
         if provider:
             resolved_provider_id = provider.id
         else:
-            warnings.append(f"Provider with model '{agent_data['provider_model_id']}' not found — provider unset")
+            warnings.append(f"No provider found matching legacy model '{agent_data['provider_model_id']}' — provider unset")
 
     # Resolve tool names → IDs
     resolved_tool_ids = []
@@ -546,6 +537,7 @@ async def import_agent(
         description=agent_data.get("description"),
         system_prompt=agent_data.get("system_prompt"),
         provider_id=resolved_provider_id,
+        model_id=agent_data.get("model_id") or agent_data.get("provider_model_id"),
         tools_json=json.dumps(resolved_tool_ids) if resolved_tool_ids else None,
         mcp_servers_json=json.dumps(resolved_mcp_ids) if resolved_mcp_ids else None,
         knowledge_base_ids_json=json.dumps(resolved_kb_ids) if resolved_kb_ids else None,

@@ -372,6 +372,32 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add model_id to agents if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE agents ADD COLUMN model_id TEXT"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Data migration: copy provider.model_id → agent.model_id for agents that don't have one yet
+        try:
+            conn.execute(sqlalchemy.text("""
+                UPDATE agents
+                SET model_id = (
+                    SELECT llm_providers.model_id
+                    FROM llm_providers
+                    WHERE llm_providers.id = agents.provider_id
+                    AND llm_providers.model_id IS NOT NULL
+                )
+                WHERE agents.model_id IS NULL
+                AND agents.provider_id IS NOT NULL
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 
 async def _load_active_schedules():
     """Re-register APScheduler jobs for all active schedules on startup."""
@@ -468,6 +494,19 @@ async def lifespan(app: FastAPI):
         await HITLApprovalCollection.deny_all_pending(db)
         # Auto-reject any tool proposals left pending from a previous server run
         await ToolProposalCollection.reject_all_pending(db)
+        # Data migration: copy provider.model_id → agent.model_id where agent has no model_id
+        from bson import ObjectId as _ObjId
+        async for agent in db.agents.find({"model_id": {"$exists": False}}):
+            if agent.get("provider_id"):
+                try:
+                    provider = await db.llm_providers.find_one({"_id": _ObjId(agent["provider_id"])})
+                    if provider and provider.get("model_id"):
+                        await db.agents.update_one(
+                            {"_id": agent["_id"]},
+                            {"$set": {"model_id": provider["model_id"]}}
+                        )
+                except Exception:
+                    pass
 
     # Start APScheduler
     from scheduler import scheduler as _scheduler, configure_scheduler

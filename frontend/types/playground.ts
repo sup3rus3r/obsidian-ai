@@ -3,7 +3,7 @@ export interface LLMProvider {
   name: string
   provider_type: "openai" | "anthropic" | "google" | "ollama" | "openrouter" | "custom"
   base_url?: string
-  model_id: string
+  model_id?: string
   is_active: boolean
   config?: Record<string, unknown>
   secret_id?: string
@@ -16,6 +16,7 @@ export interface Agent {
   description?: string
   system_prompt?: string
   provider_id?: string
+  model_id?: string
   tools?: string[]
   mcp_server_ids?: string[]
   knowledge_base_ids?: string[]
@@ -133,7 +134,7 @@ export interface CreateProviderRequest {
   base_url?: string
   api_key?: string
   secret_id?: string
-  model_id: string
+  model_id?: string
   config?: Record<string, unknown>
 }
 
@@ -142,6 +143,7 @@ export interface CreateAgentRequest {
   description?: string
   system_prompt?: string
   provider_id?: string
+  model_id?: string
   tools?: string[]
   mcp_server_ids?: string[]
   knowledge_base_ids?: string[]
@@ -155,6 +157,7 @@ export interface UpdateAgentRequest {
   description?: string
   system_prompt?: string
   provider_id?: string
+  model_id?: string
   tools?: string[]
   mcp_server_ids?: string[]
   knowledge_base_ids?: string[]

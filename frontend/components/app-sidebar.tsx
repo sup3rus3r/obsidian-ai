@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { Routes } from "@/config/routes"
+import Logo from "./ui/logo"
 
 const navItems = [
   { label: "Home", icon: Home, path: Routes.DASHBOARD },
@@ -48,13 +49,8 @@ export function AppSidebar() {
   return (
     <div className="flex flex-col h-full w-54 bg-sidebar text-sidebar-foreground border-r border-sidebar-border shrink-0">
       {/* Logo / Brand */}
-      <div className="flex items-center h-12 px-4 border-b border-sidebar-border">
-        <div className="flex items-center gap-2">
-          <div className="h-6 w-6 rounded-md bg-primary/20 flex items-center justify-center">
-            <span className="text-xs font-bold text-primary">A</span>
-          </div>
-          <span className="text-sm font-semibold tracking-tight">Obsidian AI</span>
-        </div>
+      <div className="flex items-center justify-center h-12 px-4 border-b border-sidebar-border">
+        <Logo className={'h-5'}/>
       </div>
 
       {/* Navigation */}
@@ -91,7 +87,7 @@ export function AppSidebar() {
                 </AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0 text-left">
-                <p className="text-xs font-medium truncate">
+                <p className="text-xs font-semibold uppercase truncate">
                   {(session?.user?.name || session?.user?.email || "User").charAt(0).toUpperCase() + (session?.user?.name || session?.user?.email || "User").slice(1)}
                 </p>
               </div>
