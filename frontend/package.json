@@ -24,7 +24,7 @@
     "lucide-react": "^0.562.0",
     "motion": "^12.34.0",
     "nanoid": "^5.1.6",
-    "next": "16.1.4",
+    "next": "^16.1.6",
     "next-auth": "^5.0.0-beta.30",
     "radix-ui": "^1.4.3",
     "react": "19.2.3",
