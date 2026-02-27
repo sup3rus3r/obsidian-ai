@@ -16,7 +16,7 @@ import { MCPServerDialog } from "@/components/dialogs/mcp-server-dialog"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import { usePermissionsStore } from "@/stores/permissions-store"
 import { apiClient } from "@/lib/api-client"
-import type { Agent, MCPServer } from "@/types/playground"
+import type { Agent, LLMProvider, MCPServer } from "@/types/playground"
 
 export function Sidebar() {
   const mode = usePlaygroundStore((s) => s.mode)
@@ -27,6 +27,7 @@ export function Sidebar() {
   const setSelectedAgent = usePlaygroundStore((s) => s.setSelectedAgent)
   const permissions = usePermissionsStore((s) => s.permissions)
   const [providerDialogOpen, setProviderDialogOpen] = useState(false)
+  const [editingProvider, setEditingProvider] = useState<LLMProvider | null>(null)
   const [agentDialogOpen, setAgentDialogOpen] = useState(false)
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null)
   const [teamDialogOpen, setTeamDialogOpen] = useState(false)
@@ -35,6 +36,19 @@ export function Sidebar() {
   const [editingMCPServer, setEditingMCPServer] = useState<MCPServer | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
   const providerImportInputRef = useRef<HTMLInputElement>(null)
+
+  const handleEditProvider = (providerId: string) => {
+    const provider = providers.find((p) => p.id === providerId)
+    if (provider) {
+      setEditingProvider(provider)
+      setProviderDialogOpen(true)
+    }
+  }
+
+  const handleProviderUpdated = (updated: LLMProvider) => {
+    setProviders(providers.map((p) => (p.id === updated.id ? updated : p)))
+    toast.success(`Provider "${updated.name}" updated`)
+  }
 
   const handleExportProvider = async (providerId: string, providerName: string) => {
     try {
@@ -147,7 +161,8 @@ export function Sidebar() {
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
           <div className="flex flex-col gap-4 p-3">
             <EndpointConfig
-              onAddProvider={() => setProviderDialogOpen(true)}
+              onAddProvider={() => { setEditingProvider(null); setProviderDialogOpen(true) }}
+              onEditProvider={permissions.manage_providers ? handleEditProvider : undefined}
               onExportProvider={handleExportProvider}
               onImportProvider={permissions.manage_providers ? handleImportProvider : undefined}
               onExportAllProviders={handleExportAllProviders}
@@ -190,7 +205,15 @@ export function Sidebar() {
       </div>
 
       {/* Dialogs */}
-      <ProviderDialog open={providerDialogOpen} onOpenChange={setProviderDialogOpen} />
+      <ProviderDialog
+        open={providerDialogOpen}
+        onOpenChange={(open) => {
+          setProviderDialogOpen(open)
+          if (!open) setEditingProvider(null)
+        }}
+        provider={editingProvider}
+        onUpdated={handleProviderUpdated}
+      />
       <AgentDialog
         open={agentDialogOpen}
         onOpenChange={(open) => {

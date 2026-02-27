@@ -2,7 +2,7 @@
 
 import { usePlaygroundStore } from "@/stores/playground-store"
 import { Badge } from "@/components/ui/badge"
-import { Plus, Trash2, Download, Upload, DownloadCloud } from "lucide-react"
+import { Plus, Trash2, Download, Upload, DownloadCloud, Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
 import { SidebarSection } from "./sidebar-section"
@@ -15,6 +15,7 @@ import {
 
 interface EndpointConfigProps {
   onAddProvider?: () => void
+  onEditProvider?: (providerId: string) => void
   onExportProvider?: (providerId: string, providerName: string) => void
   onImportProvider?: () => void
   onExportAllProviders?: () => void
@@ -23,6 +24,7 @@ interface EndpointConfigProps {
 
 export function EndpointConfig({
   onAddProvider,
+  onEditProvider,
   onExportProvider,
   onImportProvider,
   onExportAllProviders,
@@ -120,6 +122,19 @@ export function EndpointConfig({
                 </Badge>
               </button>
               <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                {onEditProvider && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-6 w-6"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onEditProvider(provider.id)
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                )}
                 {onExportProvider && (
                   <Button
                     variant="ghost"

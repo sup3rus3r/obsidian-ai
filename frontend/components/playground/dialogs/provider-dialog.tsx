@@ -20,10 +20,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useSession } from "next-auth/react"
-import { createProvider, testProvider, listSecrets } from "@/app/api/playground"
+import { createProvider, listSecrets } from "@/app/api/playground"
 import { usePlaygroundStore } from "@/stores/playground-store"
+import { apiClient } from "@/lib/api-client"
 import { Loader2, CheckCircle2, XCircle, KeyRound, Lock } from "lucide-react"
-import type { Secret } from "@/types/playground"
+import type { LLMProvider, Secret } from "@/types/playground"
 
 const PROVIDER_TYPES = [
   { value: "ollama", label: "Ollama (Local)", defaultUrl: "http://localhost:11434", needsKey: false },
@@ -37,12 +38,17 @@ const PROVIDER_TYPES = [
 interface ProviderDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** If provided, the dialog opens in edit mode for this provider */
+  provider?: LLMProvider | null
+  onUpdated?: (provider: LLMProvider) => void
 }
 
-export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
+export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: ProviderDialogProps) {
   const { data: session } = useSession()
   const setProviders = usePlaygroundStore((s) => s.setProviders)
   const providers = usePlaygroundStore((s) => s.providers)
+
+  const isEditMode = !!provider
 
   const [name, setName] = useState("")
   const [providerType, setProviderType] = useState("")
@@ -59,6 +65,28 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
   const [secretsLoading, setSecretsLoading] = useState(false)
 
   const selectedType = PROVIDER_TYPES.find((p) => p.value === providerType)
+
+  // Pre-fill fields when editing an existing provider
+  useEffect(() => {
+    if (open && provider) {
+      setName(provider.name)
+      setProviderType(provider.provider_type)
+      setBaseUrl(provider.base_url ?? "")
+      setApiKey("")
+      setTestStatus("idle")
+      setError("")
+      if (provider.secret_id) {
+        setKeySource("secret")
+        setSelectedSecretId(provider.secret_id)
+      } else {
+        setKeySource("manual")
+        setSelectedSecretId("")
+      }
+    } else if (!open) {
+      // Reset when closing (handles both create and edit)
+      resetForm()
+    }
+  }, [open, provider])
 
   // Fetch secrets when dialog opens and provider needs a key
   useEffect(() => {
@@ -82,32 +110,56 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
     setTestStatus("idle")
   }
 
-  const handleCreate = async () => {
+  const handleSubmit = async () => {
     if (!session?.accessToken || !name || !providerType) return
     setLoading(true)
     setError("")
     try {
-      const payload: Parameters<typeof createProvider>[1] = {
-        name,
-        provider_type: providerType,
-        base_url: baseUrl || undefined,
-      }
-
-      if (selectedType?.needsKey) {
-        if (keySource === "secret" && selectedSecretId) {
-          payload.secret_id = selectedSecretId
-        } else if (keySource === "manual" && apiKey) {
-          payload.api_key = apiKey
+      if (isEditMode && provider) {
+        // Edit mode: build partial update payload
+        const payload: Parameters<typeof apiClient.updateProvider>[1] = {
+          name,
+          provider_type: providerType,
+          base_url: baseUrl || undefined,
         }
-      }
 
-      const newProvider = await createProvider(session.accessToken, payload)
-      setProviders([...providers, newProvider])
-      resetForm()
-      onOpenChange(false)
+        if (selectedType?.needsKey) {
+          if (keySource === "secret" && selectedSecretId) {
+            payload.secret_id = selectedSecretId
+            payload.api_key = undefined
+          } else if (keySource === "manual" && apiKey) {
+            payload.api_key = apiKey
+            payload.secret_id = undefined
+          }
+        }
+
+        const updated = await apiClient.updateProvider(provider.id, payload)
+        onUpdated?.(updated)
+        onOpenChange(false)
+      } else {
+        // Create mode
+        const payload: Parameters<typeof createProvider>[1] = {
+          name,
+          provider_type: providerType,
+          base_url: baseUrl || undefined,
+        }
+
+        if (selectedType?.needsKey) {
+          if (keySource === "secret" && selectedSecretId) {
+            payload.secret_id = selectedSecretId
+          } else if (keySource === "manual" && apiKey) {
+            payload.api_key = apiKey
+          }
+        }
+
+        const newProvider = await createProvider(session.accessToken, payload)
+        setProviders([...providers, newProvider])
+        resetForm()
+        onOpenChange(false)
+      }
     } catch (err: any) {
-      console.error("Failed to create provider:", err)
-      setError(err?.message || "Failed to create provider")
+      console.error("Failed to save provider:", err)
+      setError(err?.message || "Failed to save provider")
     } finally {
       setLoading(false)
     }
@@ -128,9 +180,11 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>Add LLM Provider</DialogTitle>
+          <DialogTitle>{isEditMode ? "Edit Provider" : "Add LLM Provider"}</DialogTitle>
           <DialogDescription>
-            Configure a connection to an LLM provider.
+            {isEditMode
+              ? "Update provider settings or assign an API key / vault secret."
+              : "Configure a connection to an LLM provider."}
           </DialogDescription>
         </DialogHeader>
 
@@ -211,7 +265,7 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-..."
+                  placeholder={isEditMode ? "Enter new key to replace existing" : "sk-..."}
                 />
               ) : (
                 <Select value={selectedSecretId} onValueChange={setSelectedSecretId}>
@@ -269,9 +323,9 @@ export function ProviderDialog({ open, onOpenChange }: ProviderDialogProps) {
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleCreate} disabled={loading || !name || !providerType}>
+          <Button onClick={handleSubmit} disabled={loading || !name || !providerType}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-            Create Provider
+            {isEditMode ? "Save Changes" : "Create Provider"}
           </Button>
         </DialogFooter>
       </DialogContent>
