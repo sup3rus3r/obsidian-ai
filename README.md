@@ -71,6 +71,8 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
 
 ---
 
+![image](docs/images/main.png)
+
 ## Why Obsidian AI?
 
 Most AI agent frameworks are code-only libraries that require deep programming knowledge. **Obsidian AI** provides a complete visual interface for building, managing, and running AI agents — no SDK glue code required.

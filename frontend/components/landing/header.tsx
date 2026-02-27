@@ -31,7 +31,7 @@ export function Header() {
         scrolled && "border-border/50 bg-background/80 backdrop-blur-xl"
       )}
     >
-      <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+      <nav className="mx-auto flex h-16 max-w-screen-2xl items-center justify-between px-8">
         {/* Logo */}
         <button
           onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}

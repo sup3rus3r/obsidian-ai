@@ -10,6 +10,9 @@ export default function Landing() {
       <main>
         <Hero />
       </main>
+      <footer className="border-t border-border/20 py-6 text-center text-[11px] text-muted-foreground/40">
+        © {new Date().getFullYear()} Obsidian AI — licensed under AGPL-3.0
+      </footer>
     </div>
   )
 }
