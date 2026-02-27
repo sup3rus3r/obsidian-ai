@@ -54,6 +54,7 @@ export const AppRoutes = {
     RunWorkflow         : (id: string) => `/api/workflows/${id}/run`,
     ListWorkflowRuns    : (id: string) => `/api/workflows/${id}/runs`,
     GetWorkflowRun      : (id: string) => `/api/workflow-runs/${id}`,
+    DeleteWorkflowRun   : (id: string) => `/api/workflow-runs/${id}`,
 
     // Tools
     ListTools           : () => "/api/tools",

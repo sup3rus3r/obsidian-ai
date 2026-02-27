@@ -19,6 +19,7 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
+  Trash2,
 } from "lucide-react"
 import { MarkdownRenderer } from "@/components/playground/chat/markdown-renderer"
 
@@ -65,6 +66,7 @@ export function WorkflowHistoryDialog({
   const [runs, setRuns] = useState<WorkflowRun[]>([])
   const [loading, setLoading] = useState(false)
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null)
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null)
 
   useEffect(() => {
     if (open && workflow) {
@@ -79,6 +81,20 @@ export function WorkflowHistoryDialog({
       setExpandedRunId(null)
     }
   }, [open, workflow])
+
+  const handleDeleteRun = async (e: React.MouseEvent, runId: string) => {
+    e.stopPropagation()
+    setDeletingRunId(runId)
+    try {
+      await apiClient.deleteWorkflowRun(runId)
+      setRuns((prev) => prev.filter((r) => r.id !== runId))
+      if (expandedRunId === runId) setExpandedRunId(null)
+    } catch {
+      // silently ignore
+    } finally {
+      setDeletingRunId(null)
+    }
+  }
 
   if (!workflow) return null
 
@@ -119,38 +135,51 @@ export function WorkflowHistoryDialog({
                     className="rounded-md border border-border bg-muted/20"
                   >
                     {/* Run header */}
-                    <button
-                      className="w-full flex items-center gap-3 p-3 text-left hover:bg-muted/40 transition-colors"
-                      onClick={() => setExpandedRunId(isExpanded ? null : run.id)}
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                      )}
-                      <StatusIcon
-                        className={`h-4 w-4 shrink-0 ${config.color} ${run.status === "running" ? "animate-spin" : ""}`}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <Badge variant="secondary" className={`text-[10px] px-1.5 py-0 ${config.bg} ${config.color}`}>
-                            {config.label}
-                          </Badge>
-                          <span className="text-xs text-muted-foreground">
-                            {run.steps.length} step{run.steps.length !== 1 ? "s" : ""}
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            {formatDuration(run.started_at, run.completed_at)}
-                          </span>
+                    <div className="flex items-center group/run">
+                      <button
+                        className="flex-1 flex items-center gap-3 p-3 text-left hover:bg-muted/40 transition-colors"
+                        onClick={() => setExpandedRunId(isExpanded ? null : run.id)}
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        )}
+                        <StatusIcon
+                          className={`h-4 w-4 shrink-0 ${config.color} ${run.status === "running" ? "animate-spin" : ""}`}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="secondary" className={`text-[10px] px-1.5 py-0 ${config.bg} ${config.color}`}>
+                              {config.label}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              {run.steps.length} step{run.steps.length !== 1 ? "s" : ""}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {formatDuration(run.started_at, run.completed_at)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <Clock className="h-3 w-3 text-muted-foreground" />
+                            <span className="text-[11px] text-muted-foreground">
+                              {formatTime(run.started_at)}
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1 mt-0.5">
-                          <Clock className="h-3 w-3 text-muted-foreground" />
-                          <span className="text-[11px] text-muted-foreground">
-                            {formatTime(run.started_at)}
-                          </span>
-                        </div>
-                      </div>
-                    </button>
+                      </button>
+                      <button
+                        className="p-2 mr-1 opacity-0 group-hover/run:opacity-100 transition-opacity hover:text-destructive text-muted-foreground"
+                        onClick={(e) => handleDeleteRun(e, run.id)}
+                        disabled={deletingRunId === run.id}
+                        title="Delete run"
+                      >
+                        {deletingRunId === run.id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <Trash2 className="h-3.5 w-3.5" />
+                        }
+                      </button>
+                    </div>
 
                     {/* Expanded detail */}
                     {isExpanded && (

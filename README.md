@@ -130,11 +130,15 @@ Combine multiple agents into coordinated teams for complex tasks. Choose from th
 
 ### Workflow Automation
 
-Define multi-step sequential workflows where each step is handled by a specific agent. Monitor execution in real-time with per-step status tracking.
+Define multi-step workflows where each step is handled by a specific agent. Build sequential pipelines or design complex parallel graphs with the visual DAG editor. Monitor execution in real-time with per-node status tracking.
 
+- **Visual DAG editor** — Drag-and-drop canvas (`@xyflow/react`) for building non-linear agent pipelines; connect nodes with edges, configure each node from a side-panel
+- **Parallel execution** — Nodes without dependency relationships run concurrently via an async topological executor; fan-out and fan-join patterns supported natively
 - **Sequential pipeline** — Chain agents in order; each step receives the previous step's output
 - **Per-step agent assignment** — Use different agents (and models) for each step
-- **Real-time execution** — Watch workflow progress with live streaming per step
+- **Live run visualization** — Node colors pulse in real-time as the graph executes (gray → blue pulsing → green/red) driven by SSE events keyed by node ID
+- **Cycle detection** — DFS topological sort validates the graph at save time; cyclic graphs are rejected before they can be executed
+- **Layout persistence** — Node positions are stored with the workflow definition and restored when the editor re-opens
 - **Run history** — Track past executions with status (pending, running, completed, failed)
 - **Reusable definitions** — Save workflow templates and run them on demand or on a schedule
 - **Cron scheduling** — Schedule workflows to run automatically using standard cron expressions
@@ -790,6 +794,43 @@ Recent additions shipped to the platform.
 
 ---
 
+### Visual DAG Editor + Parallel Execution Engine
+
+Workflows now support full directed-acyclic-graph (DAG) pipelines with a drag-and-drop visual editor and a parallel async execution engine — transforming the platform from a sequential automation tool into a real orchestration engine.
+
+**Visual editor:**
+
+- **React Flow canvas** (`@xyflow/react`) — drag nodes, connect them with edges, and rearrange the layout freely
+- **Node side-panel** — click any node to configure its assigned agent, task description, and name without leaving the canvas
+- **Add / delete nodes** — insert new steps or remove existing ones; the graph updates live
+- **Layout persistence** — node `{x, y}` positions are stored with the workflow definition and restored when the editor reopens
+- **Cycle detection** — a DFS topological sort validates the graph on save; cyclic graphs are rejected with an inline error before they can be executed
+
+**Parallel execution engine:**
+
+- **Topological DAG executor** — resolves the execution order at runtime using `asyncio.wait(return_when=FIRST_COMPLETED)` loops; nodes with no unsatisfied dependencies are dispatched concurrently
+- **Fan-out / fan-join patterns** — a node can feed multiple downstream nodes simultaneously; a downstream node waits for all its dependencies before starting
+- **Input routing** — root nodes (no incoming edges) receive the workflow's initial user input; all other nodes receive a formatted summary of every upstream node's output
+- **Live run visualization** — SSE events are keyed by `node_id` (replacing the old `step_order` scheme); node colors update in real-time as the graph executes:
+  - **Gray** — not yet started
+  - **Blue pulsing** — currently running
+  - **Green** — completed successfully
+  - **Red** — failed
+- **Backward-compatible data model** — existing sequential workflows (legacy `order`-based steps) continue to work without migration; the executor detects the format automatically
+
+**New SSE events:**
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `node_start` | `node_id`, `node_name` | Node has begun executing |
+| `node_content_delta` | `node_id`, `delta` | Streaming token for this node |
+| `node_complete` | `node_id`, `output` | Node finished; output available |
+| `node_error` | `node_id`, `error` | Node failed with an error message |
+
+**Scheduler parity** — scheduled workflows run the same DAG executor; parallel execution applies to scheduled runs as well as manual runs.
+
+---
+
 ### Provider Import / Export
 
 Export and import LLM endpoint configurations as portable JSON files, making it easy to replicate your provider setup across instances or share it with teammates.
@@ -848,7 +889,7 @@ Bulk (all providers):
 
 ### Agent Orchestration
 
-- [ ] **Multi-agent pipelines** — Chain agents together where the output of one becomes the input of another, with a visual DAG editor
+- [x] **Visual DAG editor + parallel execution** — Drag-and-drop canvas for building non-linear agent pipelines; nodes run concurrently when dependencies allow, with live color-coded run visualization driven by SSE
 - [ ] **Agent-as-tool** — Allow agents to call other agents as tools (hierarchical delegation)
 - [ ] **Agent Supervision Trees** — Supervisor agents watch over worker agents in real-time; if a worker's output falls outside defined quality bounds, the supervisor automatically intervenes, corrects, retries, or escalates to HITL
 - [ ] **Meta-Agent** — Describe a workflow or agent in plain English and have the platform auto-generate the full configuration: system prompt, tools, MCP servers, and workflow steps

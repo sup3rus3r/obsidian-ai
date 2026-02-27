@@ -84,6 +84,8 @@ export interface MessageMetadata {
   team_mode?: "coordinate" | "route" | "collaborate"
   contributing_agents?: { id: string; name: string }[]
   chain_agents?: { id: string; name: string }[]
+  intermediate?: boolean
+  agent_name?: string
 }
 
 export interface FileAttachment {
@@ -225,9 +227,14 @@ export interface CreateSessionRequest {
 
 // Workflows
 export interface WorkflowStep {
-  agent_id: string
+  id?: string                          // stable UUID for DAG nodes; undefined for legacy linear steps
+  node_type?: "start" | "agent" | "end" | "condition" | "approval"
+  agent_id?: string                    // required for agent nodes; undefined for start/end nodes
   task: string
-  order: number
+  order: number                        // kept for backward compat
+  depends_on?: string[]                // IDs of upstream nodes; empty = root node
+  input_branch?: string                // Phase 2: which branch label from a condition node
+  position?: { x: number; y: number } // canvas position for the visual editor
   config?: Record<string, unknown>
 }
 
@@ -257,6 +264,7 @@ export interface UpdateWorkflowRequest {
 
 // Workflow Runs
 export interface WorkflowStepResult {
+  node_id?: string                     // DAG node ID; undefined for legacy runs
   order: number
   agent_id: string
   agent_name: string
@@ -274,12 +282,37 @@ export interface WorkflowRun {
   session_id?: string
   status: "running" | "completed" | "failed" | "cancelled"
   current_step: number
+  running_nodes?: string[]             // node IDs currently in-flight (DAG runs)
   steps: WorkflowStepResult[]
   input_text?: string
   final_output?: string
   error?: string
   started_at: string
   completed_at?: string
+}
+
+// DAG node SSE events
+export interface NodeStartEvent {
+  node_id: string
+  agent_id: string
+  agent_name: string
+  task: string
+}
+
+export interface NodeCompleteEvent {
+  node_id: string
+  agent_name: string
+  output: string
+}
+
+export interface NodeErrorEvent {
+  node_id: string
+  error: string
+}
+
+export interface NodeContentDeltaEvent {
+  node_id: string
+  content: string
 }
 
 // Tool Definitions

@@ -232,6 +232,18 @@ export function ChatArea() {
           })
         },
         (step) => setStreamingAgentStep(step),
+        (agentId, agentName, content) => {
+          // Collaborate mode: add each non-final agent's response as a completed message
+          addMessage({
+            id: `collab-${agentId}-${Date.now()}`,
+            session_id: sessionId!,
+            role: "assistant",
+            content,
+            agent_id: agentId,
+            metadata: { team_mode: "collaborate", intermediate: true, agent_name: agentName },
+            created_at: new Date().toISOString(),
+          })
+        },
         (round) => setStreamingToolRound(round),
         controller.signal,
         attachments,

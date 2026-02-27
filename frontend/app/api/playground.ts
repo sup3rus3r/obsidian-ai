@@ -143,6 +143,16 @@ export async function createTeam(accessToken: string, data: CreateTeamRequest): 
   return res.json()
 }
 
+export async function updateTeam(accessToken: string, id: string, data: Partial<CreateTeamRequest>): Promise<Team> {
+  const res = await fetch(AppRoutes.UpdateTeam(id), {
+    method: "PUT",
+    headers: headers(accessToken),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) await throwWithDetail(res, "Failed to update team")
+  return res.json()
+}
+
 export async function deleteTeam(accessToken: string, id: string): Promise<void> {
   const res = await fetch(AppRoutes.DeleteTeam(id), {
     method: "DELETE",

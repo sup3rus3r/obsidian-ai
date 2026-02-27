@@ -79,6 +79,7 @@ export default function HomePage() {
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null)
   const [teamDialogOpen, setTeamDialogOpen] = useState(false)
   const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false)
+  const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null)
   const [workflowRunDialogOpen, setWorkflowRunDialogOpen] = useState(false)
   const [workflowHistoryDialogOpen, setWorkflowHistoryDialogOpen] = useState(false)
   const [workflowScheduleDialogOpen, setWorkflowScheduleDialogOpen] = useState(false)
@@ -425,8 +426,8 @@ export default function HomePage() {
                     </CardDescription>
                   )}
                 </CardHeader>
-                <CardContent className="pt-0 space-y-3">
-                  <div className="flex items-center gap-2">
+                <CardContent className="pt-0 space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <Button
                       size="sm"
                       variant="outline"
@@ -438,6 +439,19 @@ export default function HomePage() {
                     >
                       RUN
                     </Button>
+                    {permissions.create_workflows && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs font-mono"
+                        onClick={() => {
+                          setEditingWorkflow(workflow)
+                          setWorkflowDialogOpen(true)
+                        }}
+                      >
+                        EDIT
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="outline"
@@ -460,7 +474,7 @@ export default function HomePage() {
                     >
                       SCHEDULE
                     </Button>
-                    <Badge variant="secondary" className="ml-auto text-[10px] px-1.5 py-0">
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
                       {workflow.steps.length} step{workflow.steps.length !== 1 ? "s" : ""}
                     </Badge>
                   </div>
@@ -480,7 +494,7 @@ export default function HomePage() {
             <AnimatedListItem>
               <Card
                 className="border-dashed flex items-center justify-center min-h-30 transition-colors cursor-pointer hover:border-primary/50"
-                onClick={() => setWorkflowDialogOpen(true)}
+                onClick={() => { setEditingWorkflow(null); setWorkflowDialogOpen(true) }}
               >
                 <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
                   <Plus className="h-5 w-5" />
@@ -506,9 +520,14 @@ export default function HomePage() {
       <TeamDialog open={teamDialogOpen} onOpenChange={setTeamDialogOpen} />
       <WorkflowDialog
         open={workflowDialogOpen}
-        onOpenChange={setWorkflowDialogOpen}
+        onOpenChange={(open) => {
+          setWorkflowDialogOpen(open)
+          if (!open) setEditingWorkflow(null)
+        }}
+        workflow={editingWorkflow}
         agents={agents}
         onCreated={() => fetchAll()}
+        onUpdated={() => fetchAll()}
       />
       <WorkflowRunDialog
         open={workflowRunDialogOpen}

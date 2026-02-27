@@ -45,14 +45,18 @@ async def run_scheduled_workflow_sqlite(schedule_id: int):
             logger.warning(f"Workflow {workflow.id} has no steps — schedule {schedule_id} skipped.")
             return
 
+        # Detect DAG vs legacy linear workflow
+        is_dag = any(s.get("id") for s in steps)
+
         sorted_steps = sorted(steps, key=lambda s: s.get("order", 0))
 
         # Build initial step_results list
         step_results = []
-        for s in sorted_steps:
+        for i, s in enumerate(sorted_steps):
             agent_rec = db.query(Agent).filter(Agent.id == int(s["agent_id"])).first()
             step_results.append({
-                "order": s["order"],
+                "node_id": s.get("id"),
+                "order": s.get("order", i + 1),
                 "agent_id": s["agent_id"],
                 "agent_name": agent_rec.name if agent_rec else "Unknown",
                 "task": s["task"],
@@ -74,7 +78,13 @@ async def run_scheduled_workflow_sqlite(schedule_id: int):
         db.refresh(run)
         run_id = run.id
 
-        # Execute steps
+        if is_dag:
+            await _run_scheduled_dag_sqlite(
+                schedule, workflow, steps, step_results, run_id, db
+            )
+            return
+
+        # Legacy linear execution
         previous_output = schedule.input_text or ""
 
         for i, step_def in enumerate(sorted_steps):
@@ -245,6 +255,148 @@ def _update_run_sqlite(db, run_id, updates):
         for key, value in updates.items():
             setattr(run, key, value)
         db.commit()
+
+
+async def _run_scheduled_dag_sqlite(schedule, workflow, steps, step_results_list, run_id, db):
+    """
+    Execute a DAG workflow non-streaming for the scheduler.
+    Fires independent nodes in parallel using asyncio.gather per wave.
+    """
+    import asyncio
+    from models import Agent, LLMProvider, ToolDefinition, MCPServer, TraceSpan as _TS
+    from encryption import decrypt_api_key
+    from llm.base import LLMMessage
+    from llm.provider_factory import create_provider_from_config
+
+    node_map = {s["id"]: s for s in steps if s.get("id")}
+    all_node_ids = set(node_map.keys())
+    outputs: dict[str, str] = {}
+    completed: set[str] = set()
+    failed: set[str] = set()
+
+    # index step_results for fast lookup
+    sr_by_id = {r["node_id"]: r for r in step_results_list if r.get("node_id")}
+
+    def _snapshot():
+        return json.dumps(step_results_list)
+
+    async def execute_node(node_id: str):
+        s = node_map[node_id]
+        agent_id = int(s["agent_id"])
+        task = s["task"]
+        sr = sr_by_id[node_id]
+
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        if not agent or not agent.provider_id:
+            sr["status"] = "failed"
+            sr["error"] = "Agent or provider not configured"
+            return False
+
+        provider = db.query(LLMProvider).filter(LLMProvider.id == agent.provider_id).first()
+        if not provider:
+            sr["status"] = "failed"
+            sr["error"] = "Provider not found"
+            return False
+
+        upstream = {dep: outputs[dep] for dep in (s.get("depends_on") or []) if dep in outputs}
+        if not upstream:
+            node_input = f"Task: {task}\n\nInput:\n{schedule.input_text or ''}"
+        else:
+            sections = "\n\n".join(f"Output from step '{nid}':\n{out}" for nid, out in upstream.items())
+            node_input = f"Task: {task}\n\nUpstream context:\n{sections}"
+
+        sr["status"] = "running"
+        sr["started_at"] = datetime.now(timezone.utc).isoformat()
+
+        api_key = decrypt_api_key(provider.api_key) if provider.api_key else None
+        config = json.loads(provider.config_json) if provider.config_json else None
+        llm = create_provider_from_config(
+            provider_type=provider.provider_type,
+            api_key=api_key,
+            base_url=provider.base_url,
+            model_id=agent.model_id or provider.model_id or "gpt-4o",
+            config=config,
+        )
+
+        tools = None
+        if agent.tools_json:
+            try:
+                tool_ids = json.loads(agent.tools_json)
+                if tool_ids:
+                    tool_defs = db.query(ToolDefinition).filter(
+                        ToolDefinition.id.in_(tool_ids), ToolDefinition.is_active == True,
+                    ).all()
+                    if tool_defs:
+                        tools = [{"type": "function", "function": {"name": td.name, "description": td.description or "", "parameters": json.loads(td.parameters_json) if td.parameters_json else {}}} for td in tool_defs]
+            except Exception:
+                pass
+
+        mcp_configs = []
+        if agent.mcp_servers_json:
+            try:
+                server_ids = json.loads(agent.mcp_servers_json)
+                if server_ids:
+                    servers = db.query(MCPServer).filter(MCPServer.id.in_(server_ids), MCPServer.is_active == True).all()
+                    mcp_configs = [{"id": str(srv.id), "name": srv.name, "transport_type": srv.transport_type, "command": srv.command, "args_json": srv.args_json, "env_json": srv.env_json, "url": srv.url, "headers_json": srv.headers_json} for srv in servers]
+            except Exception:
+                pass
+
+        messages = [LLMMessage(role="user", content=node_input)]
+        _t0 = time.time()
+        try:
+            step_output = await _chat_non_streaming(llm, messages, agent.system_prompt, tools, mcp_configs, db)
+            _ms = int((time.time() - _t0) * 1000)
+            sr["status"] = "completed"
+            sr["output"] = step_output
+            sr["completed_at"] = datetime.now(timezone.utc).isoformat()
+            outputs[node_id] = step_output
+            try:
+                _span = _TS(workflow_run_id=run_id, span_type="workflow_step", name=agent.name, duration_ms=_ms, status="success", input_data=json.dumps({"task": task, "input_preview": node_input[:500]}), output_data=json.dumps({"output_preview": step_output[:500]}), sequence=0, round_number=0)
+                db.add(_span)
+                db.commit()
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            _ms = int((time.time() - _t0) * 1000)
+            sr["status"] = "failed"
+            sr["error"] = str(e)
+            sr["completed_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                _span = _TS(workflow_run_id=run_id, span_type="workflow_step", name=agent.name, duration_ms=_ms, status="error", input_data=json.dumps({"task": task}), output_data=json.dumps({"error": str(e)}), sequence=0, round_number=0)
+                db.add(_span)
+                db.commit()
+            except Exception:
+                pass
+            return False
+
+    while True:
+        ready = [nid for nid in all_node_ids if nid not in completed and nid not in failed and all(dep in completed for dep in (node_map[nid].get("depends_on") or []))]
+        if not ready:
+            break
+        results = await asyncio.gather(*[execute_node(nid) for nid in ready])
+        for nid, ok in zip(ready, results):
+            if ok:
+                completed.add(nid)
+            else:
+                failed.add(nid)
+        _update_run_sqlite(db, run_id, {"steps_json": _snapshot()})
+        if failed:
+            break
+
+    if failed:
+        _update_run_sqlite(db, run_id, {"status": "failed", "error": "One or more nodes failed", "completed_at": datetime.now(timezone.utc), "steps_json": _snapshot()})
+    else:
+        downstream_deps = set()
+        for s in steps:
+            for dep in (s.get("depends_on") or []):
+                downstream_deps.add(dep)
+        sink_ids = [nid for nid in all_node_ids if nid not in downstream_deps]
+        final_output = "\n\n".join(outputs.get(nid, "") for nid in sink_ids if outputs.get(nid))
+        _update_run_sqlite(db, run_id, {"status": "completed", "final_output": final_output, "completed_at": datetime.now(timezone.utc), "steps_json": _snapshot()})
+
+    schedule.last_run_at = datetime.now(timezone.utc)
+    db.commit()
 
 
 async def _chat_non_streaming(llm, messages, system_prompt, tools, mcp_configs, db):

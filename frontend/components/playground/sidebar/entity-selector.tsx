@@ -12,16 +12,18 @@ interface EntitySelectorProps {
   onAddAgent?: () => void
   onAddTeam?: () => void
   onEditAgent?: (agentId: string) => void
+  onEditTeam?: (teamId: string) => void
   onExportAgent?: (agentId: string, agentName: string) => void
   onImportAgent?: () => void
   hideAddAgent?: boolean
   hideAddTeam?: boolean
   hideEditAgent?: boolean
+  hideEditTeam?: boolean
   hideDeleteAgent?: boolean
   hideDeleteTeam?: boolean
 }
 
-export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onExportAgent, onImportAgent, hideAddAgent, hideAddTeam, hideEditAgent, hideDeleteAgent, hideDeleteTeam }: EntitySelectorProps) {
+export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onEditTeam, onExportAgent, onImportAgent, hideAddAgent, hideAddTeam, hideEditAgent, hideEditTeam, hideDeleteAgent, hideDeleteTeam }: EntitySelectorProps) {
   const mode = usePlaygroundStore((s) => s.mode)
   const agents = usePlaygroundStore((s) => s.agents)
   const teams = usePlaygroundStore((s) => s.teams)
@@ -124,12 +126,12 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onExportAge
                   className="flex-1 flex items-center gap-2 min-w-0 overflow-hidden uppercase"
                 >
                   {mode === "agent" ? (
-                    <Bot className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                    <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
                   ) : (
-                    <Users className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                    <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
                   )}
                   <div className="flex-1 min-w-0 text-left">
-                    <div className="text-[11px] font-semibold font-medium truncate">{entity.name}</div>
+                    <div className="text-[11px] font-semibold truncate">{entity.name}</div>
                     {entity.description && (
                       <div className="text-[9px] text-muted-foreground truncate">
                         {entity.description}
@@ -141,7 +143,7 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onExportAge
                     if (!modelId) return null
                     const label = modelId.split("/").pop()?.split("-").slice(0, 2).join("-") ?? modelId
                     return (
-                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 flex-shrink-0">
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
                         {label}
                       </Badge>
                     )
@@ -155,6 +157,19 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onExportAge
                     onClick={(e) => {
                       e.stopPropagation()
                       onEditAgent(entity.id)
+                    }}
+                  >
+                    <Pencil className="h-3 w-3 text-muted-foreground" />
+                  </Button>
+                )}
+                {mode === "team" && onEditTeam && !hideEditTeam && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onEditTeam(entity.id)
                     }}
                   >
                     <Pencil className="h-3 w-3 text-muted-foreground" />

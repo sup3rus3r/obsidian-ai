@@ -398,6 +398,15 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add running_nodes_json to workflow_runs if missing (DAG: tracks in-flight node IDs)
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE workflow_runs ADD COLUMN running_nodes_json TEXT"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 
 async def _load_active_schedules():
     """Re-register APScheduler jobs for all active schedules on startup."""

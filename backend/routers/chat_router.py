@@ -1960,6 +1960,16 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 "data": json.dumps({"round": _round + 1, "max_rounds": MAX_TOOL_ROUNDS}),
             }
 
+            # Deduplicate tool calls with identical name+arguments within this round
+            _seen_calls: set[tuple[str, str]] = set()
+            _unique_tool_calls = []
+            for _tc_item in tool_calls_collected:
+                _key = (_tc_item.name, _norm_tool_args(_tc_item.arguments))
+                if _key not in _seen_calls:
+                    _seen_calls.add(_key)
+                    _unique_tool_calls.append(_tc_item)
+            tool_calls_collected = _unique_tool_calls
+
             # Add empty assistant message then user messages with tool results
             messages.append(LLMMessage(role="assistant", content=""))
 
@@ -2570,6 +2580,16 @@ def _create_llm_for_provider(provider_record, model_id: str):
     )
 
 
+def _norm_tool_args(args) -> str:
+    """Normalize tool call arguments for deduplication."""
+    if not args:
+        return ""
+    try:
+        return json.dumps(json.loads(args), sort_keys=True)
+    except Exception:
+        return str(args)
+
+
 async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools: list | None, db) -> str:
     """Non-streaming chat that executes tool calls in a loop until a final text response.
 
@@ -2581,12 +2601,20 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
         response = await llm.chat(chat_messages, system_prompt=system_prompt, tools=tools)
         if not response.tool_calls:
             return response.content or ""
+        # Deduplicate identical tool calls (same name + normalized arguments) within this round
+        _seen: set[tuple[str, str]] = set()
+        unique_calls = []
+        for tc in response.tool_calls:
+            _k = (tc.name, _norm_tool_args(tc.arguments))
+            if _k not in _seen:
+                _seen.add(_k)
+                unique_calls.append(tc)
         # Execute each tool call and feed results back using proper tool role
         chat_messages.append(LLMMessage(
             role="assistant", content=response.content or "",
-            tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in response.tool_calls],
+            tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in unique_calls],
         ))
-        for tc in response.tool_calls:
+        for tc in unique_calls:
             result = _execute_tool(tc.name, tc.arguments, db)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     # Final call without tools to force a text response
@@ -2601,11 +2629,19 @@ async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None,
         response = await llm.chat(chat_messages, system_prompt=system_prompt, tools=tools)
         if not response.tool_calls:
             return response.content or ""
+        # Deduplicate identical tool calls (same name + normalized arguments) within this round
+        _seen: set[tuple[str, str]] = set()
+        unique_calls = []
+        for tc in response.tool_calls:
+            _k = (tc.name, _norm_tool_args(tc.arguments))
+            if _k not in _seen:
+                _seen.add(_k)
+                unique_calls.append(tc)
         chat_messages.append(LLMMessage(
             role="assistant", content=response.content or "",
-            tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in response.tool_calls],
+            tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in unique_calls],
         ))
-        for tc in response.tool_calls:
+        for tc in unique_calls:
             result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
@@ -2663,17 +2699,34 @@ async def _team_chat_coordinate(agents_with_providers, messages, db, session_id,
         router_agent, router_provider = agents_with_providers[0]
         router_llm = _create_llm_for_provider(router_provider, router_agent.model_id or router_provider.model_id or "gpt-4o")
 
-        # Build the agent selection prompt
+        # Build the agent selection prompt using 0-based index for reliable selection
+        # Include each agent's tools and system prompt summary so the router can make capability-aware decisions
         agent_descriptions = []
-        for ag, pr in agents_with_providers:
-            desc = ag.description or "No description"
-            agent_descriptions.append(f"- **{ag.name}** (id={ag.id}): {desc}")
+        for idx, (ag, pr) in enumerate(agents_with_providers):
+            desc = ag.description or ""
+            tools_for_agent = _build_tools_for_llm(ag, db)
+            tool_names = (
+                ", ".join(t["function"]["name"] for t in tools_for_agent)
+                if tools_for_agent else "no tools"
+            )
+            # Include first 200 chars of system prompt as a capability hint
+            sys_hint = ""
+            if ag.system_prompt:
+                sys_hint = ag.system_prompt[:200].replace("\n", " ").strip()
+            line = f"- index={idx}, name={ag.name}"
+            if desc:
+                line += f" ({desc})"
+            if sys_hint:
+                line += f" | role: {sys_hint}"
+            line += f" | tools: {tool_names}"
+            agent_descriptions.append(line)
         agents_list = "\n".join(agent_descriptions)
 
         router_prompt = (
-            "You are a routing assistant. Your job is to select the single best agent to handle the user's query.\n\n"
+            "You are a routing assistant. Select the single best agent to handle the user's latest request.\n\n"
             f"Available agents:\n{agents_list}\n\n"
-            "Reply with ONLY the agent name (exactly as shown) that should handle this query. Nothing else."
+            "Consider the agent description, role, and available tools when choosing.\n"
+            "Reply with ONLY the integer index (e.g. 0, 1, 2) of the best agent. Nothing else."
         )
 
         # Emit routing step
@@ -2682,44 +2735,57 @@ async def _team_chat_coordinate(agents_with_providers, messages, db, session_id,
             "data": json.dumps({"agent_id": str(router_agent.id), "agent_name": "Router", "step": "routing"}),
         }
 
-        # Ask the router to pick an agent
-        router_messages = [LLMMessage(role="user", content=user_message)]
-        router_response = await router_llm.chat(router_messages, system_prompt=router_prompt)
+        # Pass the full conversation history so the router can make context-aware decisions
+        router_response = await router_llm.chat(messages, system_prompt=router_prompt)
 
-        # Find the selected agent by matching name
-        selected = None
+        # Select agent by parsed index; strip non-numeric chars then parse
+        selected = agents_with_providers[0]
         router_answer = (router_response.content or "").strip()
-        for ag, pr in agents_with_providers:
-            if ag.name.lower() in router_answer.lower() or router_answer.lower() in ag.name.lower():
-                selected = (ag, pr)
-                break
-
-        # Fallback to first agent if routing failed
-        if not selected:
-            selected = agents_with_providers[0]
+        try:
+            # Extract the first integer token — handles "1", "1.", "index 1", etc.
+            _match = re.search(r'\d+', router_answer)
+            if _match:
+                idx = int(_match.group())
+                if 0 <= idx < len(agents_with_providers):
+                    selected = agents_with_providers[idx]
+        except (ValueError, IndexError):
+            pass
 
         sel_agent, sel_provider = selected
 
-        # Emit selected agent step
+        # Emit selected agent step (includes router_answer for frontend debug)
         yield {
             "event": "agent_step",
-            "data": json.dumps({"agent_id": str(sel_agent.id), "agent_name": sel_agent.name, "step": "responding"}),
+            "data": json.dumps({
+                "agent_id": str(sel_agent.id),
+                "agent_name": sel_agent.name,
+                "step": "responding",
+                "router_decision": router_answer,
+            }),
         }
 
         # Stream the selected agent's response using _stream_response
         sel_llm = _create_llm_for_provider(sel_provider, sel_agent.model_id or sel_provider.model_id or "gpt-4o")
         tools = _build_tools_for_llm(sel_agent, db)
         mcp_configs = _load_mcp_server_configs(sel_agent, db)
+        team_names = [ag.name for ag, _ in agents_with_providers]
+        coord_note = (
+            f"You are part of a {len(team_names)}-agent team ({', '.join(team_names)}). "
+            "A router selected you as the best agent for this request. "
+            "Use your tools and expertise to give a complete, confident answer. "
+            "Only call each tool once — do not call the same tool with the same or similar arguments more than once."
+        )
+        coord_system_prompt = _prepend_team_context(sel_agent.system_prompt, coord_note)
 
         if mcp_configs:
             async for event in _stream_response_with_mcp(
-                sel_llm, messages, sel_agent.system_prompt, db, session_id,
+                sel_llm, messages, coord_system_prompt, db, session_id,
                 sel_agent.id, sel_provider, start_time, tools, mcp_configs
             ):
                 yield event
         else:
             async for event in _stream_response(
-                sel_llm, messages, sel_agent.system_prompt, db, session_id,
+                sel_llm, messages, coord_system_prompt, db, session_id,
                 sel_agent.id, sel_provider, start_time, tools
             ):
                 yield event
@@ -2738,14 +2804,23 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
         }
 
         # Collect responses from all agents in parallel (with tool execution)
+        _route_team_names = [ag.name for ag, _ in agents_with_providers]
+        _route_n = len(_route_team_names)
+
         async def get_agent_response(agent, provider):
             llm = _create_llm_for_provider(provider, agent.model_id or provider.model_id or "gpt-4o")
             tools = _build_tools_for_llm(agent, db)
             mcp_configs = _load_mcp_server_configs(agent, db)
+            route_note = (
+                f"You are one of {_route_n} specialist agents ({', '.join(_route_team_names)}) responding in parallel. "
+                "Use your tools and expertise to give a thorough, complete answer. "
+                "Your response will be combined with the other specialists' responses to form the final answer."
+            )
+            effective_system_prompt = _prepend_team_context(agent.system_prompt, route_note)
             if mcp_configs:
-                content = await _chat_with_tools_and_mcp(llm, messages, agent.system_prompt, tools, db, mcp_configs)
+                content = await _chat_with_tools_and_mcp(llm, messages, effective_system_prompt, tools, db, mcp_configs)
             else:
-                content = await _chat_with_tools(llm, messages, agent.system_prompt, tools, db)
+                content = await _chat_with_tools(llm, messages, effective_system_prompt, tools, db)
             return agent, provider, content
 
         tasks = [get_agent_response(ag, pr) for ag, pr in agents_with_providers]
@@ -2778,17 +2853,23 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
 
         # Build synthesis prompt
         responses_text = "\n\n".join(
-            f"**{r['agent_name']}:**\n{r['response']}" for r in agent_responses
+            f"[{r['agent_name']}]:\n{r['response']}" for r in agent_responses
         )
         synth_prompt = (
-            "You are a synthesis assistant. Multiple agents have responded to a user query. "
-            "Review all responses and produce the single best, comprehensive answer. "
-            "You may combine insights from multiple agents or choose the best response.\n\n"
-            "Do NOT mention that multiple agents responded. Just provide the best answer directly."
+            "You are a synthesis assistant. Specialist agents have already executed their tools and retrieved real, "
+            "live data to answer the user's request. The results below are factual — treat them as ground truth, "
+            "not as opinions or estimates.\n\n"
+            "Your job: combine the specialist results into a single, clear, direct answer. "
+            "Present the information confidently as if you retrieved it yourself. "
+            "Do NOT hedge, qualify, or suggest the user fetch data themselves. "
+            "Do NOT mention that multiple agents or specialists were involved."
         )
-        synth_messages = [
-            LLMMessage(role="user", content=user_message),
-            LLMMessage(role="user", content=f"Here are the responses from different specialists:\n\n{responses_text}"),
+        # Include full conversation history so the synthesizer has context, then append the specialist results
+        synth_messages = list(messages) + [
+            LLMMessage(
+                role="user",
+                content=f"Specialist results for the above request:\n\n{responses_text}\n\nNow provide the final answer.",
+            ),
         ]
 
         yield {
@@ -2846,18 +2927,55 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
         yield {"event": "error", "data": json.dumps({"error": str(e)})}
 
 
+def _prepend_team_context(system_prompt: str | None, note: str) -> str:
+    """Append a team-awareness note to an agent's system prompt."""
+    base = system_prompt or ""
+    return f"{base}\n\n---\n[Team context: {note}]" if base else f"[Team context: {note}]"
+
+
+def _build_collaborate_system_prompt(agent_system_prompt: str | None, agent_name: str, position: int, total: int, prior_agent_names: list[str]) -> str:
+    """Prepend team-awareness context to an agent's system prompt for collaborate mode."""
+    team_size = total
+    is_first = position == 0
+    is_last = position == team_size - 1
+
+    if is_first:
+        role_note = (
+            f"You are the first agent in a {team_size}-agent collaboration pipeline. "
+            f"Your output will be passed to the next agent ({prior_agent_names[0] if False else 'the next specialist'}) to build upon. "
+            "Be thorough and use your tools — your response is the foundation for the whole pipeline."
+        )
+    elif is_last:
+        prior = ", ".join(prior_agent_names)
+        role_note = (
+            f"You are the final agent in a {team_size}-agent collaboration pipeline. "
+            f"The agents before you ({prior}) have already done their work and their results are provided. "
+            "Treat their outputs as real, factual data. Your job is to deliver the complete, polished final answer to the user — "
+            "use your own tools if needed, then synthesise everything into one clear response. "
+            "Do NOT say you cannot access data that was already retrieved."
+        )
+    else:
+        prior = ", ".join(prior_agent_names)
+        role_note = (
+            f"You are agent {position + 1} of {team_size} in a collaboration pipeline. "
+            f"Agents before you ({prior}) have contributed their results. "
+            "Build directly on their work with your own expertise and tools. "
+            "Your output will be passed to the next agent."
+        )
+
+    return _prepend_team_context(agent_system_prompt, role_note)
+
+
 async def _team_chat_collaborate(agents_with_providers, messages, db, session_id, start_time, user_message):
     """Collaborate mode: agents run sequentially, each building on previous agents' outputs."""
     try:
         accumulated_context = []
-        last_agent = None
-        last_provider = None
-        final_content = ""
+        contributing_agents = []
+        total = len(agents_with_providers)
+        all_names = [ag.name for ag, _ in agents_with_providers]
 
         for i, (ag, pr) in enumerate(agents_with_providers):
-            is_last = (i == len(agents_with_providers) - 1)
-            last_agent = ag
-            last_provider = pr
+            is_last = (i == total - 1)
 
             # Emit step for this agent
             yield {
@@ -2869,41 +2987,68 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
             tools = _build_tools_for_llm(ag, db)
             mcp_configs = _load_mcp_server_configs(ag, db)
 
+            # Inject team-awareness into this agent's system prompt
+            effective_system_prompt = _build_collaborate_system_prompt(
+                ag.system_prompt, ag.name, i, total, all_names[:i]
+            )
+
             # Build messages for this agent: original history + accumulated context from previous agents
             agent_messages = list(messages)  # copy original history
             if accumulated_context:
                 context_text = "\n\n".join(
-                    f"[{c['agent_name']} said]: {c['response']}" for c in accumulated_context
+                    f"[{c['agent_name']}]:\n{c['response']}" for c in accumulated_context
                 )
                 agent_messages.append(LLMMessage(
                     role="user",
-                    content=f"Previous team members have provided these inputs:\n\n{context_text}\n\nPlease build on their work to provide your contribution.",
+                    content=f"Results from previous team members:\n\n{context_text}\n\nNow provide your contribution.",
                 ))
 
             if is_last:
                 # Stream the final agent's response (with MCP if configured)
+                # Intercept stream events to patch in contributing_agents metadata on message_complete
                 if mcp_configs:
-                    async for event in _stream_response_with_mcp(
-                        llm, agent_messages, ag.system_prompt, db, session_id,
+                    stream = _stream_response_with_mcp(
+                        llm, agent_messages, effective_system_prompt, db, session_id,
                         ag.id, pr, start_time, tools, mcp_configs
-                    ):
-                        yield event
+                    )
                 else:
-                    async for event in _stream_response(
-                        llm, agent_messages, ag.system_prompt, db, session_id,
+                    stream = _stream_response(
+                        llm, agent_messages, effective_system_prompt, db, session_id,
                         ag.id, pr, start_time, tools
-                    ):
+                    )
+                async for event in stream:
+                    if event.get("event") == "message_complete" and contributing_agents:
+                        data = json.loads(event["data"])
+                        meta = data.get("metadata") or {}
+                        meta["team_mode"] = "collaborate"
+                        meta["contributing_agents"] = contributing_agents
+                        data["metadata"] = meta
+                        # Persist updated metadata to DB
+                        msg_id = data.get("id")
+                        if msg_id:
+                            try:
+                                db_msg = db.query(Message).filter(Message.id == int(msg_id)).first()
+                                if db_msg:
+                                    db_msg.metadata_json = json.dumps(meta)
+                                    db.commit()
+                            except Exception:
+                                pass
+                        yield {"event": "message_complete", "data": json.dumps(data)}
+                    else:
                         yield event
             else:
                 # Non-final agents: get response with tool execution (not streamed)
                 if mcp_configs:
-                    content = await _chat_with_tools_and_mcp(llm, agent_messages, ag.system_prompt, tools, db, mcp_configs)
+                    content = await _chat_with_tools_and_mcp(llm, agent_messages, effective_system_prompt, tools, db, mcp_configs)
                 else:
-                    content = await _chat_with_tools(llm, agent_messages, ag.system_prompt, tools, db)
-                accumulated_context.append({
-                    "agent_name": ag.name,
-                    "response": content,
-                })
+                    content = await _chat_with_tools(llm, agent_messages, effective_system_prompt, tools, db)
+                accumulated_context.append({"agent_name": ag.name, "response": content})
+                contributing_agents.append({"id": str(ag.id), "name": ag.name})
+                # Emit intermediate output so the frontend can show each agent's contribution
+                yield {
+                    "event": "agent_message",
+                    "data": json.dumps({"agent_id": str(ag.id), "agent_name": ag.name, "content": content}),
+                }
 
     except Exception as e:
         yield {"event": "error", "data": json.dumps({"error": str(e)})}
@@ -3783,16 +3928,31 @@ async def _team_chat_coordinate_mongo(agents_with_providers, messages, mongo_db,
         router_llm = _create_llm_for_mongo_provider(router_provider, router_agent.get("model_id") or router_provider.get("model_id") or "gpt-4o")
 
         agent_descriptions = []
-        for ag, pr in agents_with_providers:
-            desc = ag.get("description") or "No description"
+        for idx, (ag, pr) in enumerate(agents_with_providers):
+            desc = ag.get("description") or ""
             name = ag.get("name", "Unknown")
-            agent_descriptions.append(f"- **{name}** (id={ag['_id']}): {desc}")
+            tools_for_agent = await _build_tools_for_llm_mongo(ag, mongo_db)
+            tool_names = (
+                ", ".join(t["function"]["name"] for t in tools_for_agent)
+                if tools_for_agent else "no tools"
+            )
+            sys_hint = ""
+            if ag.get("system_prompt"):
+                sys_hint = ag["system_prompt"][:200].replace("\n", " ").strip()
+            line = f"- index={idx}, name={name}"
+            if desc:
+                line += f" ({desc})"
+            if sys_hint:
+                line += f" | role: {sys_hint}"
+            line += f" | tools: {tool_names}"
+            agent_descriptions.append(line)
         agents_list = "\n".join(agent_descriptions)
 
         router_prompt = (
-            "You are a routing assistant. Your job is to select the single best agent to handle the user's query.\n\n"
+            "You are a routing assistant. Select the single best agent to handle the user's latest request.\n\n"
             f"Available agents:\n{agents_list}\n\n"
-            "Reply with ONLY the agent name (exactly as shown) that should handle this query. Nothing else."
+            "Consider the agent description, role, and available tools when choosing.\n"
+            "Reply with ONLY the integer index (e.g. 0, 1, 2) of the best agent. Nothing else."
         )
 
         yield {
@@ -3800,41 +3960,50 @@ async def _team_chat_coordinate_mongo(agents_with_providers, messages, mongo_db,
             "data": json.dumps({"agent_id": str(router_agent["_id"]), "agent_name": "Router", "step": "routing"}),
         }
 
-        router_messages = [LLMMessage(role="user", content=user_message)]
-        router_response = await router_llm.chat(router_messages, system_prompt=router_prompt)
+        # Pass full conversation history for context-aware routing
+        router_response = await router_llm.chat(messages, system_prompt=router_prompt)
 
-        selected = None
+        selected = agents_with_providers[0]
         router_answer = (router_response.content or "").strip()
-        for ag, pr in agents_with_providers:
-            name = ag.get("name", "")
-            if name.lower() in router_answer.lower() or router_answer.lower() in name.lower():
-                selected = (ag, pr)
-                break
-
-        if not selected:
-            selected = agents_with_providers[0]
+        try:
+            _match = re.search(r'\d+', router_answer)
+            if _match:
+                idx = int(_match.group())
+                if 0 <= idx < len(agents_with_providers):
+                    selected = agents_with_providers[idx]
+        except (ValueError, IndexError):
+            pass
 
         sel_agent, sel_provider = selected
         sel_name = sel_agent.get("name", "Agent")
 
         yield {
             "event": "agent_step",
-            "data": json.dumps({"agent_id": str(sel_agent["_id"]), "agent_name": sel_name, "step": "responding"}),
+            "data": json.dumps({"agent_id": str(sel_agent["_id"]), "agent_name": sel_name, "step": "responding", "router_decision": router_answer}),
         }
 
         sel_llm = _create_llm_for_mongo_provider(sel_provider, sel_agent.get("model_id") or sel_provider.get("model_id") or "gpt-4o")
         tools = await _build_tools_for_llm_mongo(sel_agent, mongo_db)
         mcp_configs = await _load_mcp_server_configs_mongo(sel_agent, mongo_db)
 
+        _coord_team_names_m = [ag.get("name", "Agent") for ag, _ in agents_with_providers]
+        _coord_note_m = (
+            f"You are part of a {len(_coord_team_names_m)}-agent team ({', '.join(_coord_team_names_m)}). "
+            "A router selected you as the best agent for this request. "
+            "Use your tools and expertise to give a complete, confident answer. "
+            "Only call each tool once — do not call the same tool with the same or similar arguments more than once."
+        )
+        coord_system_prompt_m = _prepend_team_context(sel_agent.get("system_prompt"), _coord_note_m)
+
         if mcp_configs:
             async for event in _stream_response_with_mcp_mongo(
-                sel_llm, messages, sel_agent.get("system_prompt"), mongo_db, session_id,
+                sel_llm, messages, coord_system_prompt_m, mongo_db, session_id,
                 str(sel_agent["_id"]), sel_provider, start_time, tools, mcp_configs, agent=sel_agent
             ):
                 yield event
         else:
             async for event in _stream_response_mongo(
-                sel_llm, messages, sel_agent.get("system_prompt"), mongo_db, session_id,
+                sel_llm, messages, coord_system_prompt_m, mongo_db, session_id,
                 str(sel_agent["_id"]), sel_provider, start_time, tools, agent=sel_agent
             ):
                 yield event
@@ -3851,14 +4020,23 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
             "data": json.dumps({"agent_id": "", "agent_name": "Router", "step": "routing"}),
         }
 
+        _route_team_names_m = [ag.get("name", "Agent") for ag, _ in agents_with_providers]
+        _route_n_m = len(_route_team_names_m)
+
         async def get_agent_response(agent, provider):
             llm = _create_llm_for_mongo_provider(provider, agent.get("model_id") or provider.get("model_id") or "gpt-4o")
             tools = await _build_tools_for_llm_mongo(agent, mongo_db)
             mcp_configs = await _load_mcp_server_configs_mongo(agent, mongo_db)
+            route_note_m = (
+                f"You are one of {_route_n_m} specialist agents ({', '.join(_route_team_names_m)}) responding in parallel. "
+                "Use your tools and expertise to give a thorough, complete answer. "
+                "Your response will be combined with the other specialists' responses to form the final answer."
+            )
+            effective_system_prompt_m = _prepend_team_context(agent.get("system_prompt"), route_note_m)
             if mcp_configs:
-                content = await _chat_with_tools_and_mcp_mongo(llm, messages, agent.get("system_prompt"), tools, mongo_db, mcp_configs)
+                content = await _chat_with_tools_and_mcp_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db, mcp_configs)
             else:
-                content = await _chat_with_tools_mongo(llm, messages, agent.get("system_prompt"), tools, mongo_db)
+                content = await _chat_with_tools_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db)
             return agent, provider, content
 
         tasks = [get_agent_response(ag, pr) for ag, pr in agents_with_providers]
@@ -3888,17 +4066,22 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
         synth_llm = _create_llm_for_mongo_provider(synth_provider, synth_agent.get("model_id") or synth_provider.get("model_id") or "gpt-4o")
 
         responses_text = "\n\n".join(
-            f"**{r['agent_name']}:**\n{r['response']}" for r in agent_responses
+            f"[{r['agent_name']}]:\n{r['response']}" for r in agent_responses
         )
         synth_prompt = (
-            "You are a synthesis assistant. Multiple agents have responded to a user query. "
-            "Review all responses and produce the single best, comprehensive answer. "
-            "You may combine insights from multiple agents or choose the best response.\n\n"
-            "Do NOT mention that multiple agents responded. Just provide the best answer directly."
+            "You are a synthesis assistant. Specialist agents have already executed their tools and retrieved real, "
+            "live data to answer the user's request. The results below are factual — treat them as ground truth, "
+            "not as opinions or estimates.\n\n"
+            "Your job: combine the specialist results into a single, clear, direct answer. "
+            "Present the information confidently as if you retrieved it yourself. "
+            "Do NOT hedge, qualify, or suggest the user fetch data themselves. "
+            "Do NOT mention that multiple agents or specialists were involved."
         )
-        synth_messages = [
-            LLMMessage(role="user", content=user_message),
-            LLMMessage(role="user", content=f"Here are the responses from different specialists:\n\n{responses_text}"),
+        synth_messages = list(messages) + [
+            LLMMessage(
+                role="user",
+                content=f"Specialist results for the above request:\n\n{responses_text}\n\nNow provide the final answer.",
+            ),
         ]
 
         yield {
@@ -3955,9 +4138,12 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
     """Collaborate mode (MongoDB): agents run sequentially, each building on previous outputs."""
     try:
         accumulated_context = []
+        contributing_agents = []
+        total = len(agents_with_providers)
+        all_names = [ag.get("name", "Agent") for ag, _ in agents_with_providers]
 
         for i, (ag, pr) in enumerate(agents_with_providers):
-            is_last = (i == len(agents_with_providers) - 1)
+            is_last = (i == total - 1)
             name = ag.get("name", "Agent")
 
             yield {
@@ -3969,38 +4155,58 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
             tools = await _build_tools_for_llm_mongo(ag, mongo_db)
             mcp_configs = await _load_mcp_server_configs_mongo(ag, mongo_db)
 
+            effective_system_prompt = _build_collaborate_system_prompt(
+                ag.get("system_prompt"), name, i, total, all_names[:i]
+            )
+
             agent_messages = list(messages)
             if accumulated_context:
                 context_text = "\n\n".join(
-                    f"[{c['agent_name']} said]: {c['response']}" for c in accumulated_context
+                    f"[{c['agent_name']}]:\n{c['response']}" for c in accumulated_context
                 )
                 agent_messages.append(LLMMessage(
                     role="user",
-                    content=f"Previous team members have provided these inputs:\n\n{context_text}\n\nPlease build on their work to provide your contribution.",
+                    content=f"Results from previous team members:\n\n{context_text}\n\nNow provide your contribution.",
                 ))
 
             if is_last:
                 if mcp_configs:
-                    async for event in _stream_response_with_mcp_mongo(
-                        llm, agent_messages, ag.get("system_prompt"), mongo_db, session_id,
+                    stream = _stream_response_with_mcp_mongo(
+                        llm, agent_messages, effective_system_prompt, mongo_db, session_id,
                         str(ag["_id"]), pr, start_time, tools, mcp_configs, agent=ag
-                    ):
-                        yield event
+                    )
                 else:
-                    async for event in _stream_response_mongo(
-                        llm, agent_messages, ag.get("system_prompt"), mongo_db, session_id,
+                    stream = _stream_response_mongo(
+                        llm, agent_messages, effective_system_prompt, mongo_db, session_id,
                         str(ag["_id"]), pr, start_time, tools, agent=ag
-                    ):
+                    )
+                async for event in stream:
+                    if event.get("event") == "message_complete" and contributing_agents:
+                        data = json.loads(event["data"])
+                        meta = data.get("metadata") or {}
+                        meta["team_mode"] = "collaborate"
+                        meta["contributing_agents"] = contributing_agents
+                        data["metadata"] = meta
+                        msg_id = data.get("id")
+                        if msg_id:
+                            try:
+                                await MessageCollection.update_metadata(mongo_db, msg_id, meta)
+                            except Exception:
+                                pass
+                        yield {"event": "message_complete", "data": json.dumps(data)}
+                    else:
                         yield event
             else:
                 if mcp_configs:
-                    content = await _chat_with_tools_and_mcp_mongo(llm, agent_messages, ag.get("system_prompt"), tools, mongo_db, mcp_configs)
+                    content = await _chat_with_tools_and_mcp_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db, mcp_configs)
                 else:
-                    content = await _chat_with_tools_mongo(llm, agent_messages, ag.get("system_prompt"), tools, mongo_db)
-                accumulated_context.append({
-                    "agent_name": name,
-                    "response": content,
-                })
+                    content = await _chat_with_tools_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db)
+                accumulated_context.append({"agent_name": name, "response": content})
+                contributing_agents.append({"id": str(ag["_id"]), "name": name})
+                yield {
+                    "event": "agent_message",
+                    "data": json.dumps({"agent_id": str(ag["_id"]), "agent_name": name, "content": content}),
+                }
 
     except Exception as e:
         yield {"event": "error", "data": json.dumps({"error": str(e)})}

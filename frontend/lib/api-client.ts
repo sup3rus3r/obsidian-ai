@@ -403,6 +403,10 @@ class ApiClient {
     return this.request<WorkflowRun>(AppRoutes.GetWorkflowRun(runId))
   }
 
+  async deleteWorkflowRun(runId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteWorkflowRun(runId), { method: "DELETE" })
+  }
+
   // ============= Tools =============
   async listTools(): Promise<ToolDefinition[]> {
     const result = await this.request<ListResponse<ToolDefinition>>(AppRoutes.ListTools())

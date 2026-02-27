@@ -127,8 +127,9 @@ export function MessageBubble({
 
   // Resolve agent name for team messages
   const agentName = !isUser && message.agent_id && mode === "team"
-    ? agents.find((a) => a.id === message.agent_id)?.name
+    ? (agents.find((a) => a.id === message.agent_id)?.name ?? message.metadata?.agent_name)
     : undefined
+  const isIntermediate = message.metadata?.intermediate === true
 
   const handleCopy = useCallback(() => {
     if (message.content) {
@@ -166,6 +167,9 @@ export function MessageBubble({
           <div className="flex items-center gap-1.5 mb-1">
             <Bot className="size-3 text-blue-500" />
             <span className="text-[11px] font-medium text-blue-500">{agentName}</span>
+            {isIntermediate && (
+              <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">step</span>
+            )}
           </div>
         )}
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   Dialog,
   DialogContent,
@@ -20,16 +20,18 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useSession } from "next-auth/react"
-import { createTeam } from "@/app/api/playground"
+import { createTeam, updateTeam } from "@/app/api/playground"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import { Loader2, Check } from "lucide-react"
+import type { Team } from "@/types/playground"
 
 interface TeamDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  team?: Team | null
 }
 
-export function TeamDialog({ open, onOpenChange }: TeamDialogProps) {
+export function TeamDialog({ open, onOpenChange, team }: TeamDialogProps) {
   const { data: session } = useSession()
   const agents = usePlaygroundStore((s) => s.agents)
   const teams = usePlaygroundStore((s) => s.teams)
@@ -43,30 +45,53 @@ export function TeamDialog({ open, onOpenChange }: TeamDialogProps) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
 
+  const isEditing = !!team
+
+  // Populate fields when editing an existing team
+  useEffect(() => {
+    if (open && team) {
+      setName(team.name)
+      setDescription(team.description || "")
+      setMode(team.mode)
+      setSelectedAgentIds(team.agent_ids)
+      setError("")
+    } else if (open && !team) {
+      resetForm()
+    }
+  }, [open, team])
+
   const toggleAgent = (agentId: string) => {
     setSelectedAgentIds((prev) =>
       prev.includes(agentId) ? prev.filter((id) => id !== agentId) : [...prev, agentId]
     )
   }
 
-  const handleCreate = async () => {
+  const handleSubmit = async () => {
     if (!session?.accessToken || !name || selectedAgentIds.length === 0) return
     setLoading(true)
     setError("")
     try {
-      const newTeam = await createTeam(session.accessToken, {
+      const payload = {
         name,
         description: description || undefined,
         mode,
         agent_ids: selectedAgentIds,
-      })
-      setTeams([...teams, newTeam])
-      setSelectedTeam(newTeam.id)
+      }
+
+      if (isEditing && team) {
+        const updated = await updateTeam(session.accessToken, team.id, payload)
+        setTeams(teams.map((t) => (t.id === updated.id ? updated : t)))
+      } else {
+        const newTeam = await createTeam(session.accessToken, payload)
+        setTeams([...teams, newTeam])
+        setSelectedTeam(newTeam.id)
+      }
+
       resetForm()
       onOpenChange(false)
     } catch (err: any) {
-      console.error("Failed to create team:", err)
-      setError(err?.message || "Failed to create team")
+      console.error("Failed to save team:", err)
+      setError(err?.message || "Failed to save team")
     } finally {
       setLoading(false)
     }
@@ -82,11 +107,13 @@ export function TeamDialog({ open, onOpenChange }: TeamDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="sm:max-w-125">
         <DialogHeader>
-          <DialogTitle>Create Team</DialogTitle>
+          <DialogTitle>{isEditing ? "Edit Team" : "Create Team"}</DialogTitle>
           <DialogDescription>
-            Combine multiple agents into a team for complex tasks.
+            {isEditing
+              ? "Update the team configuration."
+              : "Combine multiple agents into a team for complex tasks."}
           </DialogDescription>
         </DialogHeader>
 
@@ -118,9 +145,9 @@ export function TeamDialog({ open, onOpenChange }: TeamDialogProps) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="coordinate">Coordinate - Router picks the best agent</SelectItem>
-                <SelectItem value="route">Route - Direct routing to specialist</SelectItem>
-                <SelectItem value="collaborate">Collaborate - Sequential chain</SelectItem>
+                <SelectItem value="coordinate">Coordinate — Router picks the best agent per message</SelectItem>
+                <SelectItem value="route">Route — All agents respond in parallel, synthesizer merges</SelectItem>
+                <SelectItem value="collaborate">Collaborate — Agents run in sequence, each builds on the last</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -144,7 +171,7 @@ export function TeamDialog({ open, onOpenChange }: TeamDialogProps) {
                     }`}
                   >
                     <div
-                      className={`h-4 w-4 rounded border flex items-center justify-center flex-shrink-0 ${
+                      className={`h-4 w-4 rounded border flex items-center justify-center shrink-0 ${
                         selectedAgentIds.includes(agent.id)
                           ? "bg-primary border-primary"
                           : "border-input"
@@ -169,11 +196,11 @@ export function TeamDialog({ open, onOpenChange }: TeamDialogProps) {
             Cancel
           </Button>
           <Button
-            onClick={handleCreate}
+            onClick={handleSubmit}
             disabled={loading || !name || selectedAgentIds.length === 0}
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-            Create Team
+            {isEditing ? "Save Changes" : "Create Team"}
           </Button>
         </DialogFooter>
       </DialogContent>

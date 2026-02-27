@@ -1,4 +1,4 @@
-import type { Message, ToolCall, ReasoningStep, AgentStep, ToolRound, FileAttachment, WorkflowStepResult, FileNode, HITLApprovalEvent, ToolProposalEvent, ArtifactEvent } from "@/types/playground"
+import type { Message, ToolCall, ReasoningStep, AgentStep, ToolRound, FileAttachment, WorkflowStepResult, FileNode, HITLApprovalEvent, ToolProposalEvent, ArtifactEvent, NodeStartEvent, NodeCompleteEvent, NodeErrorEvent, NodeContentDeltaEvent } from "@/types/playground"
 
 // Stream directly to the backend, bypassing the Next.js rewrite proxy
 // which buffers the entire SSE response instead of streaming it through.
@@ -30,6 +30,7 @@ export async function streamChat(
   onComplete: (message: Message) => void,
   onError: (error: string) => void,
   onAgentStep?: (step: AgentStep) => void,
+  onAgentMessage?: (agentId: string, agentName: string, content: string) => void,
   onToolRound?: (round: ToolRound) => void,
   signal?: AbortSignal,
   attachments?: FileAttachment[],
@@ -126,6 +127,9 @@ export async function streamChat(
                 break
               case "agent_step":
                 onAgentStep?.(data)
+                break
+              case "agent_message":
+                onAgentMessage?.(data.agent_id, data.agent_name, data.content)
                 break
               case "tool_round":
                 onToolRound?.(data)
@@ -233,6 +237,11 @@ export async function streamWorkflow(
   onWorkflowComplete: (event: WorkflowCompleteEvent) => void,
   onWorkflowError: (runId: string, error: string) => void,
   signal?: AbortSignal,
+  // DAG node callbacks (optional — only fired for DAG workflows)
+  onNodeStart?: (event: NodeStartEvent) => void,
+  onNodeContentDelta?: (event: NodeContentDeltaEvent) => void,
+  onNodeComplete?: (event: NodeCompleteEvent) => void,
+  onNodeError?: (event: NodeErrorEvent) => void,
 ): Promise<void> {
   const response = await fetch(`${BACKEND_URL}/workflows/${workflowId}/run`, {
     method: "POST",
@@ -303,6 +312,19 @@ export async function streamWorkflow(
                 break
               case "workflow_error":
                 onWorkflowError(data.run_id || "", data.error || "Unknown error")
+                break
+              // DAG node events
+              case "node_start":
+                onNodeStart?.(data as NodeStartEvent)
+                break
+              case "node_content_delta":
+                onNodeContentDelta?.(data as NodeContentDeltaEvent)
+                break
+              case "node_complete":
+                onNodeComplete?.(data as NodeCompleteEvent)
+                break
+              case "node_error":
+                onNodeError?.(data as NodeErrorEvent)
                 break
               case "done":
                 return

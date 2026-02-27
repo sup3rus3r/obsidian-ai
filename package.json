@@ -15,5 +15,8 @@
     "@tailwindcss/postcss": "^4.1.18",
     "concurrently": "^9.2.1",
     "tailwindcss": "^4.1.18"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.10.1"
   }
 }

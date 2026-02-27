@@ -8,6 +8,25 @@ from models import Workflow
 from schemas import (
     WorkflowCreate, WorkflowUpdate, WorkflowResponse, WorkflowListResponse,
 )
+from routers.workflow_runs_router import _topological_validate, _is_dag_workflow
+
+
+def _validate_steps(steps: list[dict]):
+    """Validate DAG steps before saving: detect cycles and unknown depends_on refs."""
+    if not _is_dag_workflow(steps):
+        return  # legacy linear workflow — no DAG validation needed
+    node_ids = {s["id"] for s in steps if s.get("id")}
+    for s in steps:
+        for dep in (s.get("depends_on") or []):
+            if dep not in node_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Step '{s['id']}' depends on unknown node '{dep}'"
+                )
+    try:
+        _topological_validate(steps)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 from auth import get_current_user, TokenData, require_permission
 
 if DATABASE_TYPE == "mongo":
@@ -54,7 +73,9 @@ async def create_workflow(
     _perm=Depends(require_permission("create_workflows")),
     db: Session = Depends(get_db),
 ):
-    steps_str = json.dumps([s.model_dump() for s in data.steps])
+    steps_dicts = [s.model_dump() for s in data.steps]
+    _validate_steps(steps_dicts)
+    steps_str = json.dumps(steps_dicts)
     config_str = json.dumps(data.config) if data.config else None
 
     if DATABASE_TYPE == "mongo":
@@ -130,7 +151,12 @@ async def update_workflow(
 ):
     updates = data.model_dump(exclude_unset=True)
     if "steps" in updates:
-        updates["steps_json"] = json.dumps(updates.pop("steps")) if updates["steps"] else None
+        steps_dicts = updates.pop("steps")
+        if steps_dicts:
+            _validate_steps(steps_dicts)
+            updates["steps_json"] = json.dumps(steps_dicts)
+        else:
+            updates["steps_json"] = None
     if "config" in updates:
         updates["config_json"] = json.dumps(updates.pop("config")) if updates["config"] else None
 

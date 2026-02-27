@@ -421,6 +421,12 @@ class WorkflowRunCollection:
             return_document=True
         )
 
+    @classmethod
+    async def delete(cls, db, run_id: str, user_id: str) -> bool:
+        collection = db[cls.collection_name]
+        result = await collection.delete_one({"_id": ObjectId(run_id), "user_id": user_id})
+        return result.deleted_count > 0
+
 
 class SessionCollection:
     collection_name = "sessions"
@@ -504,6 +510,15 @@ class MessageCollection:
         result = await collection.insert_one(data)
         data["_id"] = result.inserted_id
         return data
+
+    @classmethod
+    async def update_metadata(cls, db, message_id: str, metadata: dict) -> None:
+        collection = db[cls.collection_name]
+        import json as _json
+        await collection.update_one(
+            {"_id": ObjectId(message_id)},
+            {"$set": {"metadata_json": _json.dumps(metadata)}},
+        )
 
 
 class ToolDefinitionCollection:

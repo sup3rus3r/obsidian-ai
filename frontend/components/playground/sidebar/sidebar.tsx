@@ -16,7 +16,7 @@ import { MCPServerDialog } from "@/components/dialogs/mcp-server-dialog"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import { usePermissionsStore } from "@/stores/permissions-store"
 import { apiClient } from "@/lib/api-client"
-import type { Agent, LLMProvider, MCPServer } from "@/types/playground"
+import type { Agent, LLMProvider, MCPServer, Team } from "@/types/playground"
 
 export function Sidebar() {
   const mode = usePlaygroundStore((s) => s.mode)
@@ -25,12 +25,14 @@ export function Sidebar() {
   const setAgents = usePlaygroundStore((s) => s.setAgents)
   const setProviders = usePlaygroundStore((s) => s.setProviders)
   const setSelectedAgent = usePlaygroundStore((s) => s.setSelectedAgent)
+  const teams = usePlaygroundStore((s) => s.teams)
   const permissions = usePermissionsStore((s) => s.permissions)
   const [providerDialogOpen, setProviderDialogOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<LLMProvider | null>(null)
   const [agentDialogOpen, setAgentDialogOpen] = useState(false)
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null)
   const [teamDialogOpen, setTeamDialogOpen] = useState(false)
+  const [editingTeam, setEditingTeam] = useState<Team | null>(null)
   const [toolDialogOpen, setToolDialogOpen] = useState(false)
   const [mcpServerDialogOpen, setMCPServerDialogOpen] = useState(false)
   const [editingMCPServer, setEditingMCPServer] = useState<MCPServer | null>(null)
@@ -107,6 +109,14 @@ export function Sidebar() {
     }
   }
 
+  const handleEditTeam = (teamId: string) => {
+    const team = teams.find((t) => t.id === teamId)
+    if (team) {
+      setEditingTeam(team)
+      setTeamDialogOpen(true)
+    }
+  }
+
   const handleExportAgent = async (agentId: string, agentName: string) => {
     try {
       await apiClient.exportAgent(agentId, agentName)
@@ -171,13 +181,15 @@ export function Sidebar() {
             <ModeToggle />
             <EntitySelector
               onAddAgent={() => setAgentDialogOpen(true)}
-              onAddTeam={() => setTeamDialogOpen(true)}
+              onAddTeam={() => { setEditingTeam(null); setTeamDialogOpen(true) }}
               onEditAgent={handleEditAgent}
+              onEditTeam={permissions.create_teams ? handleEditTeam : undefined}
               onExportAgent={handleExportAgent}
               onImportAgent={permissions.create_agents ? handleImportAgent : undefined}
               hideAddAgent={!permissions.create_agents}
               hideAddTeam={!permissions.create_teams}
               hideEditAgent={!permissions.create_agents}
+              hideEditTeam={!permissions.create_teams}
               hideDeleteAgent={!permissions.create_agents}
               hideDeleteTeam={!permissions.create_teams}
             />
@@ -222,7 +234,14 @@ export function Sidebar() {
         }}
         agent={editingAgent}
       />
-      <TeamDialog open={teamDialogOpen} onOpenChange={setTeamDialogOpen} />
+      <TeamDialog
+        open={teamDialogOpen}
+        onOpenChange={(open) => {
+          setTeamDialogOpen(open)
+          if (!open) setEditingTeam(null)
+        }}
+        team={editingTeam}
+      />
       <ToolDialog open={toolDialogOpen} onOpenChange={setToolDialogOpen} />
       <MCPServerDialog
         open={mcpServerDialogOpen}

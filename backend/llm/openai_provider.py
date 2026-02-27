@@ -69,9 +69,12 @@ class OpenAIProvider(BaseLLMProvider):
             msgs.append({"role": "system", "content": system_prompt})
         for m in messages:
             if m.role == "tool":
-                # Convert tool results to user messages for broad provider compatibility.
-                # Many OpenAI-compatible endpoints (OpenRouter, custom) reject role="tool".
-                msgs.append({"role": "user", "content": str(m.content)})
+                if m.tool_call_id:
+                    # Proper tool result message — OpenAI requires role="tool" with tool_call_id
+                    msgs.append({"role": "tool", "tool_call_id": m.tool_call_id, "content": str(m.content)})
+                else:
+                    # No tool_call_id — fall back to user message for compatibility
+                    msgs.append({"role": "user", "content": str(m.content)})
                 continue
             msg: dict = {"role": m.role, "content": m.content}
             # Include tool_calls on assistant messages so the LLM understands the prior tool round
@@ -103,15 +106,31 @@ class OpenAIProvider(BaseLLMProvider):
                 json=payload,
                 headers=self._headers(),
             )
-            if response.status_code == 400 and tools:
-                error_body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-                logger.warning(f"OpenAI API returned 400 with tools. Error: {error_body}. Retrying without tools.")
-                payload.pop("tools", None)
-                response = await client.post(
-                    f"{self.base_url}/v1/chat/completions",
-                    json=payload,
-                    headers=self._headers(),
-                )
+            if response.status_code == 400:
+                try:
+                    error_body = response.json()
+                    error_msg = error_body.get("error", {}).get("message", str(error_body))
+                except Exception:
+                    error_msg = response.text
+                if tools:
+                    logger.warning(f"OpenAI API returned 400 with tools. Error: {error_msg}. Retrying without tools.")
+                    payload.pop("tools", None)
+                    response = await client.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        json=payload,
+                        headers=self._headers(),
+                    )
+                    if response.status_code != 200:
+                        try:
+                            error_body2 = response.json()
+                            error_msg2 = error_body2.get("error", {}).get("message", str(error_body2))
+                        except Exception:
+                            error_msg2 = response.text
+                        logger.error(f"OpenAI API returned {response.status_code} on retry. Error: {error_msg2}")
+                        raise Exception(f"OpenAI API error {response.status_code}: {error_msg2}")
+                else:
+                    logger.error(f"OpenAI API returned 400. Error: {error_msg}")
+                    raise Exception(f"OpenAI API error 400: {error_msg}")
 
             response.raise_for_status()
             data = response.json()
@@ -263,27 +282,56 @@ class OpenAIProvider(BaseLLMProvider):
                 json=payload,
                 headers=self._headers(),
             ) as response:
-                if response.status_code == 400 and tools:
+                if response.status_code == 400:
                     error_text = ""
                     async for line in response.aiter_lines():
                         error_text += line
-                    logger.warning(f"OpenAI API returned 400 with tools in stream. Error: {error_text}. Retrying without tools.")
-                    payload.pop("tools", None)
+                    if tools:
+                        logger.warning(f"OpenAI API returned 400 with tools. Error: {error_text}. Retrying without tools.")
+                        payload.pop("tools", None)
+                    elif "stream_options" in payload:
+                        logger.warning(f"OpenAI API returned 400. Error: {error_text}. Retrying without stream_options.")
+                        payload.pop("stream_options", None)
+                    else:
+                        logger.error(f"OpenAI API returned 400. Error: {error_text}")
+                        raise Exception(f"OpenAI API error 400: {error_text}")
                 else:
                     response.raise_for_status()
                     async for chunk in self._parse_stream(response):
                         yield chunk
                     return
-            if "tools" not in payload:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/v1/chat/completions",
-                    json=payload,
-                    headers=self._headers(),
-                ) as response:
+            # Retry after removing tools or stream_options
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                headers=self._headers(),
+            ) as response:
+                if response.status_code == 400:
+                    error_text = ""
+                    async for line in response.aiter_lines():
+                        error_text += line
+                    if "tools" in payload:
+                        logger.warning(f"OpenAI API returned 400 on retry with tools. Error: {error_text}. Retrying without tools.")
+                        payload.pop("tools", None)
+                    else:
+                        logger.error(f"OpenAI API returned 400 on retry. Error: {error_text}")
+                        raise Exception(f"OpenAI API error 400: {error_text}")
+                else:
                     response.raise_for_status()
                     async for chunk in self._parse_stream(response):
                         yield chunk
+                    return
+            # Final retry without tools
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                headers=self._headers(),
+            ) as response:
+                response.raise_for_status()
+                async for chunk in self._parse_stream(response):
+                    yield chunk
 
     async def list_models(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=30.0) as client:

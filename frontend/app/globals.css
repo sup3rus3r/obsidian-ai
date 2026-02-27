@@ -130,6 +130,15 @@
   }
 }
 
+/* XyFlow (React Flow) dark mode control button overrides */
+.dark .react-flow__controls {
+  --xy-controls-button-background-color-default: oklch(0.269 0 0);
+  --xy-controls-button-background-color-hover-default: oklch(0.32 0 0);
+  --xy-controls-button-color-default: oklch(0.985 0 0);
+  --xy-controls-button-border-color-default: oklch(1 0 0 / 15%);
+  box-shadow: 0 0 6px 1px oklch(0 0 0 / 50%);
+}
+
 @keyframes caret-blink {
   0%,
   70%,

@@ -39,8 +39,14 @@ export function WorkflowStepsView({
     return <Circle className="size-4 text-muted-foreground" />
   }
 
-  const getAgentName = (agentId: string) => {
-    return agents.find((a) => a.id === agentId)?.name || "Unknown Agent"
+  const getStepName = (step: WorkflowStep) => {
+    if (step.node_type && step.node_type !== "agent") {
+      return step.node_type.charAt(0).toUpperCase() + step.node_type.slice(1)
+    }
+    if (step.agent_id) {
+      return agents.find((a) => a.id === step.agent_id)?.name || "Unknown Agent"
+    }
+    return "Agent"
   }
 
   return (
@@ -56,7 +62,7 @@ export function WorkflowStepsView({
         }
       >
         {sortedSteps.map((step, index) => (
-          <StepsItem key={`${step.agent_id}-${step.order}`}>
+          <StepsItem key={`${step.id ?? step.agent_id}-${step.order}`}>
             <div className="flex items-start gap-2 py-1">
               <span className="mt-0.5 shrink-0">
                 {getStepIcon(index)}
@@ -67,7 +73,7 @@ export function WorkflowStepsView({
                     {step.order}.
                   </span>
                   <span className="text-xs font-medium text-foreground truncate">
-                    {getAgentName(step.agent_id)}
+                    {getStepName(step)}
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
