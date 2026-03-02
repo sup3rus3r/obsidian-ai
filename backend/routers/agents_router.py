@@ -7,7 +7,7 @@ from sqlalchemy import or_
 
 from config import DATABASE_TYPE
 from database import get_db
-from models import Agent, User, LLMProvider, ToolDefinition, MCPServer, KnowledgeBase
+from models import Agent, AgentVersion, User, LLMProvider, ToolDefinition, MCPServer, KnowledgeBase
 from schemas import (
     AgentCreate, AgentUpdate, AgentResponse, AgentListResponse,
     AgentExportData, AgentExportEnvelope, AgentImportResponse,
@@ -17,11 +17,75 @@ from auth import get_current_user, TokenData, require_permission
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
     from models_mongo import (
-        AgentCollection, UserCollection, LLMProviderCollection,
+        AgentCollection, AgentVersionCollection, UserCollection, LLMProviderCollection,
         ToolDefinitionCollection, MCPServerCollection, KnowledgeBaseCollection,
     )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _build_config_snapshot(agent) -> dict:
+    """Build a serialisable snapshot dict from a SQLAlchemy Agent record."""
+    return {
+        "name": agent.name,
+        "description": agent.description,
+        "system_prompt": agent.system_prompt,
+        "provider_id": agent.provider_id,
+        "model_id": agent.model_id,
+        "tools_json": agent.tools_json,
+        "mcp_servers_json": agent.mcp_servers_json,
+        "knowledge_base_ids_json": agent.knowledge_base_ids_json,
+        "hitl_confirmation_tools_json": agent.hitl_confirmation_tools_json,
+        "allow_tool_creation": agent.allow_tool_creation,
+        "config_json": agent.config_json,
+    }
+
+
+def _build_config_snapshot_mongo(agent: dict) -> dict:
+    """Build a serialisable snapshot dict from a MongoDB agent document."""
+    return {
+        "name": agent.get("name"),
+        "description": agent.get("description"),
+        "system_prompt": agent.get("system_prompt"),
+        "provider_id": str(agent["provider_id"]) if agent.get("provider_id") else None,
+        "model_id": agent.get("model_id"),
+        "tools_json": agent.get("tools_json"),
+        "mcp_servers_json": agent.get("mcp_servers_json"),
+        "knowledge_base_ids_json": agent.get("knowledge_base_ids_json"),
+        "hitl_confirmation_tools_json": agent.get("hitl_confirmation_tools_json"),
+        "allow_tool_creation": agent.get("allow_tool_creation", False),
+        "config_json": agent.get("config_json"),
+    }
+
+
+def _snapshot_agent_sqlite(db, agent, change_summary: str) -> AgentVersion:
+    """Create a version snapshot BEFORE applying changes. Caller must commit."""
+    last = db.query(AgentVersion).filter(
+        AgentVersion.agent_id == agent.id
+    ).order_by(AgentVersion.version_number.desc()).first()
+    next_version = (last.version_number + 1) if last else 1
+    version = AgentVersion(
+        agent_id=agent.id,
+        user_id=agent.user_id,
+        version_number=next_version,
+        config_snapshot=json.dumps(_build_config_snapshot(agent)),
+        change_summary=change_summary,
+    )
+    db.add(version)
+    return version
+
+
+async def _snapshot_agent_mongo(mongo_db, agent: dict, change_summary: str) -> dict:
+    """Create a version snapshot for a Mongo agent BEFORE applying changes."""
+    agent_id = str(agent["_id"])
+    next_version = await AgentVersionCollection.get_latest_version_number(mongo_db, agent_id) + 1
+    return await AgentVersionCollection.create(mongo_db, {
+        "agent_id": agent_id,
+        "user_id": agent.get("user_id"),
+        "version_number": next_version,
+        "config_snapshot": _build_config_snapshot_mongo(agent),
+        "change_summary": change_summary,
+    })
 
 
 def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
@@ -213,6 +277,10 @@ async def update_agent(
 
     if DATABASE_TYPE == "mongo":
         mongo_db = get_database()
+        existing = await AgentCollection.find_by_id(mongo_db, agent_id)
+        if not existing or existing.get("user_id") != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        await _snapshot_agent_mongo(mongo_db, existing, "Manual edit")
         updated = await AgentCollection.update(mongo_db, agent_id, current_user.user_id, updates)
         if not updated:
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -225,6 +293,7 @@ async def update_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    _snapshot_agent_sqlite(db, agent, "Manual edit")
     for key, value in updates.items():
         if key == "provider_id" and value:
             value = int(value)

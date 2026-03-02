@@ -38,6 +38,7 @@ def _tool_to_response(tool, is_mongo=False) -> ToolDefinitionResponse:
             handler_config=handler_config,
             requires_confirmation=tool.get("requires_confirmation", False),
             is_active=tool.get("is_active", True),
+            is_model_created=tool.get("is_model_created", False),
             created_at=tool["created_at"],
         )
     params = json.loads(tool.parameters_json) if tool.parameters_json else {}
@@ -51,6 +52,7 @@ def _tool_to_response(tool, is_mongo=False) -> ToolDefinitionResponse:
         handler_config=handler_config,
         requires_confirmation=bool(tool.requires_confirmation),
         is_active=tool.is_active,
+        is_model_created=bool(tool.is_model_created),
         created_at=tool.created_at,
     )
 

@@ -34,6 +34,15 @@ import type {
   CreateWorkflowScheduleRequest,
   UpdateWorkflowScheduleRequest,
   AgentMemory,
+  AgentVersion,
+  EvalSuite,
+  EvalRun,
+  CreateEvalSuiteRequest,
+  UpdateEvalSuiteRequest,
+  RunEvalRequest,
+  OptimizationRun,
+  TriggerOptimizationRequest,
+  RejectOptimizationRequest,
   SessionTrace,
   WorkflowRunTrace,
 } from "@/types/playground"
@@ -621,6 +630,122 @@ class ApiClient {
     await this.request<void>(AppRoutes.ClearAgentMemories(agentId), {
       method: "DELETE",
     })
+  }
+
+  // ============= Agent Versions =============
+  async listAgentVersions(agentId: string): Promise<AgentVersion[]> {
+    const result = await this.request<{ versions: AgentVersion[]; total: number }>(
+      AppRoutes.ListAgentVersions(agentId),
+    )
+    return result.versions || []
+  }
+
+  async getAgentVersion(agentId: string, versionId: string): Promise<AgentVersion> {
+    return this.request<AgentVersion>(AppRoutes.GetAgentVersion(agentId, versionId))
+  }
+
+  async rollbackAgentVersion(agentId: string, versionId: string): Promise<{ message: string; version_number: number }> {
+    return this.request<{ message: string; version_number: number }>(
+      AppRoutes.RollbackAgentVersion(agentId, versionId),
+      { method: "POST" },
+    )
+  }
+
+  async deleteAgentVersion(agentId: string, versionId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteAgentVersion(agentId, versionId), {
+      method: "DELETE",
+    })
+  }
+
+  async pruneAgentVersions(agentId: string): Promise<{ deleted: number }> {
+    return this.request<{ deleted: number }>(AppRoutes.PruneAgentVersions(agentId), {
+      method: "DELETE",
+    })
+  }
+
+  // ============= Eval Harness =============
+  async listEvalSuites(): Promise<EvalSuite[]> {
+    const result = await this.request<{ suites: EvalSuite[] }>(AppRoutes.ListEvalSuites())
+    return result.suites || []
+  }
+
+  async createEvalSuite(data: CreateEvalSuiteRequest): Promise<EvalSuite> {
+    return this.request<EvalSuite>(AppRoutes.CreateEvalSuite(), {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getEvalSuite(id: string): Promise<EvalSuite> {
+    return this.request<EvalSuite>(AppRoutes.GetEvalSuite(id))
+  }
+
+  async updateEvalSuite(id: string, data: UpdateEvalSuiteRequest): Promise<EvalSuite> {
+    return this.request<EvalSuite>(AppRoutes.UpdateEvalSuite(id), {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteEvalSuite(id: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteEvalSuite(id), { method: "DELETE" })
+  }
+
+  async runEvalSuite(suiteId: string, data: RunEvalRequest): Promise<EvalRun> {
+    return this.request<EvalRun>(AppRoutes.RunEvalSuite(suiteId), {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getEvalRun(runId: string): Promise<EvalRun> {
+    return this.request<EvalRun>(AppRoutes.GetEvalRun(runId))
+  }
+
+  async listSuiteRuns(suiteId: string): Promise<EvalRun[]> {
+    const result = await this.request<{ runs: EvalRun[] }>(AppRoutes.ListSuiteRuns(suiteId))
+    return result.runs || []
+  }
+
+  async listAgentEvalRuns(agentId: string): Promise<EvalRun[]> {
+    const result = await this.request<{ runs: EvalRun[] }>(AppRoutes.ListAgentEvalRuns(agentId))
+    return result.runs || []
+  }
+
+  async deleteEvalRun(runId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteEvalRun(runId), { method: "DELETE" })
+  }
+
+  // ============= Prompt Auto-Optimizer =============
+  async triggerOptimization(body: TriggerOptimizationRequest): Promise<OptimizationRun> {
+    return this.request<OptimizationRun>(AppRoutes.TriggerOptimization(), {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+  }
+
+  async listOptimizationRuns(agentId: string): Promise<OptimizationRun[]> {
+    const result = await this.request<{ runs: OptimizationRun[] }>(AppRoutes.ListOptimizationRuns(agentId))
+    return result.runs || []
+  }
+
+  async getOptimizationRun(runId: string): Promise<OptimizationRun> {
+    return this.request<OptimizationRun>(AppRoutes.GetOptimizationRun(runId))
+  }
+
+  async acceptOptimizationRun(runId: string): Promise<OptimizationRun> {
+    return this.request<OptimizationRun>(AppRoutes.AcceptOptimizationRun(runId), { method: "POST" })
+  }
+
+  async rejectOptimizationRun(runId: string, body?: RejectOptimizationRequest): Promise<OptimizationRun> {
+    return this.request<OptimizationRun>(AppRoutes.RejectOptimizationRun(runId), {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    })
+  }
+
+  async deleteOptimizationRun(runId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteOptimizationRun(runId), { method: "DELETE" })
   }
 
   // ============= Traces =============

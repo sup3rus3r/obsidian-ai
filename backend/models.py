@@ -182,6 +182,7 @@ class ToolDefinition(Base):
     handler_config  = Column(Text, nullable=True)          # JSON: {url, method, headers} or {module, function}
     requires_confirmation = Column(Boolean, default=False, nullable=False)
     is_active       = Column(Boolean, default=True)
+    is_model_created = Column(Boolean, default=False, nullable=False)  # True when created via agent tool proposal
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -290,10 +291,25 @@ class ToolProposal(Base):
     handler_type        = Column(String, nullable=False)        # python | http
     parameters_json     = Column(Text, nullable=False)          # JSON Schema
     handler_config_json = Column(Text, nullable=True)           # JSON
+    proposal_type       = Column(String, default="create", nullable=False)   # create | edit
+    target_tool_id      = Column(Integer, nullable=True)        # for edit proposals: ID of the ToolDefinition to update
     status              = Column(String, default="pending", nullable=False)  # pending | approved | rejected
-    created_tool_id     = Column(Integer, nullable=True)        # ID of the created ToolDefinition if approved
+    created_tool_id     = Column(Integer, nullable=True)        # ID of the created ToolDefinition if approved (create proposals)
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at         = Column(DateTime(timezone=True), nullable=True)
+
+
+class AgentVersion(Base):
+    """A point-in-time snapshot of an agent's configuration."""
+    __tablename__ = "agent_versions"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    agent_id        = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id         = Column(Integer, ForeignKey("users.id"), nullable=False)
+    version_number  = Column(Integer, nullable=False)       # monotonically increasing per agent
+    config_snapshot = Column(Text, nullable=False)          # full JSON dump of the agent at that point
+    change_summary  = Column(String, nullable=True)         # e.g. "Manual edit", "Rollback to v2"
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class AgentMemory(Base):
@@ -331,3 +347,72 @@ class TraceSpan(Base):
     sequence        = Column(Integer, default=0, nullable=False)   # ordering within a generator invocation
     round_number    = Column(Integer, default=0, nullable=False)   # tool loop round index
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class EvalSuite(Base):
+    """A named collection of test cases for evaluating an agent."""
+    __tablename__ = "eval_suites"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    user_id         = Column(Integer, ForeignKey("users.id"), nullable=False)
+    agent_id        = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
+    name            = Column(String, nullable=False)
+    description     = Column(String, nullable=True)
+    # JSON array: [{id, input, expected_output, grading_method, weight}]
+    test_cases_json = Column(Text, nullable=False, default="[]")
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class EvalRun(Base):
+    """A single execution of an EvalSuite against an agent."""
+    __tablename__ = "eval_runs"
+
+    id                    = Column(Integer, primary_key=True, index=True)
+    suite_id              = Column(Integer, ForeignKey("eval_suites.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id              = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
+    agent_config_snapshot = Column(Text, nullable=True)  # JSON snapshot of agent config used
+    version_id            = Column(Integer, ForeignKey("agent_versions.id", ondelete="SET NULL"), nullable=True)
+    status                = Column(String, default="pending")  # pending | running | completed | failed
+    # JSON array: [{case_id, input, expected, actual_output, passed, score, reasoning}]
+    results_json          = Column(Text, nullable=True)
+    score                 = Column(Float, nullable=True)        # 0.0–1.0 overall pass rate
+    total_cases           = Column(Integer, default=0)
+    passed_cases          = Column(Integer, default=0)
+    created_at            = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at          = Column(DateTime(timezone=True), nullable=True)
+
+
+class OptimizationRun(Base):
+    """A prompt optimization pipeline run for an agent."""
+    __tablename__ = "optimization_runs"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    agent_id            = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id             = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status              = Column(String, default="pending")
+    # pending | analyzing | proposing | validating | awaiting_review | accepted | rejected | failed
+
+    # Trace analysis
+    trace_session_ids   = Column(Text, nullable=True)       # JSON list of session IDs sampled
+    trace_count         = Column(Integer, default=0)
+    failure_patterns    = Column(Text, nullable=True)       # JSON: LLM-extracted failure categories
+
+    # Proposal
+    current_prompt      = Column(Text, nullable=True)       # snapshot of prompt at time of analysis
+    proposed_prompt     = Column(Text, nullable=True)
+    rationale           = Column(Text, nullable=True)
+
+    # Validation
+    eval_suite_id       = Column(Integer, ForeignKey("eval_suites.id", ondelete="SET NULL"), nullable=True)
+    eval_run_id         = Column(Integer, ForeignKey("eval_runs.id", ondelete="SET NULL"), nullable=True)
+    baseline_score      = Column(Float, nullable=True)
+    proposed_score      = Column(Float, nullable=True)
+
+    # Outcome
+    accepted_version_id = Column(Integer, ForeignKey("agent_versions.id", ondelete="SET NULL"), nullable=True)
+    rejected_reason     = Column(String, nullable=True)
+    error_message       = Column(Text, nullable=True)
+
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at        = Column(DateTime(timezone=True), nullable=True)

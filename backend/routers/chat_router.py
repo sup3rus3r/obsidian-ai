@@ -118,6 +118,66 @@ _CREATE_TOOL_SCHEMA = {
     },
 }
 
+# Virtual tool schema injected when agent.allow_tool_creation is True — lets models edit tools they created
+_EDIT_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "edit_tool",
+        "description": (
+            "Propose an edit to a tool that was previously created by a model (is_model_created=True). "
+            "The user will review and approve the changes before they are applied. "
+            "Use this when a tool you created has a bug, wrong parameters, or needs improvement.\n\n"
+            "IMPORTANT RULES:\n"
+            "1. You can only edit tools that were created by a model — not user-created tools.\n"
+            "2. You cannot change the tool name — name is the stable identifier.\n"
+            "3. Only provide fields you want to change — omit fields that should stay the same.\n"
+            "4. Follow the same Python handler rules as create_tool: function named 'handler', "
+            "accepts a single dict 'params', must return a value, standard library only.\n\n"
+            "PYTHON HANDLER EXAMPLE:\n"
+            "  def handler(params):\n"
+            "      text = params.get('text', '')\n"
+            "      return text[::-1]\n\n"
+            "HTTP HANDLER CONFIG EXAMPLE:\n"
+            "  {\"url\": \"https://api.example.com/data\", \"method\": \"GET\", \"headers\": {\"Accept\": \"application/json\"}}"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The exact name of the tool to edit. Must match an existing model-created tool.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Updated one-sentence description of what the tool does. Omit to keep existing.",
+                },
+                "handler_type": {
+                    "type": "string",
+                    "enum": ["python", "http"],
+                    "description": "Updated handler type. Omit to keep existing.",
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": (
+                        "Updated JSON Schema for the tool's input parameters. "
+                        "Must include 'type': 'object', 'properties' dict, and 'required' list. "
+                        "Omit to keep existing."
+                    ),
+                },
+                "handler_config": {
+                    "type": "object",
+                    "description": (
+                        "Updated handler config. For python: {\"code\": \"def handler(params):\\n    ...\"}. "
+                        "For http: {\"url\": \"...\", \"method\": \"GET\", \"headers\": {}}. "
+                        "Omit to keep existing."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
 
 _ARTIFACT_SYSTEM_HINT = """
 ## Artifacts
@@ -432,11 +492,12 @@ def _agent_allows_tool_creation(agent) -> bool:
 
 
 def _inject_create_tool_schema(tools: list[dict] | None, agent) -> list[dict] | None:
-    """Append the virtual create_tool schema to the tools list if allowed by the agent."""
+    """Append the virtual create_tool and edit_tool schemas to the tools list if allowed by the agent."""
     if not _agent_allows_tool_creation(agent):
         return tools
     result = list(tools) if tools else []
     result.append(_CREATE_TOOL_SCHEMA)
+    result.append(_EDIT_TOOL_SCHEMA)
     return result
 
 
@@ -2045,6 +2106,83 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
                     continue
 
+                # --- Tool edit: intercept edit_tool virtual calls (SQLite single-agent) ---
+                if tc.name == "edit_tool":
+                    try:
+                        _et_args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {})
+                    except (json.JSONDecodeError, TypeError):
+                        _et_args = {}
+                    _et_name = _et_args.get("name", "").strip()
+                    if not _et_name:
+                        messages.append(LLMMessage(role="user", content="[Tool edit failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                        continue
+                    _et_existing = db.query(ToolDefinition).filter(
+                        ToolDefinition.name == _et_name,
+                        ToolDefinition.is_active == True,
+                        ToolDefinition.is_model_created == True,
+                    ).first()
+                    if not _et_existing:
+                        messages.append(LLMMessage(role="user", content=f"[Tool edit failed: no model-created tool named '{_et_name}' found. You can only edit tools created by a model.]\n\n{TOOL_RESULT_PROMPT}"))
+                        continue
+                    _et_desc = _et_args.get("description", _et_existing.description)
+                    _et_htype = _et_args.get("handler_type", _et_existing.handler_type)
+                    _et_params = _et_args.get("parameters") or json.loads(_et_existing.parameters_json or "{}")
+                    _et_hconfig = _et_args.get("handler_config") or (json.loads(_et_existing.handler_config) if _et_existing.handler_config else None)
+                    _et_existing_params = json.loads(_et_existing.parameters_json or "{}")
+                    _et_existing_hconfig = json.loads(_et_existing.handler_config) if _et_existing.handler_config else None
+                    _et_record = ToolProposal(
+                        session_id=session_id,
+                        tool_call_id=tc.id,
+                        name=_et_name,
+                        description=_et_desc,
+                        handler_type=_et_htype,
+                        parameters_json=json.dumps(_et_params),
+                        handler_config_json=json.dumps(_et_hconfig) if _et_hconfig else None,
+                        proposal_type="edit",
+                        target_tool_id=_et_existing.id,
+                        status="pending",
+                    )
+                    db.add(_et_record)
+                    db.commit()
+                    db.refresh(_et_record)
+                    _et_event_key = f"proposal:{session_id}:{tc.id}"
+                    _et_event = asyncio.Event()
+                    _tool_proposal_events[_et_event_key] = _et_event
+                    yield {
+                        "event": "tool_proposal_required",
+                        "data": json.dumps({
+                            "proposal_id": str(_et_record.id),
+                            "session_id": str(session_id),
+                            "tool_call_id": tc.id,
+                            "name": _et_name,
+                            "description": _et_desc,
+                            "handler_type": _et_htype,
+                            "parameters": _et_params,
+                            "handler_config": _et_hconfig,
+                            "proposal_type": "edit",
+                            "target_tool_id": str(_et_existing.id),
+                            "existing_description": _et_existing.description,
+                            "existing_parameters": _et_existing_params,
+                            "existing_handler_config": _et_existing_hconfig,
+                        }),
+                    }
+                    try:
+                        await asyncio.wait_for(_et_event.wait(), timeout=600.0)
+                    except asyncio.TimeoutError:
+                        _et_record.status = "rejected"
+                        db.commit()
+                        _tool_proposal_events.pop(_et_event_key, None)
+                        messages.append(LLMMessage(role="user", content=f"[Tool edit proposal for '{_et_name}' timed out and was not applied.]\n\n{TOOL_RESULT_PROMPT}"))
+                        continue
+                    finally:
+                        _tool_proposal_events.pop(_et_event_key, None)
+                    db.refresh(_et_record)
+                    if _et_record.status == "approved":
+                        messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                    else:
+                        messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
+                    continue
+
                 # --- HITL: check if this tool requires human approval ---
                 tool_def = _tool_hitl_map.get(tc.name)
                 if _needs_hitl(tc.name, tool_def, agent):
@@ -2410,6 +2548,83 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                             messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' was approved and saved to the toolkit. You can now call it directly.]\n\n{TOOL_RESULT_PROMPT}"))
                         else:
                             messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
+                        continue
+
+                    # --- Tool edit: intercept edit_tool virtual calls (SQLite single-agent+MCP) ---
+                    if tc.name == "edit_tool":
+                        try:
+                            _et_args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {})
+                        except (json.JSONDecodeError, TypeError):
+                            _et_args = {}
+                        _et_name = _et_args.get("name", "").strip()
+                        if not _et_name:
+                            messages.append(LLMMessage(role="user", content="[Tool edit failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                            continue
+                        _et_existing = db.query(ToolDefinition).filter(
+                            ToolDefinition.name == _et_name,
+                            ToolDefinition.is_active == True,
+                            ToolDefinition.is_model_created == True,
+                        ).first()
+                        if not _et_existing:
+                            messages.append(LLMMessage(role="user", content=f"[Tool edit failed: no model-created tool named '{_et_name}' found. You can only edit tools created by a model.]\n\n{TOOL_RESULT_PROMPT}"))
+                            continue
+                        _et_desc = _et_args.get("description", _et_existing.description)
+                        _et_htype = _et_args.get("handler_type", _et_existing.handler_type)
+                        _et_params = _et_args.get("parameters") or json.loads(_et_existing.parameters_json or "{}")
+                        _et_hconfig = _et_args.get("handler_config") or (json.loads(_et_existing.handler_config) if _et_existing.handler_config else None)
+                        _et_existing_params = json.loads(_et_existing.parameters_json or "{}")
+                        _et_existing_hconfig = json.loads(_et_existing.handler_config) if _et_existing.handler_config else None
+                        _et_record = ToolProposal(
+                            session_id=session_id,
+                            tool_call_id=tc.id,
+                            name=_et_name,
+                            description=_et_desc,
+                            handler_type=_et_htype,
+                            parameters_json=json.dumps(_et_params),
+                            handler_config_json=json.dumps(_et_hconfig) if _et_hconfig else None,
+                            proposal_type="edit",
+                            target_tool_id=_et_existing.id,
+                            status="pending",
+                        )
+                        db.add(_et_record)
+                        db.commit()
+                        db.refresh(_et_record)
+                        _et_event_key = f"proposal:{session_id}:{tc.id}"
+                        _et_event = asyncio.Event()
+                        _tool_proposal_events[_et_event_key] = _et_event
+                        yield {
+                            "event": "tool_proposal_required",
+                            "data": json.dumps({
+                                "proposal_id": str(_et_record.id),
+                                "session_id": str(session_id),
+                                "tool_call_id": tc.id,
+                                "name": _et_name,
+                                "description": _et_desc,
+                                "handler_type": _et_htype,
+                                "parameters": _et_params,
+                                "handler_config": _et_hconfig,
+                                "proposal_type": "edit",
+                                "target_tool_id": str(_et_existing.id),
+                                "existing_description": _et_existing.description,
+                                "existing_parameters": _et_existing_params,
+                                "existing_handler_config": _et_existing_hconfig,
+                            }),
+                        }
+                        try:
+                            await asyncio.wait_for(_et_event.wait(), timeout=600.0)
+                        except asyncio.TimeoutError:
+                            _et_record.status = "rejected"
+                            db.commit()
+                            _tool_proposal_events.pop(_et_event_key, None)
+                            messages.append(LLMMessage(role="user", content=f"[Tool edit proposal for '{_et_name}' timed out and was not applied.]\n\n{TOOL_RESULT_PROMPT}"))
+                            continue
+                        finally:
+                            _tool_proposal_events.pop(_et_event_key, None)
+                        db.refresh(_et_record)
+                        if _et_record.status == "approved":
+                            messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                        else:
+                            messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
                         continue
 
                     # --- HITL: check if this tool requires human approval ---
@@ -3459,6 +3674,77 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                         messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
                     continue
 
+                # --- Tool edit: intercept edit_tool virtual calls (Mongo single-agent) ---
+                if tc.name == "edit_tool":
+                    try:
+                        _et_args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {})
+                    except (json.JSONDecodeError, TypeError):
+                        _et_args = {}
+                    _et_name = _et_args.get("name", "").strip()
+                    if not _et_name:
+                        messages.append(LLMMessage(role="user", content="[Tool edit failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                        continue
+                    _et_coll = mongo_db[ToolDefinitionCollection.collection_name]
+                    _et_existing = await _et_coll.find_one({"name": _et_name, "is_active": True, "is_model_created": True})
+                    if not _et_existing:
+                        messages.append(LLMMessage(role="user", content=f"[Tool edit failed: no model-created tool named '{_et_name}' found. You can only edit tools created by a model.]\n\n{TOOL_RESULT_PROMPT}"))
+                        continue
+                    _et_desc = _et_args.get("description", _et_existing.get("description"))
+                    _et_htype = _et_args.get("handler_type", _et_existing.get("handler_type", "python"))
+                    _et_existing_params_raw = _et_existing.get("parameters_json", "{}")
+                    _et_existing_params = json.loads(_et_existing_params_raw) if isinstance(_et_existing_params_raw, str) else (_et_existing_params_raw or {})
+                    _et_existing_hconfig_raw = _et_existing.get("handler_config")
+                    _et_existing_hconfig = json.loads(_et_existing_hconfig_raw) if isinstance(_et_existing_hconfig_raw, str) else _et_existing_hconfig_raw
+                    _et_params = _et_args.get("parameters") or _et_existing_params
+                    _et_hconfig = _et_args.get("handler_config") or _et_existing_hconfig
+                    _et_doc = await ToolProposalCollection.create(mongo_db, {
+                        "session_id": session_id,
+                        "tool_call_id": tc.id,
+                        "name": _et_name,
+                        "description": _et_desc,
+                        "handler_type": _et_htype,
+                        "parameters_json": json.dumps(_et_params),
+                        "handler_config_json": json.dumps(_et_hconfig) if _et_hconfig else None,
+                        "proposal_type": "edit",
+                        "target_tool_id": str(_et_existing["_id"]),
+                    })
+                    _et_event_key = f"proposal:{session_id}:{tc.id}"
+                    _et_event = asyncio.Event()
+                    _tool_proposal_events[_et_event_key] = _et_event
+                    yield {
+                        "event": "tool_proposal_required",
+                        "data": json.dumps({
+                            "proposal_id": str(_et_doc["_id"]),
+                            "session_id": session_id,
+                            "tool_call_id": tc.id,
+                            "name": _et_name,
+                            "description": _et_desc,
+                            "handler_type": _et_htype,
+                            "parameters": _et_params,
+                            "handler_config": _et_hconfig,
+                            "proposal_type": "edit",
+                            "target_tool_id": str(_et_existing["_id"]),
+                            "existing_description": _et_existing.get("description"),
+                            "existing_parameters": _et_existing_params,
+                            "existing_handler_config": _et_existing_hconfig,
+                        }),
+                    }
+                    try:
+                        await asyncio.wait_for(_et_event.wait(), timeout=600.0)
+                    except asyncio.TimeoutError:
+                        await ToolProposalCollection.update_status(mongo_db, str(_et_doc["_id"]), "rejected")
+                        _tool_proposal_events.pop(_et_event_key, None)
+                        messages.append(LLMMessage(role="user", content=f"[Tool edit proposal for '{_et_name}' timed out and was not applied.]\n\n{TOOL_RESULT_PROMPT}"))
+                        continue
+                    finally:
+                        _tool_proposal_events.pop(_et_event_key, None)
+                    refreshed_et = await ToolProposalCollection.find_by_id(mongo_db, str(_et_doc["_id"]))
+                    if refreshed_et and refreshed_et.get("status") == "approved":
+                        messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                    else:
+                        messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
+                    continue
+
                 # --- HITL: check if this tool requires human approval ---
                 tool_def_mongo = _tool_hitl_map_mongo.get(tc.name)
                 # Wrap mongo dict so _needs_hitl can read requires_confirmation
@@ -3778,6 +4064,77 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                             messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' was approved and saved to the toolkit. You can now call it directly.]\n\n{TOOL_RESULT_PROMPT}"))
                         else:
                             messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
+                        continue
+
+                    # --- Tool edit: intercept edit_tool virtual calls (Mongo single-agent+MCP) ---
+                    if tc.name == "edit_tool":
+                        try:
+                            _et_args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {})
+                        except (json.JSONDecodeError, TypeError):
+                            _et_args = {}
+                        _et_name = _et_args.get("name", "").strip()
+                        if not _et_name:
+                            messages.append(LLMMessage(role="user", content="[Tool edit failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                            continue
+                        _et_coll = mongo_db[ToolDefinitionCollection.collection_name]
+                        _et_existing = await _et_coll.find_one({"name": _et_name, "is_active": True, "is_model_created": True})
+                        if not _et_existing:
+                            messages.append(LLMMessage(role="user", content=f"[Tool edit failed: no model-created tool named '{_et_name}' found. You can only edit tools created by a model.]\n\n{TOOL_RESULT_PROMPT}"))
+                            continue
+                        _et_desc = _et_args.get("description", _et_existing.get("description"))
+                        _et_htype = _et_args.get("handler_type", _et_existing.get("handler_type", "python"))
+                        _et_existing_params_raw = _et_existing.get("parameters_json", "{}")
+                        _et_existing_params = json.loads(_et_existing_params_raw) if isinstance(_et_existing_params_raw, str) else (_et_existing_params_raw or {})
+                        _et_existing_hconfig_raw = _et_existing.get("handler_config")
+                        _et_existing_hconfig = json.loads(_et_existing_hconfig_raw) if isinstance(_et_existing_hconfig_raw, str) else _et_existing_hconfig_raw
+                        _et_params = _et_args.get("parameters") or _et_existing_params
+                        _et_hconfig = _et_args.get("handler_config") or _et_existing_hconfig
+                        _et_doc = await ToolProposalCollection.create(mongo_db, {
+                            "session_id": session_id,
+                            "tool_call_id": tc.id,
+                            "name": _et_name,
+                            "description": _et_desc,
+                            "handler_type": _et_htype,
+                            "parameters_json": json.dumps(_et_params),
+                            "handler_config_json": json.dumps(_et_hconfig) if _et_hconfig else None,
+                            "proposal_type": "edit",
+                            "target_tool_id": str(_et_existing["_id"]),
+                        })
+                        _et_event_key = f"proposal:{session_id}:{tc.id}"
+                        _et_event = asyncio.Event()
+                        _tool_proposal_events[_et_event_key] = _et_event
+                        yield {
+                            "event": "tool_proposal_required",
+                            "data": json.dumps({
+                                "proposal_id": str(_et_doc["_id"]),
+                                "session_id": session_id,
+                                "tool_call_id": tc.id,
+                                "name": _et_name,
+                                "description": _et_desc,
+                                "handler_type": _et_htype,
+                                "parameters": _et_params,
+                                "handler_config": _et_hconfig,
+                                "proposal_type": "edit",
+                                "target_tool_id": str(_et_existing["_id"]),
+                                "existing_description": _et_existing.get("description"),
+                                "existing_parameters": _et_existing_params,
+                                "existing_handler_config": _et_existing_hconfig,
+                            }),
+                        }
+                        try:
+                            await asyncio.wait_for(_et_event.wait(), timeout=600.0)
+                        except asyncio.TimeoutError:
+                            await ToolProposalCollection.update_status(mongo_db, str(_et_doc["_id"]), "rejected")
+                            _tool_proposal_events.pop(_et_event_key, None)
+                            messages.append(LLMMessage(role="user", content=f"[Tool edit proposal for '{_et_name}' timed out and was not applied.]\n\n{TOOL_RESULT_PROMPT}"))
+                            continue
+                        finally:
+                            _tool_proposal_events.pop(_et_event_key, None)
+                        refreshed_et = await ToolProposalCollection.find_by_id(mongo_db, str(_et_doc["_id"]))
+                        if refreshed_et and refreshed_et.get("status") == "approved":
+                            messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                        else:
+                            messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
                         continue
 
                     # --- HITL: check if this tool requires human approval ---
@@ -4335,7 +4692,7 @@ async def approve_tool_proposal(
     current_user: TokenData = Depends(get_current_user),
     db: DBSession = Depends(get_db),
 ):
-    """Approve a pending tool proposal: creates the ToolDefinition and unblocks the streaming generator."""
+    """Approve a pending tool proposal: creates or updates the ToolDefinition and unblocks the streaming generator."""
     from datetime import datetime
 
     if DATABASE_TYPE == "mongo":
@@ -4344,42 +4701,64 @@ async def approve_tool_proposal(
         if not proposal or proposal.get("session_id") != session_id or proposal.get("status") != "pending":
             raise HTTPException(status_code=404, detail="Proposal not found or already resolved")
 
-        # Parse params / config
         params_raw = proposal.get("parameters_json") or "{}"
         hconfig_raw = proposal.get("handler_config_json") or "{}"
+        proposal_type = proposal.get("proposal_type", "create")
 
-        # Create or update ToolDefinition in MongoDB (upsert by user+name to avoid duplicates)
-        from models_mongo import ToolDefinitionCollection
-        existing_tool = await mongo_db["tool_definitions"].find_one({
-            "user_id": current_user.user_id,
-            "name": proposal["name"],
-            "is_active": True,
-        })
-        if existing_tool:
-            await mongo_db["tool_definitions"].update_one(
-                {"_id": existing_tool["_id"]},
+        from models_mongo import ToolDefinitionCollection as _TDC
+        if proposal_type == "edit":
+            # Edit proposal: update the existing model-created tool by target_tool_id
+            target_id = proposal.get("target_tool_id")
+            if not target_id:
+                raise HTTPException(status_code=400, detail="Edit proposal missing target_tool_id")
+            from bson import ObjectId as _ObjId
+            updated = await mongo_db["tool_definitions"].find_one_and_update(
+                {"_id": _ObjId(target_id), "is_model_created": True},
                 {"$set": {
                     "description": proposal.get("description") or "",
                     "handler_type": proposal["handler_type"],
                     "parameters_json": params_raw,
                     "handler_config": hconfig_raw,
                 }},
+                return_document=True,
             )
-            new_tool_id = str(existing_tool["_id"])
+            if not updated:
+                raise HTTPException(status_code=404, detail="Target tool not found or is not model-created")
+            tool_id = str(updated["_id"])
         else:
-            new_tool = await ToolDefinitionCollection.create(mongo_db, {
+            # Create proposal: upsert by user+name
+            existing_tool = await mongo_db["tool_definitions"].find_one({
                 "user_id": current_user.user_id,
                 "name": proposal["name"],
-                "description": proposal.get("description") or "",
-                "handler_type": proposal["handler_type"],
-                "parameters_json": params_raw,
-                "handler_config": hconfig_raw,
                 "is_active": True,
             })
-            new_tool_id = str(new_tool["_id"])
+            if existing_tool:
+                await mongo_db["tool_definitions"].update_one(
+                    {"_id": existing_tool["_id"]},
+                    {"$set": {
+                        "description": proposal.get("description") or "",
+                        "handler_type": proposal["handler_type"],
+                        "parameters_json": params_raw,
+                        "handler_config": hconfig_raw,
+                        "is_model_created": True,
+                    }},
+                )
+                tool_id = str(existing_tool["_id"])
+            else:
+                new_tool = await _TDC.create(mongo_db, {
+                    "user_id": current_user.user_id,
+                    "name": proposal["name"],
+                    "description": proposal.get("description") or "",
+                    "handler_type": proposal["handler_type"],
+                    "parameters_json": params_raw,
+                    "handler_config": hconfig_raw,
+                    "is_active": True,
+                    "is_model_created": True,
+                })
+                tool_id = str(new_tool["_id"])
 
         await ToolProposalCollection.update_status(mongo_db, proposal_id, "approved", extra={
-            "created_tool_id": new_tool_id,
+            "created_tool_id": tool_id,
         })
 
         event_key = f"proposal:{session_id}:{proposal['tool_call_id']}"
@@ -4387,7 +4766,7 @@ async def approve_tool_proposal(
         if ev:
             ev.set()
 
-        return {"status": "approved", "tool_id": new_tool_id}
+        return {"status": "approved", "tool_id": tool_id}
 
     # SQLite
     proposal = db.query(ToolProposal).filter(
@@ -4398,36 +4777,60 @@ async def approve_tool_proposal(
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found or already resolved")
 
-    # Create or update ToolDefinition in SQLite (upsert by user+name to avoid duplicates)
-    existing_tool = db.query(ToolDefinition).filter(
-        ToolDefinition.user_id == int(current_user.user_id),
-        ToolDefinition.name == proposal.name,
-        ToolDefinition.is_active == True,
-    ).first()
-    if existing_tool:
-        existing_tool.description = proposal.description or ""
-        existing_tool.handler_type = proposal.handler_type
-        existing_tool.parameters_json = proposal.parameters_json or "{}"
-        existing_tool.handler_config = proposal.handler_config_json or "{}"
+    proposal_type = proposal.proposal_type or "create"
+
+    if proposal_type == "edit":
+        # Edit proposal: update the existing model-created tool
+        if not proposal.target_tool_id:
+            raise HTTPException(status_code=400, detail="Edit proposal missing target_tool_id")
+        target_tool = db.query(ToolDefinition).filter(
+            ToolDefinition.id == proposal.target_tool_id,
+            ToolDefinition.is_model_created == True,
+            ToolDefinition.is_active == True,
+        ).first()
+        if not target_tool:
+            raise HTTPException(status_code=404, detail="Target tool not found or is not model-created")
+        target_tool.description = proposal.description or ""
+        target_tool.handler_type = proposal.handler_type
+        target_tool.parameters_json = proposal.parameters_json or "{}"
+        target_tool.handler_config = proposal.handler_config_json or "{}"
         db.commit()
-        db.refresh(existing_tool)
-        new_tool = existing_tool
+        db.refresh(target_tool)
+        tool_id = str(target_tool.id)
     else:
-        new_tool = ToolDefinition(
-            user_id=int(current_user.user_id),
-            name=proposal.name,
-            description=proposal.description or "",
-            handler_type=proposal.handler_type,
-            parameters_json=proposal.parameters_json or "{}",
-            handler_config=proposal.handler_config_json or "{}",
-            is_active=True,
-        )
-        db.add(new_tool)
-        db.commit()
-        db.refresh(new_tool)
+        # Create proposal: upsert by user+name, always mark as model-created
+        existing_tool = db.query(ToolDefinition).filter(
+            ToolDefinition.user_id == int(current_user.user_id),
+            ToolDefinition.name == proposal.name,
+            ToolDefinition.is_active == True,
+        ).first()
+        if existing_tool:
+            existing_tool.description = proposal.description or ""
+            existing_tool.handler_type = proposal.handler_type
+            existing_tool.parameters_json = proposal.parameters_json or "{}"
+            existing_tool.handler_config = proposal.handler_config_json or "{}"
+            existing_tool.is_model_created = True
+            db.commit()
+            db.refresh(existing_tool)
+            new_tool = existing_tool
+        else:
+            new_tool = ToolDefinition(
+                user_id=int(current_user.user_id),
+                name=proposal.name,
+                description=proposal.description or "",
+                handler_type=proposal.handler_type,
+                parameters_json=proposal.parameters_json or "{}",
+                handler_config=proposal.handler_config_json or "{}",
+                is_active=True,
+                is_model_created=True,
+            )
+            db.add(new_tool)
+            db.commit()
+            db.refresh(new_tool)
+        tool_id = str(new_tool.id)
 
     proposal.status = "approved"
-    proposal.created_tool_id = new_tool.id
+    proposal.created_tool_id = int(tool_id)
     proposal.resolved_at = datetime.utcnow()
     db.commit()
 
@@ -4436,7 +4839,7 @@ async def approve_tool_proposal(
     if ev:
         ev.set()
 
-    return {"status": "approved", "tool_id": str(new_tool.id)}
+    return {"status": "approved", "tool_id": tool_id}
 
 
 @router.post("/sessions/{session_id}/tool-proposals/{proposal_id}/reject")
@@ -4504,6 +4907,11 @@ async def get_pending_tool_proposals(
                 handler_config=json.loads(p["handler_config_json"]) if p.get("handler_config_json") else None,
                 status=p["status"],
                 created_tool_id=str(p["created_tool_id"]) if p.get("created_tool_id") else None,
+                proposal_type=p.get("proposal_type", "create"),
+                target_tool_id=str(p["target_tool_id"]) if p.get("target_tool_id") else None,
+                existing_description=p.get("existing_description"),
+                existing_parameters=p.get("existing_parameters"),
+                existing_handler_config=p.get("existing_handler_config"),
             )
             for p in proposals
         ])
@@ -4524,6 +4932,8 @@ async def get_pending_tool_proposals(
             handler_config=json.loads(p.handler_config_json) if p.handler_config_json else None,
             status=p.status,
             created_tool_id=str(p.created_tool_id) if p.created_tool_id else None,
+            proposal_type=p.proposal_type or "create",
+            target_tool_id=str(p.target_tool_id) if p.target_tool_id else None,
         )
         for p in proposals
     ])

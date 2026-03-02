@@ -19,6 +19,7 @@ export const Routes = {
   PLAYGROUND  : '/playground',
   SESSIONS    : '/sessions',
   KNOWLEDGE   : '/knowledge',
+  EVALS       : '/evals',
   SETTINGS    : '/settings',
 } as const;
 
@@ -59,6 +60,12 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Knowledge',
     allowedRoles: ['admin', 'user'],
     description: 'Knowledge bases for agent RAG',
+  },
+  {
+    path: Routes.EVALS,
+    label: 'Evals',
+    allowedRoles: ['admin', 'user'],
+    description: 'Eval suites for testing agent performance',
   },
   {
     path: Routes.SETTINGS,

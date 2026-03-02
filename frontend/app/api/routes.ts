@@ -137,4 +137,31 @@ export const AppRoutes = {
     // Traces
     GetSessionTrace     : (sessionId: string) => `/api/traces/sessions/${sessionId}`,
     GetWorkflowRunTrace : (runId: string) => `/api/traces/workflow-runs/${runId}`,
+
+    // Agent Versions
+    ListAgentVersions   : (agentId: string) => `/api/versions/agents/${agentId}`,
+    GetAgentVersion     : (agentId: string, versionId: string) => `/api/versions/agents/${agentId}/${versionId}`,
+    RollbackAgentVersion: (agentId: string, versionId: string) => `/api/versions/agents/${agentId}/${versionId}/rollback`,
+    DeleteAgentVersion  : (agentId: string, versionId: string) => `/api/versions/agents/${agentId}/${versionId}`,
+    PruneAgentVersions  : (agentId: string) => `/api/versions/agents/${agentId}/prune`,
+
+    // Eval Harness
+    ListEvalSuites      : () => "/api/evals/suites",
+    CreateEvalSuite     : () => "/api/evals/suites",
+    GetEvalSuite        : (id: string) => `/api/evals/suites/${id}`,
+    UpdateEvalSuite     : (id: string) => `/api/evals/suites/${id}`,
+    DeleteEvalSuite     : (id: string) => `/api/evals/suites/${id}`,
+    RunEvalSuite        : (id: string) => `/api/evals/suites/${id}/run`,
+    GetEvalRun          : (id: string) => `/api/evals/runs/${id}`,
+    ListSuiteRuns       : (suiteId: string) => `/api/evals/suites/${suiteId}/runs`,
+    ListAgentEvalRuns   : (agentId: string) => `/api/evals/agents/${agentId}/runs`,
+    DeleteEvalRun       : (id: string) => `/api/evals/runs/${id}`,
+
+    // Prompt Auto-Optimizer
+    TriggerOptimization     : () => "/api/optimizer/trigger",
+    ListOptimizationRuns    : (agentId: string) => `/api/optimizer/agents/${agentId}`,
+    GetOptimizationRun      : (runId: string) => `/api/optimizer/runs/${runId}`,
+    AcceptOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}/accept`,
+    RejectOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}/reject`,
+    DeleteOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}`,
 }

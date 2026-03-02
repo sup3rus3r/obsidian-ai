@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, Union
 from datetime import datetime
 
 
@@ -208,6 +208,26 @@ class AgentExportEnvelope(BaseModel):
 class AgentImportResponse(BaseModel):
     agent: AgentResponse
     warnings: list[str]
+
+
+# ============================================================================
+# Agent Version Schemas
+# ============================================================================
+
+class AgentVersionResponse(BaseModel):
+    id: Union[int, str]
+    agent_id: Union[int, str]
+    version_number: int
+    config_snapshot: dict
+    change_summary: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class AgentVersionListResponse(BaseModel):
+    versions: list[AgentVersionResponse]
+    total: int
 
 
 # ============================================================================
@@ -488,6 +508,7 @@ class ToolDefinitionResponse(BaseModel):
     handler_config: Optional[dict] = None
     requires_confirmation: bool = False
     is_active: bool
+    is_model_created: bool = False
     created_at: datetime
 
     class Config:
@@ -797,7 +818,131 @@ class ToolProposalResponse(BaseModel):
     parameters: dict
     handler_config: Optional[dict] = None
     status: str                             # pending | approved | rejected
-    created_tool_id: Optional[str] = None  # set after approval
+    created_tool_id: Optional[str] = None  # set after approval (create proposals)
+    proposal_type: str = "create"           # create | edit
+    target_tool_id: Optional[str] = None   # for edit proposals: existing tool being updated
+    # snapshot of the existing tool before the edit (for diff display in the UI)
+    existing_description: Optional[str] = None
+    existing_parameters: Optional[dict] = None
+    existing_handler_config: Optional[dict] = None
 
 class ToolProposalPendingListResponse(BaseModel):
     proposals: list[ToolProposalResponse]
+
+
+# ============================================================================
+# Eval Harness Schemas
+# ============================================================================
+
+class EvalTestCase(BaseModel):
+    id: str                             # uuid, stable reference for result matching
+    input: str
+    expected_output: str
+    grading_method: str                 # exact_match | contains | llm_judge
+    weight: float = 1.0
+
+class EvalSuiteCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    agent_id: Optional[Union[int, str]] = None
+    test_cases: list[EvalTestCase] = []
+
+class EvalSuiteUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    agent_id: Optional[Union[int, str]] = None
+    test_cases: Optional[list[EvalTestCase]] = None
+
+class EvalSuiteResponse(BaseModel):
+    id: Union[int, str]
+    user_id: Union[int, str]
+    agent_id: Optional[Union[int, str]] = None
+    name: str
+    description: Optional[str] = None
+    test_cases: list[EvalTestCase]
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class EvalSuiteListResponse(BaseModel):
+    suites: list[EvalSuiteResponse]
+
+class EvalCaseResult(BaseModel):
+    case_id: str
+    input: str
+    expected: str
+    actual_output: str
+    passed: bool
+    score: float                        # 0.0 or 1.0 for exact/contains; 0.0–1.0 for llm_judge
+    reasoning: Optional[str] = None    # only for llm_judge
+
+class EvalRunResponse(BaseModel):
+    id: Union[int, str]
+    suite_id: Union[int, str]
+    agent_id: Optional[Union[int, str]] = None
+    version_id: Optional[Union[int, str]] = None
+    status: str                         # pending | running | completed | failed
+    results: Optional[list[EvalCaseResult]] = None
+    score: Optional[float] = None
+    total_cases: int
+    passed_cases: int
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class EvalRunListResponse(BaseModel):
+    runs: list[EvalRunResponse]
+
+class RunEvalRequest(BaseModel):
+    agent_id: Union[int, str]
+    version_id: Optional[Union[int, str]] = None   # if set, runs against that snapshot
+    override_system_prompt: Optional[str] = None   # for optimizer validation
+
+
+# ─── Prompt Auto-Optimizer ────────────────────────────────────────────────────
+
+class FailurePattern(BaseModel):
+    pattern: str
+    description: str
+    frequency: int
+    severity: str                       # low | medium | high
+    example_trace_ids: list[str] = []
+
+class OptimizationRunResponse(BaseModel):
+    id: Union[int, str]
+    agent_id: Union[int, str]
+    user_id: Union[int, str]
+    status: str                         # pending | analyzing | proposing | validating | awaiting_review | accepted | rejected | failed
+    trace_count: int
+    failure_patterns: Optional[list[FailurePattern]] = None
+    current_prompt: Optional[str] = None
+    proposed_prompt: Optional[str] = None
+    rationale: Optional[str] = None
+    eval_suite_id: Optional[Union[int, str]] = None
+    eval_run_id: Optional[Union[int, str]] = None
+    baseline_score: Optional[float] = None
+    proposed_score: Optional[float] = None
+    accepted_version_id: Optional[Union[int, str]] = None
+    rejected_reason: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class OptimizationRunListResponse(BaseModel):
+    runs: list[OptimizationRunResponse]
+
+class TriggerOptimizationRequest(BaseModel):
+    agent_id: Union[int, str]
+    eval_suite_id: Optional[Union[int, str]] = None   # if set, runs eval to validate the proposal
+    min_traces: int = 5
+    max_traces: int = 50
+
+class RejectOptimizationRequest(BaseModel):
+    reason: Optional[str] = None

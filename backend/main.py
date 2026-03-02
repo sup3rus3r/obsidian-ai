@@ -36,6 +36,9 @@ from routers.knowledge_router import router as knowledge_router
 from routers.schedule_router import router as schedule_router
 from routers.memory_router import router as memory_router
 from routers.traces_router import router as traces_router
+from routers.versions_router import router as versions_router
+from routers.eval_router import router as eval_router
+from routers.optimizer_router import router as optimizer_router
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import connect_to_mongo, close_mongo_connection, get_database
@@ -260,6 +263,48 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add is_model_created to tool_definitions if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE tool_definitions ADD COLUMN is_model_created BOOLEAN DEFAULT 0"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add proposal_type and target_tool_id to tool_proposals if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE tool_proposals ADD COLUMN proposal_type TEXT DEFAULT 'create'"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE tool_proposals ADD COLUMN target_tool_id INTEGER"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Create agent_versions table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS agent_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    version_number INTEGER NOT NULL,
+                    config_snapshot TEXT NOT NULL,
+                    change_summary TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
         # Add hitl_confirmation_tools_json to agents if missing
         try:
             conn.execute(sqlalchemy.text(
@@ -407,6 +452,188 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Create eval_suites table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS eval_suites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    test_cases_json TEXT NOT NULL DEFAULT '[]',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Create eval_runs table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS eval_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    suite_id INTEGER NOT NULL REFERENCES eval_suites(id) ON DELETE CASCADE,
+                    agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+                    agent_config_snapshot TEXT,
+                    version_id INTEGER REFERENCES agent_versions(id) ON DELETE SET NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    results_json TEXT,
+                    score REAL,
+                    total_cases INTEGER DEFAULT 0,
+                    passed_cases INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Create optimization_runs table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS optimization_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    trace_session_ids TEXT,
+                    trace_count INTEGER DEFAULT 0,
+                    failure_patterns TEXT,
+                    current_prompt TEXT,
+                    proposed_prompt TEXT,
+                    rationale TEXT,
+                    eval_suite_id INTEGER REFERENCES eval_suites(id) ON DELETE SET NULL,
+                    eval_run_id INTEGER REFERENCES eval_runs(id) ON DELETE SET NULL,
+                    baseline_score REAL,
+                    proposed_score REAL,
+                    accepted_version_id INTEGER REFERENCES agent_versions(id) ON DELETE SET NULL,
+                    rejected_reason TEXT,
+                    error_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+
+# ── Module-level APScheduler job functions ────────────────────────────────────
+# Must be at module scope (not closures) so APScheduler can pickle them for the
+# MongoDB / SQLAlchemy job stores.
+
+import logging as _sched_log
+_sched_logger = _sched_log.getLogger(__name__)
+
+
+async def _weekly_auto_optimize():
+    """Trigger optimization for all agents (APScheduler weekly job)."""
+    from datetime import timezone as _tz
+    if DATABASE_TYPE == "mongo":
+        from database_mongo import get_database as _get_mdb
+        from models_mongo import OptimizationRunCollection as _ORC
+        from optimizer import start_optimization_mongo
+        try:
+            _mdb = _get_mdb()
+            _agents_coll = _mdb["agents"]
+            async for _ag in _agents_coll.find({"is_active": True}):
+                _aid = str(_ag["_id"])
+                _uid = _ag.get("user_id", "")
+                _doc = await _ORC.create(_mdb, {
+                    "agent_id": _aid,
+                    "user_id": _uid,
+                    "status": "pending",
+                    "trace_count": 0,
+                })
+                start_optimization_mongo(
+                    run_id=str(_doc["_id"]),
+                    agent_id=_aid,
+                    user_id=_uid,
+                    eval_suite_id=None,
+                    min_traces=5,
+                    max_traces=50,
+                )
+        except Exception as _e:
+            _sched_logger.warning("Weekly auto-optimize (mongo) error: %s", _e)
+    else:
+        from optimizer import start_optimization_sqlite
+        from models import Agent as _Agent, OptimizationRun as _OR
+        from database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            for _ag in _db.query(_Agent).all():
+                _run = _OR(
+                    agent_id=_ag.id,
+                    user_id=_ag.user_id,
+                    status="pending",
+                    trace_count=0,
+                )
+                _db.add(_run)
+                _db.commit()
+                _db.refresh(_run)
+                start_optimization_sqlite(
+                    run_id=_run.id,
+                    agent_id=_ag.id,
+                    user_id=_ag.user_id,
+                    eval_suite_id=None,
+                    min_traces=5,
+                    max_traces=50,
+                )
+        except Exception as _e:
+            _sched_logger.warning("Weekly auto-optimize (sqlite) error: %s", _e)
+        finally:
+            _db.close()
+
+
+async def _daily_prune():
+    """Prune old agent versions and terminal optimization runs (APScheduler daily job)."""
+    from datetime import timedelta, timezone as _tz
+    if DATABASE_TYPE == "mongo":
+        from database_mongo import get_database as _get_mdb
+        from models_mongo import AgentVersionCollection as _AVC, OptimizationRunCollection as _ORC
+        try:
+            _mdb = _get_mdb()
+            from datetime import datetime as _dt
+            _cutoff = _dt.now(_tz.utc) - timedelta(hours=72)
+            _opt_cutoff = _dt.now(_tz.utc) - timedelta(days=30)
+            async for _ag in _mdb["agents"].find({}, {"_id": 1}):
+                await _AVC.prune_old(_mdb, str(_ag["_id"]), _cutoff)
+            await _ORC.prune_old(_mdb, _opt_cutoff)
+        except Exception as _e:
+            _sched_logger.warning("Daily prune (mongo) error: %s", _e)
+    else:
+        from models import AgentVersion as _AV, OptimizationRun as _OR, Agent as _Agent
+        from database import SessionLocal as _SL
+        from datetime import datetime as _dt
+        _db = _SL()
+        try:
+            _cutoff = _dt.now() - timedelta(hours=72)
+            for _ag in _db.query(_Agent).all():
+                _latest = _db.query(_AV).filter(
+                    _AV.agent_id == _ag.id
+                ).order_by(_AV.version_number.desc()).first()
+                if _latest:
+                    _db.query(_AV).filter(
+                        _AV.agent_id == _ag.id,
+                        _AV.created_at < _cutoff,
+                        _AV.id != _latest.id,
+                    ).delete(synchronize_session=False)
+            _opt_cutoff = _dt.now() - timedelta(days=30)
+            _db.query(_OR).filter(
+                _OR.status.in_(["accepted", "rejected", "failed"]),
+                _OR.created_at < _opt_cutoff,
+            ).delete(synchronize_session=False)
+            _db.commit()
+        except Exception as _e:
+            _sched_logger.warning("Daily prune (sqlite) error: %s", _e)
+            _db.rollback()
+        finally:
+            _db.close()
+
 
 async def _load_active_schedules():
     """Re-register APScheduler jobs for all active schedules on startup."""
@@ -521,6 +748,25 @@ async def lifespan(app: FastAPI):
     from scheduler import scheduler as _scheduler, configure_scheduler
     configure_scheduler()
     await _load_active_schedules()
+
+    # ── Maintenance jobs (module-level functions so APScheduler can pickle them) ─
+    from apscheduler.triggers.cron import CronTrigger as _CronTrigger
+
+    # Weekly auto-sweep: Monday 02:00
+    _scheduler.add_job(
+        _weekly_auto_optimize,
+        trigger=_CronTrigger(day_of_week="mon", hour=2, minute=0),
+        id="weekly_auto_optimize",
+        replace_existing=True,
+    )
+    # Daily prune: 03:00 every day
+    _scheduler.add_job(
+        _daily_prune,
+        trigger=_CronTrigger(hour=3, minute=0),
+        id="daily_prune",
+        replace_existing=True,
+    )
+
     _scheduler.start()
 
     yield
@@ -564,6 +810,9 @@ app.include_router(knowledge_router)
 app.include_router(schedule_router)
 app.include_router(memory_router)
 app.include_router(traces_router)
+app.include_router(versions_router)
+app.include_router(eval_router)
+app.include_router(optimizer_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1021,6 +1021,176 @@ class AgentMemoryCollection:
         return result.deleted_count
 
 
+class AgentVersionCollection:
+    """Collection helper for agent configuration version snapshots in MongoDB."""
+    collection_name = "agent_versions"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index([("agent_id", 1), ("version_number", -1)])
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def find_by_agent(cls, db, agent_id: str, limit: int = 50) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"agent_id": agent_id}).sort("version_number", -1).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    @classmethod
+    async def find_by_id(cls, db, version_id: str) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        return await collection.find_one({"_id": ObjectId(version_id)})
+
+    @classmethod
+    async def get_latest_version_number(cls, db, agent_id: str) -> int:
+        collection = db[cls.collection_name]
+        doc = await collection.find_one({"agent_id": agent_id}, sort=[("version_number", -1)])
+        return doc["version_number"] if doc else 0
+
+    @classmethod
+    async def delete_by_id(cls, db, version_id: str) -> bool:
+        collection = db[cls.collection_name]
+        result = await collection.delete_one({"_id": ObjectId(version_id)})
+        return result.deleted_count > 0
+
+    @classmethod
+    async def prune_old(cls, db, agent_id: str, cutoff: datetime) -> int:
+        """Delete versions older than cutoff, always keeping the latest version."""
+        collection = db[cls.collection_name]
+        latest = await collection.find_one({"agent_id": agent_id}, sort=[("version_number", -1)])
+        if not latest:
+            return 0
+        result = await collection.delete_many({
+            "agent_id": agent_id,
+            "created_at": {"$lt": cutoff},
+            "_id": {"$ne": latest["_id"]},
+        })
+        return result.deleted_count
+
+
+class EvalSuiteCollection:
+    """Collection helper for eval suites in MongoDB."""
+    collection_name = "eval_suites"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("user_id")
+        await collection.create_index("agent_id")
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        data.setdefault("test_cases_json", "[]")
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def find_by_user(cls, db, user_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"user_id": user_id}).sort("created_at", -1)
+        return await cursor.to_list(length=200)
+
+    @classmethod
+    async def find_by_id(cls, db, suite_id: str) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        try:
+            return await collection.find_one({"_id": ObjectId(suite_id)})
+        except Exception:
+            return None
+
+    @classmethod
+    async def update(cls, db, suite_id: str, user_id: str, updates: dict) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        updates["updated_at"] = datetime.utcnow()
+        result = await collection.find_one_and_update(
+            {"_id": ObjectId(suite_id), "user_id": user_id},
+            {"$set": updates},
+            return_document=True,
+        )
+        return result
+
+    @classmethod
+    async def delete(cls, db, suite_id: str, user_id: str) -> bool:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        result = await collection.delete_one({"_id": ObjectId(suite_id), "user_id": user_id})
+        return result.deleted_count > 0
+
+
+class EvalRunCollection:
+    """Collection helper for eval run results in MongoDB."""
+    collection_name = "eval_runs"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("suite_id")
+        await collection.create_index("agent_id")
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        data.setdefault("status", "pending")
+        data.setdefault("total_cases", 0)
+        data.setdefault("passed_cases", 0)
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def find_by_id(cls, db, run_id: str) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        try:
+            return await collection.find_one({"_id": ObjectId(run_id)})
+        except Exception:
+            return None
+
+    @classmethod
+    async def find_by_suite(cls, db, suite_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"suite_id": suite_id}).sort("created_at", -1)
+        return await cursor.to_list(length=100)
+
+    @classmethod
+    async def find_by_agent(cls, db, agent_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"agent_id": agent_id}).sort("created_at", -1)
+        return await cursor.to_list(length=100)
+
+    @classmethod
+    async def update_status(cls, db, run_id: str, updates: dict) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        result = await collection.find_one_and_update(
+            {"_id": ObjectId(run_id)},
+            {"$set": updates},
+            return_document=True,
+        )
+        return result
+
+    @classmethod
+    async def delete(cls, db, run_id: str) -> bool:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        result = await collection.delete_one({"_id": ObjectId(run_id)})
+        return result.deleted_count > 0
+
+
 class TraceSpanCollection:
     """Collection helper for execution trace spans in MongoDB."""
     collection_name = "trace_spans"
@@ -1052,3 +1222,68 @@ class TraceSpanCollection:
         collection = db[cls.collection_name]
         cursor = collection.find({"workflow_run_id": workflow_run_id}).sort("sequence", 1)
         return await cursor.to_list(length=1000)
+
+
+class OptimizationRunCollection:
+    """Collection helper for optimization runs in MongoDB."""
+    collection_name = "optimization_runs"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("agent_id")
+        await collection.create_index("user_id")
+        await collection.create_index("status")
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        data.setdefault("status", "pending")
+        data.setdefault("trace_count", 0)
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def find_by_id(cls, db, run_id: str) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        try:
+            return await collection.find_one({"_id": ObjectId(run_id)})
+        except Exception:
+            return None
+
+    @classmethod
+    async def find_by_agent(cls, db, agent_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"agent_id": agent_id}).sort("created_at", -1)
+        return await cursor.to_list(length=50)
+
+    @classmethod
+    async def update_status(cls, db, run_id: str, updates: dict) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        result = await collection.find_one_and_update(
+            {"_id": ObjectId(run_id)},
+            {"$set": updates},
+            return_document=True,
+        )
+        return result
+
+    @classmethod
+    async def delete(cls, db, run_id: str) -> bool:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        result = await collection.delete_one({"_id": ObjectId(run_id)})
+        return result.deleted_count > 0
+
+    @classmethod
+    async def prune_old(cls, db, cutoff: datetime) -> int:
+        """Delete accepted/rejected runs older than cutoff. Keep awaiting_review indefinitely."""
+        collection = db[cls.collection_name]
+        result = await collection.delete_many({
+            "status": {"$in": ["accepted", "rejected", "failed"]},
+            "created_at": {"$lt": cutoff},
+        })
+        return result.deleted_count

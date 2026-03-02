@@ -45,6 +45,9 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
   - [Human-in-the-Loop (HITL)](#human-in-the-loop-hitl)
   - [Knowledge Bases & RAG](#knowledge-bases--rag)
   - [Long-Term Agent Memory](#long-term-agent-memory)
+  - [Agent Versioning & Rollback](#agent-versioning--rollback)
+  - [Eval Harness & Regression Testing](#eval-harness--regression-testing)
+  - [Prompt Auto-Optimizer](#prompt-auto-optimizer)
   - [Automatic Context Management](#automatic-context-management)
   - [Session History & Execution Traces](#session-history--execution-traces)
   - [Scheduled Workflows](#scheduled-workflows)
@@ -273,6 +276,70 @@ Agents remember what matters across conversations. At the start of each new sess
 - **Key-based deduplication** — If a new fact contradicts an existing memory, it replaces the old one rather than accumulating stale data
 - **Transparent & editable** — Open any agent in edit mode to see all stored memories with category colour-coding; delete individual facts or clear everything with one click
 - **Persistent across restarts** — Memories are stored in the database (`agent_memories` table / MongoDB collection)
+
+---
+
+### Agent Versioning & Rollback
+
+Every time an agent's configuration is saved, the previous version is automatically snapshotted. Browse the full history, inspect diffs, and restore any past configuration — all without ever losing your work.
+
+- **Auto-snapshot on save** — A full config snapshot is taken before every update with zero extra clicks
+- **Version history panel** — Expand the "Version History" section in any agent's edit dialog to see a list of all past versions with timestamps and change summaries
+- **Side-by-side diff view** — Click any version to open a two-column diff comparing it to the previous snapshot
+- **One-click rollback** — Restore a previous version; the rollback itself is also versioned so you can undo it too
+- **Safe iteration** — Underpins the Prompt Auto-Optimizer and eval-driven changes; every prompt change is reversible
+- **Automatic pruning** — Versions older than 72 hours are pruned daily (the most recent version is always kept)
+
+---
+
+### Eval Harness & Regression Testing
+
+Define test suites with expected inputs and outputs, run them against any agent configuration, and get scored pass/fail results. Catch quality regressions before they reach users.
+
+- **Test suite builder** — Create named suites with as many test cases as needed; each case has an input, expected output, and a grading method
+- **Three grading methods** — `exact_match` (string equality), `contains` (substring check), `llm_judge` (a secondary LLM call scores the response and explains its reasoning)
+- **Run against any config** — Trigger a run from the Evals page; results are stored and browsable per suite
+- **Live results view** — Expand each test case to see the actual output, expected output, pass/fail badge, and LLM judge reasoning where applicable
+- **Agent-level run history** — See all eval runs across suites for a given agent
+- **Optimizer integration** — The Prompt Auto-Optimizer uses eval suites to validate proposed prompt changes before surfacing them for review
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/evals/suites` | GET / POST | List or create eval suites |
+| `/evals/suites/{id}` | GET / PUT / DELETE | Get, update, or delete a suite |
+| `/evals/suites/{id}/run` | POST | Trigger an eval run (background) |
+| `/evals/runs/{id}` | GET / DELETE | Get or delete an eval run |
+| `/evals/suites/{id}/runs` | GET | List all runs for a suite |
+| `/evals/agents/{id}/runs` | GET | List all eval runs for an agent |
+
+---
+
+### Prompt Auto-Optimizer
+
+Automatically analyzes an agent's recent conversation history, identifies recurring failure patterns, and proposes an improved system prompt — with optional validation against an eval suite before you see it.
+
+- **Trace-driven analysis** — The optimizer collects recent sessions and passes them to an LLM that identifies where the agent underperformed, misunderstood users, or violated its instructions
+- **Failure pattern extraction** — Patterns are categorized by severity (low / medium / high) and displayed as labeled chips so you can see exactly what was wrong
+- **Prompt proposal** — A second LLM call rewrites the system prompt to address the identified patterns while preserving the agent's existing capabilities
+- **Eval validation** — Optionally select an eval suite; the optimizer runs the current and proposed prompts through the suite and shows a before/after score (e.g. baseline 60% → proposed 85%)
+- **Side-by-side diff view** — The current and proposed prompts are shown side-by-side in a fixed-width monospace panel for easy comparison
+- **Accept or reject** — Accepting applies the proposed prompt to the agent (and creates a version snapshot first for safety); rejecting discards it with an optional reason
+- **Past runs list** — All previous optimization runs are listed below the active run panel for reference
+- **Weekly auto-sweep** — APScheduler triggers the optimizer automatically every Monday at 02:00 for all agents that have enough recent traces (configurable minimum)
+- **Requires ≥ 5 sessions** — The optimizer needs enough conversation data to identify meaningful patterns; running it on a fresh agent will report "not enough traces"
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/optimizer/trigger` | POST | Start a new optimization run |
+| `/optimizer/agents/{id}` | GET | List optimization runs for an agent |
+| `/optimizer/runs/{id}` | GET | Poll run status |
+| `/optimizer/runs/{id}/accept` | POST | Accept the proposed prompt |
+| `/optimizer/runs/{id}/reject` | POST | Reject the proposed prompt |
+| `/optimizer/runs/{id}` | DELETE | Delete a run record |
 
 ---
 
@@ -625,6 +692,17 @@ The backend exposes a RESTful API with interactive documentation:
 | **Knowledge** | `/knowledge/{id}/documents` | POST | Add a document to a knowledge base |
 | **Memory** | `/memory/agents/{id}` | GET | List agent memories |
 | **Memory** | `/memory/agents/{id}` | DELETE | Clear all agent memories |
+| **Versions** | `/versions/agents/{id}` | GET | List agent version snapshots |
+| **Versions** | `/versions/agents/{id}/{vid}/rollback` | POST | Rollback to a version |
+| **Evals** | `/evals/suites` | GET / POST | List or create eval suites |
+| **Evals** | `/evals/suites/{id}/run` | POST | Trigger an eval run |
+| **Evals** | `/evals/runs/{id}` | GET | Poll eval run status |
+| **Evals** | `/evals/agents/{id}/runs` | GET | List eval runs for an agent |
+| **Optimizer** | `/optimizer/trigger` | POST | Start a new optimization run |
+| **Optimizer** | `/optimizer/agents/{id}` | GET | List optimization runs for an agent |
+| **Optimizer** | `/optimizer/runs/{id}` | GET | Poll optimization run status |
+| **Optimizer** | `/optimizer/runs/{id}/accept` | POST | Accept the proposed prompt |
+| **Optimizer** | `/optimizer/runs/{id}/reject` | POST | Reject the proposed prompt |
 | **Secrets** | `/secrets` | GET | List user secrets (encrypted) |
 | **Secrets** | `/secrets` | POST | Create a new secret |
 | **Files** | `/files/upload` | POST | Upload a file attachment |
@@ -714,6 +792,8 @@ obsidian-ai/
 │   ├── file_storage.py             # File upload/download handling
 │   ├── scheduler.py                # Global APScheduler instance + cron helpers
 │   ├── scheduler_executor.py       # Background workflow execution functions
+│   ├── eval_engine.py              # Eval grading logic + background run tasks
+│   ├── optimizer.py                # Prompt auto-optimizer pipeline (SQLite + Mongo)
 │   │
 │   ├── llm/                        # LLM provider integrations
 │   │   ├── base.py                 # Base provider interface
@@ -738,6 +818,9 @@ obsidian-ai/
 │       ├── files_router.py         # File attachments
 │       ├── knowledge_router.py     # Knowledge base CRUD + document indexing
 │       ├── memory_router.py        # Agent long-term memory
+│       ├── versions_router.py      # Agent version snapshots + rollback
+│       ├── eval_router.py          # Eval suite CRUD + run management
+│       ├── optimizer_router.py     # Prompt optimizer trigger + accept/reject
 │       ├── schedule_router.py      # Workflow schedule CRUD + APScheduler sync
 │       ├── traces_router.py        # Execution trace read endpoints
 │       ├── dashboard_router.py     # Dashboard statistics
@@ -763,6 +846,7 @@ obsidian-ai/
     │       ├── settings/page.tsx   # User settings, 2FA, secrets
     │       ├── knowledge/page.tsx  # Knowledge base list
     │       ├── knowledge/[id]/page.tsx  # KB detail — add text/file documents
+    │       ├── evals/page.tsx      # Eval suite builder + run results
     │       └── admin/page.tsx      # Admin panel
     │
     ├── components/                 # React components
@@ -833,6 +917,18 @@ Workflows now support full directed-acyclic-graph (DAG) pipelines with a drag-an
 
 ---
 
+### Agent Versioning, Eval Harness & Prompt Auto-Optimizer
+
+Three interconnected features that form a complete quality and safety flywheel for your agents.
+
+**Agent Versioning** — Every `PUT /agents/{id}` automatically snapshots the full agent configuration before applying changes. The Version History panel in the agent dialog lists all snapshots with timestamps; click any version to open a two-column diff, then restore it with one click. Rollbacks are themselves versioned, so nothing is ever irreversible. Old snapshots are pruned daily (keeping the most recent always).
+
+**Eval Harness** — Define named test suites with input/expected-output pairs and a grading method per case (`exact_match`, `contains`, or `llm_judge`). Trigger runs from the new **Evals** page or via the optimizer. Results are stored per run with per-case breakdowns; the LLM judge grading method shows the model's scoring reasoning inline.
+
+**Prompt Auto-Optimizer** — Available in the agent edit dialog (amber ⚡ icon). Collects recent conversation sessions, runs an LLM failure analysis to extract patterns (labeled by severity), then proposes a rewritten system prompt. Optionally validate the proposal against an eval suite before reviewing it — the panel shows baseline vs. proposed scores. Accept to apply (a version snapshot is taken first), or reject with a reason. All past runs are listed for reference. APScheduler runs the optimizer automatically every Monday at 02:00 for agents with enough trace data.
+
+---
+
 ### Provider Import / Export
 
 Export and import LLM endpoint configurations as portable JSON files, making it easy to replicate your provider setup across instances or share it with teammates.
@@ -898,7 +994,7 @@ Bulk (all providers):
 
 ### Intelligence & Learning
 
-- [ ] **Prompt Auto-Optimizer** — Analyze an agent's execution trace history to automatically surface and apply improvements to its system prompt; reduces errors, verbosity, and failed tool calls without manual iteration
+- [x] **Prompt Auto-Optimizer** — Analyzes recent conversation traces to identify failure patterns and proposes an improved system prompt; validates against an eval suite before surfacing for review; weekly APScheduler auto-sweep
 - [ ] **Memory Graph** — Upgrade agent memory from flat key-value facts to a typed relational graph; memories have explicit relationships (e.g. *"User works at [Company]"*, *"[Company] uses [Tool]"*) that agents can traverse for richer, multi-hop context
 
 ### Observability & Debugging
@@ -914,8 +1010,8 @@ Bulk (all providers):
 ### Evaluation & Testing
 
 - [ ] **Replay & Simulation Mode** — Re-run any past session through a different agent configuration side-by-side to see exactly how responses would have changed; makes prompt iteration grounded in real historical conversations
-- [ ] **Eval harness** — Define test cases with expected outputs and get pass/fail scores
-- [ ] **Regression testing** — Detect when a prompt or model change degrades quality on a golden dataset
+- [x] **Eval harness** — Define test suites with input/expected-output pairs and grading methods (`exact_match`, `contains`, `llm_judge`); run against any agent config and get scored results with per-case breakdowns
+- [x] **Regression testing** — Run eval suites before and after prompt changes to catch quality regressions; integrated with the Prompt Auto-Optimizer for automated validation
 
 ### Security & Governance
 
@@ -925,7 +1021,7 @@ Bulk (all providers):
 ### Developer Experience
 
 - [x] **Provider Import / Export** — Export endpoint configurations (name, type, model ID, base URL, config) as portable JSON and import them on any instance; API keys are intentionally excluded and must be re-entered on import
-- [ ] **Agent versioning** — Snapshot agent configs and roll back to previous versions
+- [x] **Agent versioning** — Auto-snapshot on every save; version history panel with side-by-side diff view and one-click rollback; daily pruning of old snapshots
 
 ### UX & Productivity
 

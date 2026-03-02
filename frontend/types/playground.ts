@@ -379,6 +379,36 @@ export interface ToolProposalEvent {
   handler_type: "python" | "http"
   parameters: Record<string, unknown>
   handler_config?: Record<string, unknown>
+  // edit proposals
+  proposal_type?: "create" | "edit"
+  target_tool_id?: string
+  existing_description?: string
+  existing_parameters?: Record<string, unknown>
+  existing_handler_config?: Record<string, unknown>
+}
+
+// Agent Versions
+export interface AgentConfigSnapshot {
+  name: string
+  description?: string
+  system_prompt?: string
+  provider_id?: number | string | null
+  model_id?: string
+  tools_json?: string | null
+  mcp_servers_json?: string | null
+  knowledge_base_ids_json?: string | null
+  hitl_confirmation_tools_json?: string | null
+  allow_tool_creation?: boolean
+  config_json?: string | null
+}
+
+export interface AgentVersion {
+  id: number | string
+  agent_id: number | string
+  version_number: number
+  config_snapshot: AgentConfigSnapshot
+  change_summary: string | null
+  created_at: string
 }
 
 // MCP Servers
@@ -578,4 +608,121 @@ export interface CreateUserRequest {
 export interface UpdateUserRequest {
   role?: string
   permissions?: UserPermissions
+}
+
+// ─── Eval Harness ──────────────────────────────────────────────────────────
+
+export interface EvalTestCase {
+  id: string
+  input: string
+  expected_output: string
+  grading_method: "exact_match" | "contains" | "llm_judge"
+  weight: number
+}
+
+export interface EvalSuite {
+  id: number | string
+  user_id: number | string
+  agent_id: number | string | null
+  name: string
+  description: string | null
+  test_cases: EvalTestCase[]
+  created_at: string
+  updated_at: string | null
+}
+
+export interface EvalCaseResult {
+  case_id: string
+  input: string
+  expected: string
+  actual_output: string
+  passed: boolean
+  score: number
+  reasoning: string | null
+}
+
+export interface EvalRun {
+  id: number | string
+  suite_id: number | string
+  agent_id: number | string | null
+  version_id: number | string | null
+  status: "pending" | "running" | "completed" | "failed"
+  results: EvalCaseResult[] | null
+  score: number | null
+  total_cases: number
+  passed_cases: number
+  created_at: string
+  completed_at: string | null
+}
+
+export interface CreateEvalSuiteRequest {
+  name: string
+  description?: string
+  agent_id?: string
+  test_cases?: EvalTestCase[]
+}
+
+export interface UpdateEvalSuiteRequest {
+  name?: string
+  description?: string
+  agent_id?: string | null
+  test_cases?: EvalTestCase[]
+}
+
+export interface RunEvalRequest {
+  agent_id: string
+  version_id?: string
+  override_system_prompt?: string
+}
+
+// ─── Prompt Auto-Optimizer ──────────────────────────────────────────────────
+
+export interface FailurePattern {
+  pattern: string
+  description: string
+  frequency: number
+  severity: 'low' | 'medium' | 'high'
+  example_trace_ids: string[]
+}
+
+export type OptimizationStatus =
+  | 'pending'
+  | 'analyzing'
+  | 'proposing'
+  | 'validating'
+  | 'awaiting_review'
+  | 'accepted'
+  | 'rejected'
+  | 'failed'
+
+export interface OptimizationRun {
+  id: number | string
+  agent_id: number | string
+  user_id: number | string
+  status: OptimizationStatus
+  trace_count: number
+  failure_patterns?: FailurePattern[]
+  current_prompt?: string
+  proposed_prompt?: string
+  rationale?: string
+  eval_suite_id?: number | string
+  eval_run_id?: number | string
+  baseline_score?: number
+  proposed_score?: number
+  accepted_version_id?: number | string
+  rejected_reason?: string
+  error_message?: string
+  created_at: string
+  completed_at?: string
+}
+
+export interface TriggerOptimizationRequest {
+  agent_id: string
+  eval_suite_id?: string
+  min_traces?: number
+  max_traces?: number
+}
+
+export interface RejectOptimizationRequest {
+  reason?: string
 }
