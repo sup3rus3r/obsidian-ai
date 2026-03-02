@@ -39,6 +39,7 @@ from routers.traces_router import router as traces_router
 from routers.versions_router import router as versions_router
 from routers.eval_router import router as eval_router
 from routers.optimizer_router import router as optimizer_router
+from routers.settings_router import router as settings_router
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import connect_to_mongo, close_mongo_connection, get_database
@@ -521,6 +522,20 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Create app_settings table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE,
+                    value TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 
 # ── Module-level APScheduler job functions ────────────────────────────────────
 # Must be at module scope (not closures) so APScheduler can pickle them for the
@@ -813,6 +828,7 @@ app.include_router(traces_router)
 app.include_router(versions_router)
 app.include_router(eval_router)
 app.include_router(optimizer_router)
+app.include_router(settings_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

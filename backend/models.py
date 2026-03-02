@@ -416,3 +416,17 @@ class OptimizationRun(Base):
 
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     completed_at        = Column(DateTime(timezone=True), nullable=True)
+
+
+class AppSetting(Base):
+    """Global platform settings stored as key/value pairs.
+
+    Keys are unique strings (e.g. 'optimizer_provider_id').
+    Values are text — callers must cast as needed.
+    """
+    __tablename__ = "app_settings"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    key        = Column(String, unique=True, index=True, nullable=False)
+    value      = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

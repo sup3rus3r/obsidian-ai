@@ -756,6 +756,18 @@ class ApiClient {
   async getWorkflowRunTrace(runId: string): Promise<WorkflowRunTrace> {
     return this.request<WorkflowRunTrace>(AppRoutes.GetWorkflowRunTrace(runId))
   }
+
+  // ============= Platform Settings =============
+  async getOptimizerSettings(): Promise<{ provider_id: string | null; model_id: string | null }> {
+    return this.request(AppRoutes.GetOptimizerSettings())
+  }
+
+  async updateOptimizerSettings(data: { provider_id: string | null; model_id: string | null }): Promise<{ provider_id: string | null; model_id: string | null }> {
+    return this.request(AppRoutes.UpdateOptimizerSettings(), {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+  }
 }
 
 export const apiClient = new ApiClient()

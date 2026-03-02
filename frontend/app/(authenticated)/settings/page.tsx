@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useSession } from "next-auth/react"
-import { Settings, Shield, KeyRound, Smartphone, Loader2, Key, Eye, EyeOff, Plus, Trash2, Pencil } from "lucide-react"
+import { Settings, Shield, KeyRound, Smartphone, Loader2, Key, Eye, EyeOff, Plus, Trash2, Pencil, Zap } from "lucide-react"
 import { toast } from "sonner"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
@@ -19,11 +19,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { apiClient } from "@/lib/api-client"
 import { usePermissionsStore } from "@/stores/permissions-store"
 import { AppRoutes } from "@/app/api/routes"
 import { encryptPayload } from "@/lib/crypto"
+import type { LLMProvider } from "@/types/playground"
 
 export default function SettingsPage() {
   const { data: session, update } = useSession()
@@ -46,6 +54,7 @@ export default function SettingsPage() {
         <RoleManagementCard session={session} update={update} />
         <ChangePasswordCard session={session} />
         <TwoFactorCard session={session} />
+        <OptimizerSettingsCard session={session} />
         <SecretsCard session={session} />
       </div>
     </div>
@@ -510,6 +519,127 @@ function TwoFactorCard({ session }: { session: any }) {
               Enable 2FA
             </Button>
           </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+
+// ============================================================================
+// Optimizer Settings Card
+// ============================================================================
+
+function OptimizerSettingsCard({ session }: { session: any }) {
+  const [providers, setProviders] = useState<LLMProvider[]>([])
+  const [selectedProviderId, setSelectedProviderId] = useState<string>("none")
+  const [modelId, setModelId] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!session?.accessToken) return
+    const load = async () => {
+      try {
+        const [providerList, settings] = await Promise.all([
+          apiClient.listProviders(),
+          apiClient.getOptimizerSettings(),
+        ])
+        setProviders(providerList)
+        setSelectedProviderId(settings.provider_id || "none")
+        setModelId(settings.model_id || "")
+      } catch (e) {
+        console.error("Failed to load optimizer settings:", e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [session?.accessToken])
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      await apiClient.updateOptimizerSettings({
+        provider_id: selectedProviderId === "none" ? null : selectedProviderId,
+        model_id: modelId.trim() || null,
+      })
+      toast.success("Optimizer settings saved")
+    } catch (e: any) {
+      toast.error(e.message || "Failed to save optimizer settings")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const selectedProvider = providers.find((p) => p.id === selectedProviderId)
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Zap className="h-4 w-4 text-amber-500" />
+          <CardTitle>Prompt Auto-Optimizer</CardTitle>
+        </div>
+        <CardDescription>
+          Choose which provider and model the optimizer uses when analyzing agents and proposing improved prompts.
+          If not set, the optimizer falls back to each agent&apos;s own provider.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          </div>
+        ) : (
+          <form onSubmit={handleSave} className="space-y-4 max-w-md">
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <Select value={selectedProviderId} onValueChange={setSelectedProviderId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Use agent's own provider (default)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Use agent&apos;s own provider (default)</SelectItem>
+                  {providers.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                      {p.provider_type && (
+                        <span className="ml-2 text-xs text-muted-foreground capitalize">
+                          {p.provider_type}
+                        </span>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedProvider && (
+                <p className="text-xs text-muted-foreground">
+                  Default model for this provider: <span className="font-mono">{selectedProvider.model_id || "—"}</span>
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="optimizer-model-id">Model ID</Label>
+              <Input
+                id="optimizer-model-id"
+                value={modelId}
+                onChange={(e) => setModelId(e.target.value)}
+                placeholder={selectedProvider?.model_id || "e.g. claude-sonnet-4-6"}
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave blank to use the provider&apos;s default model.
+              </p>
+            </div>
+
+            <Button type="submit" variant="outline" disabled={saving}>
+              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save
+            </Button>
+          </form>
         )}
       </CardContent>
     </Card>

@@ -1287,3 +1287,38 @@ class OptimizationRunCollection:
             "created_at": {"$lt": cutoff},
         })
         return result.deleted_count
+
+
+class AppSettingCollection:
+    """Global key/value platform settings stored in MongoDB."""
+    collection_name = "app_settings"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("key", unique=True)
+
+    @classmethod
+    async def get(cls, db, key: str) -> Optional[str]:
+        """Return the value for a key, or None if not set."""
+        collection = db[cls.collection_name]
+        doc = await collection.find_one({"key": key})
+        return doc["value"] if doc else None
+
+    @classmethod
+    async def set(cls, db, key: str, value: Optional[str]) -> None:
+        """Upsert a key/value pair."""
+        collection = db[cls.collection_name]
+        await collection.update_one(
+            {"key": key},
+            {"$set": {"value": value, "updated_at": datetime.utcnow()}},
+            upsert=True,
+        )
+
+    @classmethod
+    async def get_all(cls, db) -> dict:
+        """Return all settings as a {key: value} dict."""
+        collection = db[cls.collection_name]
+        cursor = collection.find({})
+        docs = await cursor.to_list(length=200)
+        return {d["key"]: d.get("value") for d in docs}

@@ -19,8 +19,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from llm.base import LLMMessage
-from llm.provider_factory import create_provider
 from config import DATABASE_TYPE
+
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +85,100 @@ def _build_trace_text(sessions: list[dict]) -> str:
     return "\n".join(parts)
 
 
-async def _call_llm_json(provider_record, system: str, user: str) -> dict | list:
-    """Call the LLM and parse JSON from its response."""
-    provider = create_provider(provider_record)
+def _create_provider_from_record(provider_record, agent_model_id: str | None = None):
+    """Create an LLM provider from either a SQLAlchemy ORM object or a Mongo dict.
+
+    agent_model_id overrides the provider's stored model_id (same precedence as chat_router).
+    """
+    from llm.provider_factory import create_provider_from_config
+    from encryption import decrypt_api_key
+
+    if isinstance(provider_record, dict):
+        raw_key = provider_record.get("api_key")
+        api_key = decrypt_api_key(raw_key) if raw_key else None
+        config_raw = provider_record.get("config_json")
+        import json as _json
+        config = _json.loads(config_raw) if config_raw else None
+        model_id = agent_model_id or provider_record.get("model_id") or "gpt-4o"
+        return create_provider_from_config(
+            provider_type=provider_record.get("provider_type", ""),
+            api_key=api_key,
+            base_url=provider_record.get("base_url"),
+            model_id=model_id,
+            config=config,
+        )
+    # ORM object (SQLite)
+    from encryption import decrypt_api_key
+    api_key = decrypt_api_key(provider_record.api_key) if provider_record.api_key else None
+    import json as _json
+    config = _json.loads(provider_record.config_json) if provider_record.config_json else None
+    model_id = agent_model_id or provider_record.model_id or "gpt-4o"
+    from llm.provider_factory import create_provider_from_config
+    return create_provider_from_config(
+        provider_type=provider_record.provider_type,
+        api_key=api_key,
+        base_url=provider_record.base_url,
+        model_id=model_id,
+        config=config,
+    )
+
+
+async def _get_optimizer_provider_sqlite():
+    """Return the configured optimizer LLM provider (SQLite), or None if not configured."""
+    from database import SessionLocal
+    from models import AppSetting, LLMProvider
+    db = SessionLocal()
+    try:
+        pid_row = db.query(AppSetting).filter(AppSetting.key == "optimizer_provider_id").first()
+        mid_row = db.query(AppSetting).filter(AppSetting.key == "optimizer_model_id").first()
+        if not pid_row or not pid_row.value:
+            return None
+        provider = db.query(LLMProvider).filter(LLMProvider.id == int(pid_row.value)).first()
+        if not provider:
+            return None
+        model_id = (mid_row.value if mid_row and mid_row.value else None) or provider.model_id or "gpt-4o"
+        return _create_provider_from_record(provider, agent_model_id=model_id)
+    finally:
+        db.close()
+
+
+async def _get_optimizer_provider_mongo():
+    """Return the configured optimizer LLM provider (MongoDB), or None if not configured."""
+    from database_mongo import get_database
+    from models_mongo import AppSettingCollection, LLMProviderCollection
+    mongo_db = get_database()
+    provider_id = await AppSettingCollection.get(mongo_db, "optimizer_provider_id")
+    model_id = await AppSettingCollection.get(mongo_db, "optimizer_model_id")
+    if not provider_id:
+        return None
+    provider = await LLMProviderCollection.find_by_id(mongo_db, provider_id)
+    if not provider:
+        return None
+    resolved_model = model_id or provider.get("model_id") or "gpt-4o"
+    return _create_provider_from_record(provider, agent_model_id=resolved_model)
+
+
+async def _call_llm_json(provider_record, system: str, user: str, agent_model_id: str | None = None) -> dict | list:
+    """Call the LLM and parse JSON from its response.
+
+    If an optimizer provider is configured in app_settings, uses that instead
+    of the agent's own provider.
+    """
+    # Try to use dedicated optimizer provider from settings
+    if DATABASE_TYPE == "mongo":
+        opt_provider = await _get_optimizer_provider_mongo()
+    else:
+        opt_provider = await _get_optimizer_provider_sqlite()
+
+    if opt_provider is not None:
+        provider = opt_provider
+    else:
+        provider = _create_provider_from_record(provider_record, agent_model_id=agent_model_id)
     messages = [LLMMessage(role="user", content=user)]
     response_text = ""
-    async for chunk in provider.stream_chat(messages=messages, system_prompt=system):
-        response_text += chunk
+    async for chunk in provider.chat_stream(messages=messages, system_prompt=system):
+        if chunk.type == "content":
+            response_text += chunk.content
     # Strip possible markdown fences
     cleaned = response_text.strip()
     if cleaned.startswith("```"):
@@ -182,7 +269,7 @@ async def _run_optimization_sqlite(
             f"Conversation traces:\n{trace_text}"
         )
         try:
-            patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user)
+            patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent.model_id)
         except Exception as e:
             _update(run_id, status="failed",
                     error_message=f"Failure analysis LLM error: {e}",
@@ -205,7 +292,7 @@ async def _run_optimization_sqlite(
             f"Failure patterns:\n{json.dumps(patterns_raw, indent=2)}"
         )
         try:
-            proposal_raw = await _call_llm_json(provider, _PROMPT_OPTIMIZER_SYSTEM, optimizer_user)
+            proposal_raw = await _call_llm_json(provider, _PROMPT_OPTIMIZER_SYSTEM, optimizer_user, agent_model_id=agent.model_id)
         except Exception as e:
             _update(run_id, status="failed",
                     error_message=f"Prompt proposal LLM error: {e}",
@@ -376,13 +463,14 @@ async def _run_optimization_mongo(
                       trace_count=len(all_sessions))
 
         # ── Stage 3: failure analysis ──────────────────────────────────────────
+        agent_model_id = agent.get("model_id")
         trace_text = _build_trace_text(trace_sessions)
         analysis_user = (
             f"Agent system prompt:\n{_truncate(current_prompt, 1000)}\n\n"
             f"Conversation traces:\n{trace_text}"
         )
         try:
-            patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user)
+            patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent_model_id)
         except Exception as e:
             await _update(run_id, status="failed",
                           error_message=f"Failure analysis LLM error: {e}",
@@ -405,7 +493,7 @@ async def _run_optimization_mongo(
             f"Failure patterns:\n{json.dumps(patterns_raw, indent=2)}"
         )
         try:
-            proposal_raw = await _call_llm_json(provider, _PROMPT_OPTIMIZER_SYSTEM, optimizer_user)
+            proposal_raw = await _call_llm_json(provider, _PROMPT_OPTIMIZER_SYSTEM, optimizer_user, agent_model_id=agent_model_id)
         except Exception as e:
             await _update(run_id, status="failed",
                           error_message=f"Prompt proposal LLM error: {e}",

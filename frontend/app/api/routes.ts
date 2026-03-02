@@ -164,4 +164,8 @@ export const AppRoutes = {
     AcceptOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}/accept`,
     RejectOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}/reject`,
     DeleteOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}`,
+
+    // Platform Settings
+    GetOptimizerSettings    : () => "/api/settings/optimizer",
+    UpdateOptimizerSettings : () => "/api/settings/optimizer",
 }
