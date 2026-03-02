@@ -2126,10 +2126,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         continue
                     _et_desc = _et_args.get("description", _et_existing.description)
                     _et_htype = _et_args.get("handler_type", _et_existing.handler_type)
-                    _et_params = _et_args.get("parameters") or json.loads(_et_existing.parameters_json or "{}")
-                    _et_hconfig = _et_args.get("handler_config") or (json.loads(_et_existing.handler_config) if _et_existing.handler_config else None)
                     _et_existing_params = json.loads(_et_existing.parameters_json or "{}")
                     _et_existing_hconfig = json.loads(_et_existing.handler_config) if _et_existing.handler_config else None
+                    _et_params = _et_args["parameters"] if "parameters" in _et_args else _et_existing_params
+                    _et_hconfig = _et_args["handler_config"] if "handler_config" in _et_args else _et_existing_hconfig
                     _et_record = ToolProposal(
                         session_id=session_id,
                         tool_call_id=tc.id,
@@ -2178,7 +2178,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         _tool_proposal_events.pop(_et_event_key, None)
                     db.refresh(_et_record)
                     if _et_record.status == "approved":
-                        messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                        # Re-register the (still same-named) tool so _get_dynamic_tool_schemas_sqlite
+                        # re-fetches the fresh schema from DB on the next round
+                        _session_dynamic_tools.setdefault(str(session_id), set()).add(_et_name)
+                        messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live. Call it by the same name: '{_et_name}'.]\n\n{TOOL_RESULT_PROMPT}"))
                     else:
                         messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
                     continue
@@ -2570,10 +2573,10 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                             continue
                         _et_desc = _et_args.get("description", _et_existing.description)
                         _et_htype = _et_args.get("handler_type", _et_existing.handler_type)
-                        _et_params = _et_args.get("parameters") or json.loads(_et_existing.parameters_json or "{}")
-                        _et_hconfig = _et_args.get("handler_config") or (json.loads(_et_existing.handler_config) if _et_existing.handler_config else None)
                         _et_existing_params = json.loads(_et_existing.parameters_json or "{}")
                         _et_existing_hconfig = json.loads(_et_existing.handler_config) if _et_existing.handler_config else None
+                        _et_params = _et_args["parameters"] if "parameters" in _et_args else _et_existing_params
+                        _et_hconfig = _et_args["handler_config"] if "handler_config" in _et_args else _et_existing_hconfig
                         _et_record = ToolProposal(
                             session_id=session_id,
                             tool_call_id=tc.id,
@@ -2622,7 +2625,8 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                             _tool_proposal_events.pop(_et_event_key, None)
                         db.refresh(_et_record)
                         if _et_record.status == "approved":
-                            messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                            _session_dynamic_tools.setdefault(str(session_id), set()).add(_et_name)
+                            messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live. Call it by the same name: '{_et_name}'.]\n\n{TOOL_RESULT_PROMPT}"))
                         else:
                             messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
                         continue
@@ -3695,8 +3699,8 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                     _et_existing_params = json.loads(_et_existing_params_raw) if isinstance(_et_existing_params_raw, str) else (_et_existing_params_raw or {})
                     _et_existing_hconfig_raw = _et_existing.get("handler_config")
                     _et_existing_hconfig = json.loads(_et_existing_hconfig_raw) if isinstance(_et_existing_hconfig_raw, str) else _et_existing_hconfig_raw
-                    _et_params = _et_args.get("parameters") or _et_existing_params
-                    _et_hconfig = _et_args.get("handler_config") or _et_existing_hconfig
+                    _et_params = _et_args["parameters"] if "parameters" in _et_args else _et_existing_params
+                    _et_hconfig = _et_args["handler_config"] if "handler_config" in _et_args else _et_existing_hconfig
                     _et_doc = await ToolProposalCollection.create(mongo_db, {
                         "session_id": session_id,
                         "tool_call_id": tc.id,
@@ -3740,7 +3744,8 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                         _tool_proposal_events.pop(_et_event_key, None)
                     refreshed_et = await ToolProposalCollection.find_by_id(mongo_db, str(_et_doc["_id"]))
                     if refreshed_et and refreshed_et.get("status") == "approved":
-                        messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                        _session_dynamic_tools.setdefault(str(session_id), set()).add(_et_name)
+                        messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live. Call it by the same name: '{_et_name}'.]\n\n{TOOL_RESULT_PROMPT}"))
                     else:
                         messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
                     continue
@@ -4087,8 +4092,8 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                         _et_existing_params = json.loads(_et_existing_params_raw) if isinstance(_et_existing_params_raw, str) else (_et_existing_params_raw or {})
                         _et_existing_hconfig_raw = _et_existing.get("handler_config")
                         _et_existing_hconfig = json.loads(_et_existing_hconfig_raw) if isinstance(_et_existing_hconfig_raw, str) else _et_existing_hconfig_raw
-                        _et_params = _et_args.get("parameters") or _et_existing_params
-                        _et_hconfig = _et_args.get("handler_config") or _et_existing_hconfig
+                        _et_params = _et_args["parameters"] if "parameters" in _et_args else _et_existing_params
+                        _et_hconfig = _et_args["handler_config"] if "handler_config" in _et_args else _et_existing_hconfig
                         _et_doc = await ToolProposalCollection.create(mongo_db, {
                             "session_id": session_id,
                             "tool_call_id": tc.id,
@@ -4132,7 +4137,8 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                             _tool_proposal_events.pop(_et_event_key, None)
                         refreshed_et = await ToolProposalCollection.find_by_id(mongo_db, str(_et_doc["_id"]))
                         if refreshed_et and refreshed_et.get("status") == "approved":
-                            messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live.]\n\n{TOOL_RESULT_PROMPT}"))
+                            _session_dynamic_tools.setdefault(str(session_id), set()).add(_et_name)
+                            messages.append(LLMMessage(role="user", content=f"[Tool '{_et_name}' was updated and approved. The changes are now live. Call it by the same name: '{_et_name}'.]\n\n{TOOL_RESULT_PROMPT}"))
                         else:
                             messages.append(LLMMessage(role="user", content=f"[Tool edit for '{_et_name}' was rejected by the user. The tool remains unchanged.]\n\n{TOOL_RESULT_PROMPT}"))
                         continue
@@ -4948,7 +4954,7 @@ async def rate_message(
 ):
     """Save or clear a thumbs-up / thumbs-down rating for a message."""
     if DATABASE_TYPE == "mongo":
-        mongo_db = await get_database()
+        mongo_db = get_database()
         from bson import ObjectId
         try:
             msg_oid = ObjectId(message_id)

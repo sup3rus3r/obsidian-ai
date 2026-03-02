@@ -58,32 +58,53 @@ def _build_config_snapshot_mongo(agent: dict) -> dict:
     }
 
 
-def _snapshot_agent_sqlite(db, agent, change_summary: str) -> AgentVersion:
-    """Create a version snapshot BEFORE applying changes. Caller must commit."""
+def _snapshot_agent_sqlite(db, agent, change_summary: str) -> AgentVersion | None:
+    """Create a version snapshot BEFORE applying changes. Skips if config unchanged. Caller must commit."""
     last = db.query(AgentVersion).filter(
         AgentVersion.agent_id == agent.id
     ).order_by(AgentVersion.version_number.desc()).first()
+    current_snapshot = json.dumps(_build_config_snapshot(agent), sort_keys=True)
+    # Skip if the config hasn't changed since the last snapshot
+    if last and last.config_snapshot:
+        try:
+            last_normalized = json.dumps(json.loads(last.config_snapshot), sort_keys=True)
+        except Exception:
+            last_normalized = last.config_snapshot
+        if current_snapshot == last_normalized:
+            return None
     next_version = (last.version_number + 1) if last else 1
     version = AgentVersion(
         agent_id=agent.id,
         user_id=agent.user_id,
         version_number=next_version,
-        config_snapshot=json.dumps(_build_config_snapshot(agent)),
+        config_snapshot=current_snapshot,
         change_summary=change_summary,
     )
     db.add(version)
     return version
 
 
-async def _snapshot_agent_mongo(mongo_db, agent: dict, change_summary: str) -> dict:
-    """Create a version snapshot for a Mongo agent BEFORE applying changes."""
+async def _snapshot_agent_mongo(mongo_db, agent: dict, change_summary: str) -> dict | None:
+    """Create a version snapshot for a Mongo agent BEFORE applying changes. Skips if config unchanged."""
     agent_id = str(agent["_id"])
-    next_version = await AgentVersionCollection.get_latest_version_number(mongo_db, agent_id) + 1
+    current_snapshot = _build_config_snapshot_mongo(agent)
+    current_normalized = json.dumps(current_snapshot, sort_keys=True)
+    collection = mongo_db[AgentVersionCollection.collection_name]
+    last = await collection.find_one({"agent_id": agent_id}, sort=[("version_number", -1)])
+    if last:
+        last_snap = last.get("config_snapshot", {})
+        try:
+            last_normalized = json.dumps(last_snap, sort_keys=True)
+        except Exception:
+            last_normalized = ""
+        if current_normalized == last_normalized:
+            return None
+    next_version = (last["version_number"] + 1) if last else 1
     return await AgentVersionCollection.create(mongo_db, {
         "agent_id": agent_id,
         "user_id": agent.get("user_id"),
         "version_number": next_version,
-        "config_snapshot": _build_config_snapshot_mongo(agent),
+        "config_snapshot": current_snapshot,
         "change_summary": change_summary,
     })
 

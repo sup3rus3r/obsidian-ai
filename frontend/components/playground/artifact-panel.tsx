@@ -54,8 +54,12 @@ function buildPreviewDoc(content: string, type: ArtifactType): string {
   if (type === "html" || type === "svg") {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"/>
 <style>body{margin:16px;font-family:system-ui,sans-serif;font-size:14px}*{box-sizing:border-box}</style>
-</head><body>${content}</body></html>`
+</head><body>${content}
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"><\/script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false},{left:'\\\\[',right:'\\\\]',display:true},{left:'\\\\(',right:'\\\\)',display:false}]})"><\/script>
+</body></html>`
   }
   if (type === "css") {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"/><style>${content}</style></head>

@@ -28,6 +28,33 @@ import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAl
 
 // ─── Version diff helpers ────────────────────────────────────────────────────
 
+function resolveJsonIds(
+  key: keyof AgentConfigSnapshot,
+  raw: string,
+  tools: ToolDefinition[],
+  mcpServers: MCPServer[],
+  kbs: KnowledgeBase[],
+): string {
+  if (!raw) return raw
+  let ids: string[]
+  try {
+    ids = JSON.parse(raw)
+    if (!Array.isArray(ids)) return raw
+  } catch {
+    return raw
+  }
+  if (key === "tools_json") {
+    return ids.map((id) => tools.find((t) => String(t.id) === String(id))?.name ?? id).join(", ") || "(none)"
+  }
+  if (key === "mcp_servers_json") {
+    return ids.map((id) => mcpServers.find((s) => String(s.id) === String(id))?.name ?? id).join(", ") || "(none)"
+  }
+  if (key === "knowledge_base_ids_json") {
+    return ids.map((id) => kbs.find((k) => String(k.id) === String(id))?.name ?? id).join(", ") || "(none)"
+  }
+  return raw
+}
+
 const SNAPSHOT_LABELS: Record<keyof AgentConfigSnapshot, string> = {
   name: "Name",
   description: "Description",
@@ -61,54 +88,58 @@ function VersionDiffModal({
   onClose,
   onRollback,
   rolling,
+  tools,
+  mcpServers,
+  kbs,
 }: {
-  version: AgentVersion
+  version: AgentVersion | null
   prevVersion: AgentVersion | null
   onClose: () => void
   onRollback: () => void
   rolling: boolean
+  tools: ToolDefinition[]
+  mcpServers: MCPServer[]
+  kbs: KnowledgeBase[]
 }) {
-  const diffs = prevVersion
+  const diffs = version && prevVersion
     ? snapshotDiff(prevVersion.config_snapshot, version.config_snapshot)
     : []
 
+  const humanize = (key: keyof AgentConfigSnapshot, raw: string) =>
+    resolveJsonIds(key, raw, tools, mcpServers, kbs)
+
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50">
-      <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <div className="flex items-center gap-2">
+    <Dialog open={!!version} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col p-0 gap-0">
+        <DialogHeader className="px-4 py-3 border-b border-border shrink-0">
+          <DialogTitle className="flex items-center gap-2 text-sm font-medium">
             <History className="h-4 w-4 text-blue-500" />
-            <span className="font-medium text-sm">v{version.version_number}</span>
-            {version.change_summary && (
-              <span className="text-xs text-muted-foreground">— {version.change_summary}</span>
+            {version && <>v{version.version_number}</>}
+            {version?.change_summary && (
+              <span className="text-xs text-muted-foreground font-normal">— {version.change_summary}</span>
             )}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground text-xs"
-          >
-            Close
-          </button>
-        </div>
+          </DialogTitle>
+          {version && (
+            <DialogDescription className="text-xs text-muted-foreground">
+              Saved {new Date(version.created_at).toLocaleString()}
+            </DialogDescription>
+          )}
+        </DialogHeader>
 
         <div className="overflow-y-auto flex-1 p-4 space-y-3">
-          <div className="text-xs text-muted-foreground">
-            Saved {new Date(version.created_at).toLocaleString()}
-          </div>
-
-          {diffs.length === 0 && !prevVersion && (
+          {version && diffs.length === 0 && !prevVersion && (
             <div className="space-y-2">
               {(Object.keys(SNAPSHOT_LABELS) as Array<keyof AgentConfigSnapshot>).map((key) => {
                 const val = version.config_snapshot[key]
                 if (val == null || val === "" || val === false) return null
+                const displayVal = humanize(key, String(val))
                 return (
                   <div key={key} className="border border-border/40 rounded overflow-hidden">
                     <div className="px-2 py-1.5 bg-muted/30 text-xs font-medium text-muted-foreground">
                       {SNAPSHOT_LABELS[key]}
                     </div>
                     <pre className="px-2 py-1.5 text-xs text-foreground whitespace-pre-wrap break-all font-mono">
-                      {String(val)}
+                      {displayVal}
                     </pre>
                   </div>
                 )
@@ -120,26 +151,30 @@ function VersionDiffModal({
             <p className="text-xs text-muted-foreground italic">No changes detected between this version and the previous one.</p>
           )}
 
-          {diffs.map((diff) => (
-            <div key={diff.key} className="border border-border/40 rounded overflow-hidden">
-              <div className="px-2 py-1.5 bg-muted/30 text-xs font-medium text-muted-foreground">
-                {diff.label}
-              </div>
-              <div className="grid grid-cols-2 divide-x divide-border/40 text-[10px] font-mono">
-                <div className="px-2 py-1.5 bg-red-500/5 overflow-x-auto whitespace-pre-wrap break-all text-red-600 dark:text-red-400">
-                  <div className="text-[9px] text-muted-foreground mb-1 font-sans">Before</div>
-                  {diff.before || <span className="italic text-muted-foreground/60">empty</span>}
+          {diffs.map((diff) => {
+            const beforeDisplay = humanize(diff.key as keyof AgentConfigSnapshot, diff.before)
+            const afterDisplay = humanize(diff.key as keyof AgentConfigSnapshot, diff.after)
+            return (
+              <div key={diff.key} className="border border-border/40 rounded overflow-hidden">
+                <div className="px-2 py-1.5 bg-muted/30 text-xs font-medium text-muted-foreground">
+                  {diff.label}
                 </div>
-                <div className="px-2 py-1.5 bg-emerald-500/5 overflow-x-auto whitespace-pre-wrap break-all text-emerald-700 dark:text-emerald-400">
-                  <div className="text-[9px] text-muted-foreground mb-1 font-sans">After</div>
-                  {diff.after || <span className="italic text-muted-foreground/60">empty</span>}
+                <div className="grid grid-cols-2 divide-x divide-border/40 text-[10px] font-mono">
+                  <div className="px-2 py-1.5 bg-red-500/5 overflow-x-auto whitespace-pre-wrap break-all text-red-600 dark:text-red-400">
+                    <div className="text-[9px] text-muted-foreground mb-1 font-sans">Before</div>
+                    {beforeDisplay || <span className="italic text-muted-foreground/60">empty</span>}
+                  </div>
+                  <div className="px-2 py-1.5 bg-emerald-500/5 overflow-x-auto whitespace-pre-wrap break-all text-emerald-700 dark:text-emerald-400">
+                    <div className="text-[9px] text-muted-foreground mb-1 font-sans">After</div>
+                    {afterDisplay || <span className="italic text-muted-foreground/60">empty</span>}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
-        <div className="px-4 py-3 border-t border-border shrink-0 flex justify-end gap-2">
+        <DialogFooter className="px-4 py-3 border-t border-border shrink-0">
           <Button size="sm" variant="outline" onClick={onClose}>
             Cancel
           </Button>
@@ -152,9 +187,9 @@ function VersionDiffModal({
             {rolling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
             Restore this version
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1242,6 +1277,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           onClose={() => setDiffVersion(null)}
           onRollback={handleRollback}
           rolling={rollingBack}
+          tools={availableTools}
+          mcpServers={availableMCPServers}
+          kbs={availableKBs}
         />
       )}
     </Dialog>

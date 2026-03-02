@@ -5,6 +5,7 @@ import { Copy, Check, ThumbsUp, ThumbsDown, Bot, FileText, BookOpen, FileCode2, 
 import { motion, AnimatePresence } from "motion/react"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import { AppRoutes } from "@/app/api/routes"
+import { apiClient } from "@/lib/api-client"
 import {
   Message,
   MessageContent,
@@ -39,6 +40,24 @@ function extractInlinePreview(content: string): { preview: string; stripped: str
 const ARTIFACT_TAG_RE = /<artifact\s+([^>]*)>([\s\S]*?)<\/artifact>/g
 const ARTIFACT_PATCH_RE = /<artifact_patch\s+[^>]*>[\s\S]*?<\/artifact_patch>/g
 const ARTIFACT_ATTR_RE = /(\w[\w-]*)\s*=\s*"([^"]*)"/g
+// Strip model-internal special tokens like <|channel|>, <|constrain|> that bleed through from some LLMs
+const MODEL_INTERNAL_TOKEN_RE = /<\|[^|>]{1,40}\|>/g
+
+/**
+ * Normalize LaTeX delimiters to the $...$ / $$...$$ format that remark-math understands.
+ * remark-math ONLY supports $...$ (inline) and $$...$$ (block) — NOT \[...\] or \(...\).
+ * Models commonly output \[...\], \(...\), and bare [ ... ] for math.
+ */
+function normalizeMathDelimiters(text: string): string {
+  return text
+    // \[...\]  →  $$...$$  (display math)
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, inner) => `$$${inner}$$`)
+    // \(...\)  →  $...$    (inline math)
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, inner) => `$${inner}$`)
+    // Bare [ ... ] where inner looks like LaTeX (has \, ^, _, {) → $$...$$
+    .replace(/(?<![\\$\w\[])\[([^\[\]]*(?:[\\^_{}][^\[\]]*)+)\](?!\w)/g,
+      (match, inner) => `$$${inner}$$`)
+}
 
 interface ArtifactRef { id: string; title: string; type: string }
 
@@ -46,6 +65,7 @@ interface ArtifactRef { id: string; title: string; type: string }
 function stripArtifacts(content: string): { text: string; refs: ArtifactRef[] } {
   const refs: ArtifactRef[] = []
   const text = content
+    .replace(MODEL_INTERNAL_TOKEN_RE, "")
     .replace(ARTIFACT_TAG_RE, (_, attrs) => {
       const attrMap: Record<string, string> = {}
       let m: RegExpExecArray | null
@@ -143,11 +163,7 @@ export function MessageBubble({
     const newRating = feedback === type ? null : type
     setFeedback(newRating)
     try {
-      await fetch(AppRoutes.RateMessage(message.id), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rating: newRating }),
-      })
+      await apiClient.rateMessage(message.id, newRating)
     } catch {
       setFeedback(feedback)
     }
@@ -282,19 +298,21 @@ export function MessageBubble({
           isUser ? (
             <p className="text-sm whitespace-pre-wrap">{message.content.replace(/^\[EDIT ARTIFACT\s+[^\]]*\]\n?/, "")}</p>
           ) : isStreaming ? (
-            <p className="text-sm whitespace-pre-wrap">
-              {jsxPreview
-                ? (extractInlinePreview(message.content)?.stripped ?? message.content.replace(/```(html|jsx|tsx)[\s\S]*$/, "").trim())
-                : stripArtifacts(message.content.replace(/<artifact(?:_patch)?\s[^>]*>[\s\S]*$/, "")).text}
+            <div className="relative">
+              <MessageResponse>
+                {jsxPreview
+                  ? (extractInlinePreview(message.content)?.stripped ?? message.content.replace(/```(html|jsx|tsx)[\s\S]*$/, "").trim())
+                  : normalizeMathDelimiters(stripArtifacts(message.content.replace(MODEL_INTERNAL_TOKEN_RE, "").replace(/<artifact(?:_patch)?\s[^>]*>[\s\S]*$/, "")).text)}
+              </MessageResponse>
               <span className="inline-block h-4 w-0.5 bg-foreground animate-pulse ml-0.5 align-middle" />
-            </p>
+            </div>
           ) : (() => {
             const { text, refs } = stripArtifacts(message.content)
             const inlinePreview = !refs.length ? extractInlinePreview(text) : null
             const displayText = inlinePreview ? inlinePreview.stripped : text
             return (
               <>
-                {displayText && <MessageResponse>{displayText}</MessageResponse>}
+                {displayText && <MessageResponse>{normalizeMathDelimiters(displayText)}</MessageResponse>}
                 {inlinePreview && <JsxPreview jsx={inlinePreview.preview} />}
                 {refs.map((ref) => (
                   <ArtifactRefPill key={ref.id} artifactRef={ref} />

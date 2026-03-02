@@ -768,6 +768,14 @@ class ApiClient {
       body: JSON.stringify(data),
     })
   }
+
+  // ============= Message Rating =============
+  async rateMessage(messageId: string, rating: "up" | "down" | null): Promise<void> {
+    await this.request<void>(AppRoutes.RateMessage(messageId), {
+      method: "PUT",
+      body: JSON.stringify({ rating }),
+    })
+  }
 }
 
 export const apiClient = new ApiClient()

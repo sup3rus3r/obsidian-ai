@@ -227,6 +227,7 @@ async def delete_knowledge_base(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    import json as _json
     if DATABASE_TYPE == "mongo":
         mongo_db = get_database()
         kb = await KnowledgeBaseCollection.find_by_id(mongo_db, kb_id)
@@ -234,6 +235,19 @@ async def delete_knowledge_base(
             raise HTTPException(status_code=404, detail="Knowledge base not found")
         await KnowledgeBaseCollection.delete(mongo_db, kb_id, current_user.user_id)
         RAGService.delete_kb_index(kb_id)
+        # Remove this KB from any agent that references it
+        agents_col = mongo_db["agents"]
+        async for agent in agents_col.find({"knowledge_base_ids_json": {"$exists": True}}):
+            raw = agent.get("knowledge_base_ids_json")
+            if not raw:
+                continue
+            ids = _json.loads(raw) if isinstance(raw, str) else raw
+            if kb_id in [str(i) for i in ids]:
+                new_ids = [i for i in ids if str(i) != kb_id]
+                await agents_col.update_one(
+                    {"_id": agent["_id"]},
+                    {"$set": {"knowledge_base_ids_json": _json.dumps(new_ids)}},
+                )
         return {"message": "Knowledge base deleted"}
 
     kb = db.query(KnowledgeBase).filter(
@@ -246,6 +260,18 @@ async def delete_knowledge_base(
     kb.is_active = False
     db.commit()
     RAGService.delete_kb_index(kb_id)
+    # Remove this KB from any agent that references it
+    from models import Agent as _Agent
+    agents_with_kb = db.query(_Agent).filter(_Agent.knowledge_base_ids_json.isnot(None)).all()
+    for agent in agents_with_kb:
+        try:
+            ids = _json.loads(agent.knowledge_base_ids_json)
+        except (_json.JSONDecodeError, TypeError):
+            continue
+        if kb_id in [str(i) for i in ids]:
+            new_ids = [i for i in ids if str(i) != kb_id]
+            agent.knowledge_base_ids_json = _json.dumps(new_ids) if new_ids else None
+    db.commit()
     return {"message": "Knowledge base deleted"}
 
 
