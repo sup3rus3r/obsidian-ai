@@ -179,7 +179,7 @@ _EDIT_TOOL_SCHEMA = {
 }
 
 
-_ARTIFACT_SYSTEM_HINT = """
+_ARTIFACT_SYSTEM_HINT = r"""
 ## Artifacts
 When you produce substantial standalone content (HTML pages, code files, SVGs, JSON data, markdown docs, etc.), wrap it in an artifact tag instead of a code block:
 
@@ -1960,7 +1960,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
 
     _tc = _TraceContext(session_id=session_id, db=db)
     try:
-        for _round in range(MAX_TOOL_ROUNDS + 1):
+        for _round in range(MAX_TOOL_ROUNDS):
             tool_calls_collected = []
             _llm_round_start = time.time()
 
@@ -2040,6 +2040,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     _tp_args, _tp_name, _tp_desc, _tp_htype, _tp_params, _tp_hconfig = _parse_tool_proposal_args(tc)
                     if not _tp_name:
                         messages.append(LLMMessage(role="user", content="[Tool proposal failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                        continue
+                    # Guard: tool already approved in this session — just call it
+                    if _tp_name in _session_dynamic_tools.get(str(session_id), set()):
+                        messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' already exists in your toolkit. Do not propose it again — call it directly.]\n\n{TOOL_RESULT_PROMPT}"))
                         continue
                     # Auto-generate handler_config if missing or empty
                     _needs_generation = (
@@ -2438,7 +2442,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
 
         _tc = _TraceContext(session_id=session_id, db=db)
         try:
-            for _round in range(MAX_TOOL_ROUNDS + 1):
+            for _round in range(MAX_TOOL_ROUNDS):
                 tool_calls_collected = []
                 _llm_round_start = time.time()
                 # Merge dynamically approved tools into tools list for this round
@@ -2492,6 +2496,10 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                         _tp_args, _tp_name, _tp_desc, _tp_htype, _tp_params, _tp_hconfig = _parse_tool_proposal_args(tc)
                         if not _tp_name:
                             messages.append(LLMMessage(role="user", content="[Tool proposal failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                            continue
+                        # Guard: tool already approved in this session — just call it
+                        if _tp_name in _session_dynamic_tools.get(str(session_id), set()):
+                            messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' already exists in your toolkit. Do not propose it again — call it directly.]{TOOL_RESULT_PROMPT}"))
                             continue
                         # Auto-generate handler_config if missing or empty
                         _needs_generation = (
@@ -3569,7 +3577,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
         _tc_mongo_seq += 1
 
     try:
-        for _round in range(MAX_TOOL_ROUNDS + 1):
+        for _round in range(MAX_TOOL_ROUNDS):
             tool_calls_collected = []
             _llm_round_start = time.time()
 
@@ -3621,6 +3629,10 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                     _tp_args, _tp_name, _tp_desc, _tp_htype, _tp_params, _tp_hconfig = _parse_tool_proposal_args(tc)
                     if not _tp_name:
                         messages.append(LLMMessage(role="user", content="[Tool proposal failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                        continue
+                    # Guard: tool already approved in this session — just call it
+                    if _tp_name in _session_dynamic_tools.get(str(session_id), set()):
+                        messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' already exists in your toolkit. Do not propose it again — call it directly.] {TOOL_RESULT_PROMPT}"))
                         continue
                     # Auto-generate handler_config if missing or empty
                     _needs_generation = (
@@ -3962,7 +3974,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
             _tc_mcp_mongo_seq += 1
 
         try:
-            for _round in range(MAX_TOOL_ROUNDS + 1):
+            for _round in range(MAX_TOOL_ROUNDS):
                 tool_calls_collected = []
                 _llm_round_start = time.time()
                 # Merge dynamically approved tools into tools list for this round
@@ -4014,6 +4026,10 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                         _tp_args, _tp_name, _tp_desc, _tp_htype, _tp_params, _tp_hconfig = _parse_tool_proposal_args(tc)
                         if not _tp_name:
                             messages.append(LLMMessage(role="user", content="[Tool proposal failed: 'name' is required.]\n\n" + TOOL_RESULT_PROMPT))
+                            continue
+                        # Guard: tool already approved in this session — just call it
+                        if _tp_name in _session_dynamic_tools.get(str(session_id), set()):
+                            messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' already exists in your toolkit. Do not propose it again — call it directly.]{TOOL_RESULT_PROMPT}"))
                             continue
                         # Auto-generate handler_config if missing or empty
                         _needs_generation = (
