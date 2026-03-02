@@ -1,7 +1,7 @@
 "use client"
 
 import { cn } from "@/lib/utils"
-import { Search } from "lucide-react"
+import { Loader2 } from "lucide-react"
 
 interface ResearchProgressProps {
   round: number
@@ -19,10 +19,10 @@ export function ResearchProgress({ round, maxRounds, className }: ResearchProgre
         className
       )}
     >
-      <Search className="h-3.5 w-3.5 text-blue-500 shrink-0 animate-pulse" />
+      <Loader2 className="h-3.5 w-3.5 text-blue-500 shrink-0 animate-spin" />
       <div className="flex-1 min-w-0">
         <div className="text-xs font-medium text-blue-600 dark:text-blue-400">
-          Researching... step {round} of {maxRounds}
+          Working... step {round} of {maxRounds}
         </div>
         <div className="mt-1 h-1 w-full rounded-full bg-blue-500/15 overflow-hidden">
           <div
