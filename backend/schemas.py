@@ -923,18 +923,21 @@ class EvalSuiteCreate(BaseModel):
     name: str
     description: Optional[str] = None
     agent_id: Optional[Union[int, str]] = None
+    judge_agent_id: Optional[Union[int, str]] = None  # agent used for llm_judge grading
     test_cases: list[EvalTestCase] = []
 
 class EvalSuiteUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     agent_id: Optional[Union[int, str]] = None
+    judge_agent_id: Optional[Union[int, str]] = None
     test_cases: Optional[list[EvalTestCase]] = None
 
 class EvalSuiteResponse(BaseModel):
     id: Union[int, str]
     user_id: Union[int, str]
     agent_id: Optional[Union[int, str]] = None
+    judge_agent_id: Optional[Union[int, str]] = None
     name: str
     description: Optional[str] = None
     test_cases: list[EvalTestCase]

@@ -363,15 +363,16 @@ class EvalSuite(Base):
     """A named collection of test cases for evaluating an agent."""
     __tablename__ = "eval_suites"
 
-    id              = Column(Integer, primary_key=True, index=True)
-    user_id         = Column(Integer, ForeignKey("users.id"), nullable=False)
-    agent_id        = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
-    name            = Column(String, nullable=False)
-    description     = Column(String, nullable=True)
+    id               = Column(Integer, primary_key=True, index=True)
+    user_id          = Column(Integer, ForeignKey("users.id"), nullable=False)
+    agent_id         = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
+    judge_agent_id   = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    name             = Column(String, nullable=False)
+    description      = Column(String, nullable=True)
     # JSON array: [{id, input, expected_output, grading_method, weight}]
-    test_cases_json = Column(Text, nullable=False, default="[]")
-    created_at      = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+    test_cases_json  = Column(Text, nullable=False, default="[]")
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class EvalRun(Base):

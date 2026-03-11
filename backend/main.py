@@ -598,6 +598,14 @@ def _run_sqlite_migrations(engine):
             except Exception:
                 conn.rollback()
 
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE eval_suites ADD COLUMN judge_agent_id INTEGER REFERENCES agents(id)"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 
 # ── Module-level APScheduler job functions ────────────────────────────────────
 # Must be at module scope (not closures) so APScheduler can pickle them for the

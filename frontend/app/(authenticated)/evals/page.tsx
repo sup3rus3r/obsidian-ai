@@ -159,8 +159,11 @@ function SuiteDialog({
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
   const [agentId, setAgentId] = useState("")
+  const [judgeAgentId, setJudgeAgentId] = useState("")
   const [cases, setCases] = useState<EvalTestCase[]>([])
   const [loading, setLoading] = useState(false)
+
+  const hasLlmJudge = cases.some((c) => c.grading_method === "llm_judge")
 
   useEffect(() => {
     if (!open) return
@@ -168,9 +171,10 @@ function SuiteDialog({
       setName(suite.name)
       setDescription(suite.description || "")
       setAgentId(suite.agent_id ? String(suite.agent_id) : "")
+      setJudgeAgentId(suite.judge_agent_id ? String(suite.judge_agent_id) : "")
       setCases(suite.test_cases)
     } else {
-      setName(""); setDescription(""); setAgentId(""); setCases([])
+      setName(""); setDescription(""); setAgentId(""); setJudgeAgentId(""); setCases([])
     }
   }, [open, suite])
 
@@ -200,6 +204,7 @@ function SuiteDialog({
         name,
         description: description || undefined,
         agent_id: agentId || undefined,
+        judge_agent_id: judgeAgentId || undefined,
         test_cases: cases,
       }
       let saved: EvalSuite
@@ -247,6 +252,26 @@ function SuiteDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {hasLlmJudge && (
+            <div className="grid gap-2">
+              <Label>
+                LLM Judge Agent
+                <span className="ml-1.5 text-xs text-muted-foreground font-normal">— which agent grades the responses</span>
+              </Label>
+              <Select value={judgeAgentId || "none"} onValueChange={(v) => setJudgeAgentId(v === "none" ? "" : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select judge agent…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Same as test agent</SelectItem>
+                  {agents.map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>{a.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {/* Test cases */}
           <div className="grid gap-2">

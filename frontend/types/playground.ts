@@ -638,6 +638,7 @@ export interface EvalSuite {
   id: number | string
   user_id: number | string
   agent_id: number | string | null
+  judge_agent_id: number | string | null
   name: string
   description: string | null
   test_cases: EvalTestCase[]
@@ -673,6 +674,7 @@ export interface CreateEvalSuiteRequest {
   name: string
   description?: string
   agent_id?: string
+  judge_agent_id?: string
   test_cases?: EvalTestCase[]
 }
 
@@ -680,6 +682,7 @@ export interface UpdateEvalSuiteRequest {
   name?: string
   description?: string
   agent_id?: string | null
+  judge_agent_id?: string | null
   test_cases?: EvalTestCase[]
 }
 

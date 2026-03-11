@@ -118,7 +118,15 @@ async def run_eval_suite_sqlite(
             return
 
         provider = create_provider(provider_record)
-        judge_provider = provider_record  # reuse same provider for llm_judge
+
+        # Resolve judge provider: use suite's judge_agent_id if set, else fall back to agent's provider
+        judge_provider = provider_record
+        if suite.judge_agent_id:
+            judge_agent = db.query(Agent).filter(Agent.id == suite.judge_agent_id).first()
+            if judge_agent and judge_agent.provider_id:
+                jp = db.query(LLMProvider).filter(LLMProvider.id == judge_agent.provider_id).first()
+                if jp:
+                    judge_provider = jp
 
         results = []
         passed_count = 0
@@ -241,16 +249,37 @@ async def run_eval_suite_mongo(
             return
 
         # Build a lightweight provider-record-like object
+        _PROVIDER_DEFAULT_MODELS = {
+            "openai": "gpt-4o",
+            "anthropic": "claude-sonnet-4-6",
+            "google": "gemini-2.0-flash",
+            "ollama": "llama3",
+            "openrouter": "openai/gpt-4o",
+        }
+
         class _ProviderRecord:
             def __init__(self, doc):
                 self.provider_type = doc.get("provider_type")
                 self.api_key = doc.get("api_key")
                 self.base_url = doc.get("base_url")
-                self.model_id = doc.get("model_id")
+                self.model_id = doc.get("model_id") or _PROVIDER_DEFAULT_MODELS.get(doc.get("provider_type", ""), "gpt-4o")
                 self.config_json = doc.get("config_json")
 
         provider_record = _ProviderRecord(provider_doc)
         provider = create_provider(provider_record)
+
+        # Resolve judge provider: use suite's judge_agent_id if set, else fall back to agent's provider
+        judge_provider_record = provider_record
+        judge_agent_id = suite.get("judge_agent_id")
+        if judge_agent_id:
+            try:
+                judge_agent = await agent_col.find_one({"_id": ObjectId(str(judge_agent_id))})
+                if judge_agent and judge_agent.get("provider_id"):
+                    judge_provider_doc = await provider_col.find_one({"_id": ObjectId(str(judge_agent["provider_id"]))})
+                    if judge_provider_doc:
+                        judge_provider_record = _ProviderRecord(judge_provider_doc)
+            except Exception:
+                pass  # fall back to agent's provider
 
         results = []
         passed_count = 0
@@ -271,7 +300,7 @@ async def run_eval_suite_mongo(
                 if grading_method == "exact_match":
                     passed, score, reasoning = await grade_exact_match(actual, expected)
                 elif grading_method == "llm_judge":
-                    passed, score, reasoning = await grade_llm_judge(input_text, actual, expected, provider_record)
+                    passed, score, reasoning = await grade_llm_judge(input_text, actual, expected, judge_provider_record)
                 else:
                     passed, score, reasoning = await grade_contains(actual, expected)
 

@@ -49,6 +49,7 @@ def _suite_to_response(suite, is_mongo=False) -> EvalSuiteResponse:
             id=str(suite["_id"]),
             user_id=str(suite.get("user_id", "")),
             agent_id=str(suite["agent_id"]) if suite.get("agent_id") else None,
+            judge_agent_id=str(suite["judge_agent_id"]) if suite.get("judge_agent_id") else None,
             name=suite["name"],
             description=suite.get("description"),
             test_cases=[EvalTestCase(**c) for c in cases],
@@ -60,6 +61,7 @@ def _suite_to_response(suite, is_mongo=False) -> EvalSuiteResponse:
         id=suite.id,
         user_id=suite.user_id,
         agent_id=suite.agent_id,
+        judge_agent_id=suite.judge_agent_id,
         name=suite.name,
         description=suite.description,
         test_cases=[EvalTestCase(**c) for c in cases],
@@ -122,13 +124,13 @@ async def create_suite(
     db: Session = Depends(get_db),
 ):
     cases_json = json.dumps([c.model_dump() for c in data.test_cases])
-    agent_id = int(data.agent_id) if data.agent_id is not None else None
 
     if DATABASE_TYPE == "mongo":
         mongo_db = get_database()
         doc = {
             "user_id": current_user.user_id,
-            "agent_id": str(agent_id) if agent_id is not None else None,
+            "agent_id": str(data.agent_id) if data.agent_id is not None else None,
+            "judge_agent_id": str(data.judge_agent_id) if data.judge_agent_id is not None else None,
             "name": data.name,
             "description": data.description,
             "test_cases_json": cases_json,
@@ -136,9 +138,12 @@ async def create_suite(
         created = await EvalSuiteCollection.create(mongo_db, doc)
         return _suite_to_response(created, is_mongo=True)
 
+    agent_id = int(data.agent_id) if data.agent_id is not None else None
+    judge_agent_id = int(data.judge_agent_id) if data.judge_agent_id is not None else None
     suite = EvalSuite(
         user_id=int(current_user.user_id),
         agent_id=agent_id,
+        judge_agent_id=judge_agent_id,
         name=data.name,
         description=data.description,
         test_cases_json=cases_json,
@@ -184,14 +189,18 @@ async def update_suite(
     if data.description is not None:
         updates["description"] = data.description
     if data.agent_id is not None:
-        updates["agent_id"] = int(data.agent_id) if data.agent_id else None
+        updates["agent_id"] = data.agent_id  # kept as str; cast per backend below
+    if data.judge_agent_id is not None:
+        updates["judge_agent_id"] = data.judge_agent_id
     if data.test_cases is not None:
         updates["test_cases_json"] = json.dumps([c.model_dump() for c in data.test_cases])
 
     if DATABASE_TYPE == "mongo":
         mongo_db = get_database()
-        if "agent_id" in updates and updates["agent_id"] is not None:
-            updates["agent_id"] = str(updates["agent_id"])
+        if "agent_id" in updates:
+            updates["agent_id"] = str(updates["agent_id"]) if updates["agent_id"] else None
+        if "judge_agent_id" in updates:
+            updates["judge_agent_id"] = str(updates["judge_agent_id"]) if updates["judge_agent_id"] else None
         updated = await EvalSuiteCollection.update(mongo_db, suite_id, current_user.user_id, updates)
         if not updated:
             raise HTTPException(status_code=404, detail="Suite not found")
@@ -203,6 +212,10 @@ async def update_suite(
     ).first()
     if not suite:
         raise HTTPException(status_code=404, detail="Suite not found")
+    if "agent_id" in updates and updates["agent_id"] is not None:
+        updates["agent_id"] = int(updates["agent_id"])
+    if "judge_agent_id" in updates and updates["judge_agent_id"] is not None:
+        updates["judge_agent_id"] = int(updates["judge_agent_id"])
     for key, val in updates.items():
         setattr(suite, key, val)
     db.commit()
