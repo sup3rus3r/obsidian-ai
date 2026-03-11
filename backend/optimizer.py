@@ -169,7 +169,7 @@ def _build_eval_context_text(eval_runs: list[dict]) -> str:
         for r in results:
             status = "PASS" if r.get("passed") else "FAIL"
             parts.append(f"[{status}] Input: {_truncate(r.get('input', ''), 300)}")
-            parts.append(f"  Expected: {_truncate(r.get('expected_output', ''), 300)}")
+            parts.append(f"  Expected: {_truncate(r.get('expected') or r.get('expected_output', ''), 300)}")
             parts.append(f"  Actual:   {_truncate(r.get('actual_output', ''), 300)}")
             if r.get("reasoning"):
                 parts.append(f"  Reasoning: {_truncate(r.get('reasoning', ''), 300)}")
