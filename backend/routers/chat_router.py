@@ -2035,7 +2035,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
     full_content = ""
     reasoning_parts = []
     tool_calls_collected = []  # accumulate tool calls from the current round
-    token_usage = {}  # track usage from the final LLM chunk
+    token_usage = {}  # accumulates usage across all tool rounds
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -2105,7 +2105,12 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         tool_calls_collected.append(tc)
                 elif chunk.type == "done":
                     if chunk.usage:
-                        token_usage = chunk.usage
+                        token_usage = {
+                            "input_tokens": token_usage.get("input_tokens", 0) + chunk.usage.get("input_tokens", 0),
+                            "output_tokens": token_usage.get("output_tokens", 0) + chunk.usage.get("output_tokens", 0),
+                            "cache_read_input_tokens": token_usage.get("cache_read_input_tokens", 0) + chunk.usage.get("cache_read_input_tokens", 0),
+                            "cache_creation_input_tokens": token_usage.get("cache_creation_input_tokens", 0) + chunk.usage.get("cache_creation_input_tokens", 0),
+                        }
                     _stop_reason = chunk.finish_reason
                     break
                 elif chunk.type == "error":
@@ -2588,7 +2593,12 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                             tool_calls_collected.append(tc)
                     elif chunk.type == "done":
                         if chunk.usage:
-                            token_usage = chunk.usage
+                            token_usage = {
+                                "input_tokens": token_usage.get("input_tokens", 0) + chunk.usage.get("input_tokens", 0),
+                                "output_tokens": token_usage.get("output_tokens", 0) + chunk.usage.get("output_tokens", 0),
+                                "cache_read_input_tokens": token_usage.get("cache_read_input_tokens", 0) + chunk.usage.get("cache_read_input_tokens", 0),
+                                "cache_creation_input_tokens": token_usage.get("cache_creation_input_tokens", 0) + chunk.usage.get("cache_creation_input_tokens", 0),
+                            }
                         _stop_reason = chunk.finish_reason
                         break
                     elif chunk.type == "error":
@@ -3746,7 +3756,12 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                         tool_calls_collected.append(tc)
                 elif chunk.type == "done":
                     if chunk.usage:
-                        token_usage = chunk.usage
+                        token_usage = {
+                            "input_tokens": token_usage.get("input_tokens", 0) + chunk.usage.get("input_tokens", 0),
+                            "output_tokens": token_usage.get("output_tokens", 0) + chunk.usage.get("output_tokens", 0),
+                            "cache_read_input_tokens": token_usage.get("cache_read_input_tokens", 0) + chunk.usage.get("cache_read_input_tokens", 0),
+                            "cache_creation_input_tokens": token_usage.get("cache_creation_input_tokens", 0) + chunk.usage.get("cache_creation_input_tokens", 0),
+                        }
                     break
                 elif chunk.type == "error":
                     yield {"event": "error", "data": json.dumps({"error": chunk.error})}
@@ -4147,7 +4162,12 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                             tool_calls_collected.append(tc)
                     elif chunk.type == "done":
                         if chunk.usage:
-                            token_usage = chunk.usage
+                            token_usage = {
+                                "input_tokens": token_usage.get("input_tokens", 0) + chunk.usage.get("input_tokens", 0),
+                                "output_tokens": token_usage.get("output_tokens", 0) + chunk.usage.get("output_tokens", 0),
+                                "cache_read_input_tokens": token_usage.get("cache_read_input_tokens", 0) + chunk.usage.get("cache_read_input_tokens", 0),
+                                "cache_creation_input_tokens": token_usage.get("cache_creation_input_tokens", 0) + chunk.usage.get("cache_creation_input_tokens", 0),
+                            }
                         break
                     elif chunk.type == "error":
                         yield {"event": "error", "data": json.dumps({"error": chunk.error})}

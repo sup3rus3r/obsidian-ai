@@ -229,10 +229,37 @@ async def _web_search(query: str, max_results: int = 8) -> str:
 # fetch_url
 # ---------------------------------------------------------------------------
 
+def _rewrite_github_url(url: str) -> tuple[str, str | None]:
+    """
+    Rewrite a github.com URL to use the GitHub REST API.
+    Returns (api_url, readme_url_or_none).
+    - github.com/owner/repo            → api.github.com/repos/owner/repo  + readme
+    - github.com/owner/repo/blob/…/file → raw.githubusercontent.com/…/file
+    - anything else                    → unchanged
+    """
+    m = re.match(
+        r"https?://(?:www\.)?github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url
+    )
+    if m:
+        owner, repo = m.group(1), m.group(2)
+        return f"https://api.github.com/repos/{owner}/{repo}", \
+               f"https://api.github.com/repos/{owner}/{repo}/readme"
+
+    m = re.match(
+        r"https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/blob/(.+)", url
+    )
+    if m:
+        owner, repo, path = m.group(1), m.group(2), m.group(3)
+        return f"https://raw.githubusercontent.com/{owner}/{repo}/{path}", None
+
+    return url, None
+
+
 async def _fetch_url(url: str, max_chars: int = 8000) -> str:
     max_chars = min(max(500, max_chars), 50000)
 
     import httpx
+    import base64
 
     headers = {
         "User-Agent": (
@@ -244,14 +271,29 @@ async def _fetch_url(url: str, max_chars: int = 8000) -> str:
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    rewritten_url, readme_url = _rewrite_github_url(url)
+    is_github_repo = readme_url is not None
+
     try:
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=20.0, headers=headers
         ) as client:
-            resp = await client.get(url)
+            resp = await client.get(rewritten_url)
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")
             raw = resp.text
+
+            # For GitHub repo API: also fetch README
+            readme_text = ""
+            if is_github_repo and readme_url:
+                try:
+                    readme_resp = await client.get(readme_url)
+                    if readme_resp.status_code == 200:
+                        readme_data = readme_resp.json()
+                        encoded = readme_data.get("content", "")
+                        readme_text = base64.b64decode(encoded).decode("utf-8", errors="replace")
+                except Exception:
+                    pass
     except Exception as e:
         return json.dumps({"error": f"Fetch failed: {e}", "url": url})
 
@@ -266,10 +308,15 @@ async def _fetch_url(url: str, max_chars: int = 8000) -> str:
     else:
         text = raw
 
-    if len(text) > max_chars:
-        text = text[:max_chars] + f"\n\n[truncated — {len(text) - max_chars} more characters]"
+    if readme_text:
+        combined = text + "\n\n--- README ---\n\n" + readme_text
+    else:
+        combined = text
 
-    return json.dumps({"url": url, "content": text})
+    if len(combined) > max_chars:
+        combined = combined[:max_chars] + f"\n\n[truncated — {len(combined) - max_chars} more characters]"
+
+    return json.dumps({"url": url, "content": combined})
 
 
 # ---------------------------------------------------------------------------
