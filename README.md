@@ -627,6 +627,10 @@ RATE_LIMIT_API_CLIENT=100
 
 # Database type: "sqlite" (default) or "mongo"
 DATABASE_TYPE=sqlite
+
+# Tavily Search API key — required for the web_search agent tool
+# Get a free key (1000 searches/month) at https://app.tavily.com
+TAVILY_API_KEY=tvly-...
 ```
 
 #### Frontend (`frontend/.env.local`)

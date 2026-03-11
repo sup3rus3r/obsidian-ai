@@ -2,14 +2,13 @@
 Built-in tools — always available to every agent, no configuration required.
 
 Currently provides:
-  - web_search   : DuckDuckGo HTML search (no API key)
+  - web_search   : Tavily Search API (requires TAVILY_API_KEY in .env)
   - fetch_url    : HTTP GET/POST with response text extraction
 """
 
 import asyncio
 import json
 import re
-import urllib.parse
 from html.parser import HTMLParser
 
 
@@ -121,108 +120,52 @@ def _strip_html(html: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# web_search — DuckDuckGo HTML (no API key)
+# web_search — Tavily Search API
 # ---------------------------------------------------------------------------
 
-def _parse_ddg_lite_results(html: str, max_results: int) -> list[dict]:
-    """Parse DuckDuckGo Lite search results page (stable table-based layout)."""
-    results = []
-
-    # DDG Lite uses a simple table layout:
-    # Result links: <a class="result-link" href="...">Title</a>
-    # Snippets: <td class="result-snippet">...</td>
-    # Also handle uddg= redirect URLs
-    link_pattern = re.compile(
-        r'class="result-link"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-        re.DOTALL,
-    )
-    snippet_pattern = re.compile(
-        r'class="result-snippet"[^>]*>(.*?)</td>',
-        re.DOTALL,
-    )
-
-    links = link_pattern.findall(html)
-    snippets = snippet_pattern.findall(html)
-
-    for i, (url, title_html) in enumerate(links[:max_results]):
-        title = _strip_html(f"<span>{title_html}</span>") or "No title"
-        snippet = _strip_html(f"<span>{snippets[i]}</span>") if i < len(snippets) else ""
-        # Decode uddg= redirect URLs
-        if "duckduckgo.com" in url and "uddg=" in url:
-            m = re.search(r"uddg=([^&]+)", url)
-            if m:
-                url = urllib.parse.unquote(m.group(1))
-        results.append({"title": title, "snippet": snippet, "url": url})
-
-    return results
-
-
 async def _web_search(query: str, max_results: int = 8) -> str:
+    import httpx
+    import os
+
     max_results = min(max(1, max_results), 20)
 
-    import httpx
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-
-    results = []
-
-    # Primary: DuckDuckGo Lite (stable table-based HTML, no JS required)
-    try:
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=15.0, headers=headers
-        ) as client:
-            resp = await client.post(
-                "https://lite.duckduckgo.com/lite/",
-                data={"q": query, "kl": "us-en"},
-                headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            results = _parse_ddg_lite_results(resp.text, max_results)
-    except Exception as e:
-        pass
-
-    # Fallback: DuckDuckGo Instant Answer API
-    if not results:
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0, headers=headers) as client:
-                ia_resp = await client.get(
-                    "https://api.duckduckgo.com/",
-                    params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
-                )
-                data = ia_resp.json()
-            if data.get("AbstractText"):
-                results.append({
-                    "title": data.get("Heading", query),
-                    "snippet": data["AbstractText"],
-                    "url": data.get("AbstractURL", ""),
-                })
-            for topic in data.get("RelatedTopics", [])[:max_results]:
-                if isinstance(topic, dict) and topic.get("Text"):
-                    results.append({
-                        "title": topic["Text"][:80],
-                        "snippet": topic["Text"],
-                        "url": topic.get("FirstURL", ""),
-                    })
-                    if len(results) >= max_results:
-                        break
-            if data.get("Answer") and not results:
-                results.append({"title": "Answer", "snippet": str(data["Answer"]), "url": ""})
-        except Exception:
-            pass
-
-    if not results:
+    api_key = os.environ.get("TAVILY_API_KEY", "")
+    if not api_key:
         return json.dumps({
             "query": query,
             "results": [],
-            "note": "No results found. Try a different query.",
+            "note": "TAVILY_API_KEY not set. Add it to backend/.env to enable web search.",
         })
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": api_key,
+                    "query": query,
+                    "max_results": max_results,
+                    "search_depth": "basic",
+                    "include_answer": False,
+                    "include_raw_content": False,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return json.dumps({"query": query, "results": [], "note": f"Search failed: {e}"})
+
+    results = [
+        {
+            "title": r.get("title", ""),
+            "snippet": r.get("content", ""),
+            "url": r.get("url", ""),
+        }
+        for r in data.get("results", [])
+    ]
+
+    if not results:
+        return json.dumps({"query": query, "results": [], "note": "No results found."})
 
     return json.dumps({"query": query, "results": results})
 
