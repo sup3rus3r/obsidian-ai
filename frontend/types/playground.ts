@@ -812,3 +812,40 @@ export interface CostByAgentResponse {
 export interface AnalyticsOverviewResponse {
   overview: AnalyticsOverview
 }
+
+
+// ── WhatsApp Channels ─────────────────────────────────────────────────────────
+
+export interface WAChannel {
+  id: string
+  user_id: string
+  agent_id: string
+  name: string
+  wa_phone: string | null
+  status: "pending_qr" | "connected" | "disconnected"
+  allowed_jids: string[] | null
+  reject_message: string | null
+  is_active: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface CreateWAChannelRequest {
+  name: string
+  agent_id: string
+}
+
+export interface UpdateWAChannelRequest {
+  name?: string
+  agent_id?: string
+  allowed_jids?: string[] | null
+  reject_message?: string | null
+}
+
+export interface HITLApprovalItem {
+  approval_id: string
+  session_id: string
+  tool_call_id: string
+  tool_name: string
+  tool_arguments: Record<string, unknown> | null
+}

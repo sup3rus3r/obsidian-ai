@@ -882,6 +882,20 @@ class HITLApprovalCollection:
         )
 
     @classmethod
+    async def find_pending_by_user(cls, db, user_id: str) -> list[dict]:
+        """Return all pending HITL approvals for sessions owned by user_id."""
+        collection = db[cls.collection_name]
+        # Join via session_id — fetch session IDs owned by user first
+        sessions_coll = db["sessions"]
+        cursor = sessions_coll.find({"user_id": user_id}, {"_id": 1})
+        session_docs = await cursor.to_list(length=1000)
+        session_ids = [str(s["_id"]) for s in session_docs]
+        if not session_ids:
+            return []
+        cursor = collection.find({"session_id": {"$in": session_ids}, "status": "pending"})
+        return await cursor.to_list(length=50)
+
+    @classmethod
     async def deny_all_pending(cls, db) -> int:
         """Auto-deny all pending approvals (called on server startup)."""
         collection = db[cls.collection_name]
@@ -1322,3 +1336,83 @@ class AppSettingCollection:
         cursor = collection.find({})
         docs = await cursor.to_list(length=200)
         return {d["key"]: d.get("value") for d in docs}
+
+
+class WhatsAppChannelCollection:
+    collection_name = "whatsapp_channels"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("user_id")
+        await collection.create_index("agent_id")
+
+    @classmethod
+    async def find_by_user(cls, db, user_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"user_id": user_id, "is_active": True})
+        return await cursor.to_list(length=100)
+
+    @classmethod
+    async def find_by_id(cls, db, channel_id: str) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        return await collection.find_one({"_id": ObjectId(channel_id)})
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("is_active", True)
+        data.setdefault("status", "disconnected")
+        data.setdefault("created_at", datetime.utcnow())
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def update(cls, db, channel_id: str, user_id: str, updates: dict) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        updates["updated_at"] = datetime.utcnow()
+        return await collection.find_one_and_update(
+            {"_id": ObjectId(channel_id), "user_id": user_id},
+            {"$set": updates},
+            return_document=True
+        )
+
+    @classmethod
+    async def delete(cls, db, channel_id: str, user_id: str) -> bool:
+        collection = db[cls.collection_name]
+        result = await collection.update_one(
+            {"_id": ObjectId(channel_id), "user_id": user_id},
+            {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+        )
+        return result.modified_count > 0
+
+
+class WAContactSessionCollection:
+    collection_name = "wa_contact_sessions"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("channel_id")
+        await collection.create_index("session_id")
+        await collection.create_index([("channel_id", 1), ("wa_chat_id", 1)], unique=True)
+
+    @classmethod
+    async def find_by_channel_and_chat(cls, db, channel_id: str, wa_chat_id: str) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        return await collection.find_one({"channel_id": channel_id, "wa_chat_id": wa_chat_id})
+
+    @classmethod
+    async def find_by_channel(cls, db, channel_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"channel_id": channel_id})
+        return await cursor.to_list(length=200)
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data

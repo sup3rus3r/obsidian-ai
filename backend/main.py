@@ -42,6 +42,7 @@ from routers.optimizer_router import router as optimizer_router
 from routers.settings_router import router as settings_router
 from routers.sandbox_router import router as sandbox_router
 from routers.analytics_router import router as analytics_router
+from routers.whatsapp_router import router as whatsapp_router
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import connect_to_mongo, close_mongo_connection, get_database
@@ -55,6 +56,8 @@ if DATABASE_TYPE == "mongo":
         AgentMemoryCollection,
         TraceSpanCollection,
         ToolProposalCollection,
+        WhatsAppChannelCollection,
+        WAContactSessionCollection,
     )
 
 
@@ -606,6 +609,43 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS whatsapp_channels (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id         INTEGER NOT NULL REFERENCES users(id),
+                    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+                    name            TEXT NOT NULL,
+                    wa_phone        TEXT,
+                    status          TEXT NOT NULL DEFAULT 'disconnected',
+                    allowed_jids    TEXT,
+                    reject_message  TEXT,
+                    auth_state_path TEXT,
+                    is_active       BOOLEAN NOT NULL DEFAULT 1,
+                    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at      DATETIME
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS wa_contact_sessions (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER NOT NULL REFERENCES whatsapp_channels(id),
+                    wa_chat_id TEXT NOT NULL,
+                    session_id INTEGER NOT NULL REFERENCES sessions(id),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME,
+                    UNIQUE(channel_id, wa_chat_id)
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 
 # ── Module-level APScheduler job functions ────────────────────────────────────
 # Must be at module scope (not closures) so APScheduler can pickle them for the
@@ -811,6 +851,8 @@ async def lifespan(app: FastAPI):
         await AgentMemoryCollection.create_indexes(db)
         await TraceSpanCollection.create_indexes(db)
         await ToolProposalCollection.create_indexes(db)
+        await WhatsAppChannelCollection.create_indexes(db)
+        await WAContactSessionCollection.create_indexes(db)
         # Auto-deny any HITL approvals left pending from a previous server run
         await HITLApprovalCollection.deny_all_pending(db)
         # Auto-reject any tool proposals left pending from a previous server run
@@ -901,6 +943,7 @@ app.include_router(optimizer_router)
 app.include_router(settings_router)
 app.include_router(sandbox_router)
 app.include_router(analytics_router)
+app.include_router(whatsapp_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

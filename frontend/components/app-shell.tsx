@@ -7,6 +7,7 @@ import { apiClient } from "@/lib/api-client"
 import { GetAPIStatus } from "@/app/api/os"
 import { usePermissionsStore } from "@/stores/permissions-store"
 import { AppSidebar } from "@/components/app-sidebar"
+import { HITLGlobalBadge } from "@/components/notifications/hitl-global-badge"
 import { Button } from "@/components/ui/button"
 import { RefreshCw } from "lucide-react"
 
@@ -119,16 +120,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </span>
             </div>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 text-xs gap-1.5"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-1">
+            <HITLGlobalBadge />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-xs gap-1.5"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
         {/* Main content */}
         <div className="flex-1 min-h-0 relative">

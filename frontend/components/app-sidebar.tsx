@@ -14,6 +14,7 @@ import {
   BookOpen,
   FlaskConical,
   BarChart2,
+  MessageCircle,
 } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
@@ -34,6 +35,7 @@ const navItems = [
   { label: "Knowledge", icon: BookOpen, path: Routes.KNOWLEDGE },
   { label: "Evals", icon: FlaskConical, path: Routes.EVALS },
   { label: "Observability", icon: BarChart2, path: Routes.OBSERVABILITY },
+  { label: "Channels", icon: MessageCircle, path: Routes.CHANNELS },
   { label: "Settings", icon: Settings, path: Routes.SETTINGS },
 ]
 

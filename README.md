@@ -467,7 +467,7 @@ Give any agent or team an isolated Docker container for safe code execution and 
 - **Isolated container** — Each sandbox runs the `obsidian-webdev-base` image with a 512 MB memory cap, 1 CPU limit, and `/workspace` as the working directory
 - **Start / stop controls** — Launch or terminate the container directly from the agent or team edit dialog; a pulsing status dot shows whether the container is live
 - **Sandbox status badge** — A live indicator appears in the chat header whenever a sandbox-enabled agent or team has an active container
-- **Built-in sandbox tools** — When an active sandbox container is detected, seven tools are automatically injected into the agent's tool set:
+- **Built-in sandbox tools** — When an active sandbox container is detected, nine tools are automatically injected into the agent's tool set:
 
 | Tool | Description |
 |------|-------------|
@@ -478,6 +478,8 @@ Give any agent or team an isolated Docker container for safe code execution and 
 | `sandbox_glob` | Find files matching a shell glob pattern |
 | `sandbox_grep` | Search file contents with regex |
 | `sandbox_delete` | Delete a file or directory |
+| `sandbox_python` | Execute Python 3.12 code and return output (numpy, pandas, matplotlib, scikit-learn, requests, httpx, pytest pre-installed) |
+| `sandbox_node` | Execute JavaScript (Node.js 20) or TypeScript (ts-node) code and return output |
 
 - **Automatic artifact surfacing** — The agent is instructed via system prompt to call `sandbox_read` after creating or modifying any file and wrap the result in an `<artifact>` tag, so files appear in the artifact panel with live preview, copy, and download
 
@@ -573,6 +575,16 @@ npm run dev
 ```
 
 The frontend will be available at `http://localhost:3000`.
+
+### Docker Sandbox Base Image
+
+If you plan to use the Docker Sandbox feature, build the base image once before starting agents with sandbox enabled:
+
+```bash
+docker build -f backend/Dockerfile.base -t obsidian-webdev-base:latest backend/
+```
+
+This image includes Python 3.12, Node.js 20, and common dev tools. It only needs to be rebuilt if you modify `backend/Dockerfile.base`.
 
 ### Running Both Together
 
@@ -905,9 +917,56 @@ Recent additions shipped to the platform.
 
 ---
 
+### 🟢 WhatsApp Channel Integration
+
+> **Agents can now receive and reply to WhatsApp messages in real time — no Meta Business account, no API fees, no webhooks.**
+
+Connect any Obsidian AI agent to a WhatsApp account in seconds using a QR code scan. Once linked, every incoming message is routed through the full agent pipeline — tools, RAG, memory, HITL — and the reply lands back in WhatsApp automatically.
+
+**How it works:**
+
+A lightweight Node.js sidecar (`wa-bridge/`) runs alongside the backend. It manages a Baileys WhatsApp Web socket per channel, renders QR codes as PNG data URLs, and forwards incoming messages to FastAPI over localhost. The backend runs the agent headlessly (no SSE stream required) and posts the reply back through the sidecar.
+
+**What's included:**
+
+- **Channels page** — Create, manage, and delete WhatsApp channels from the sidebar; each channel shows live connection status (Connected / Awaiting QR / Disconnected)
+- **QR scan flow** — Click Connect, a QR code appears in the UI; scan with WhatsApp → Linked Devices and the channel goes live in seconds
+- **Per-channel agent assignment** — Each channel routes messages to a specific agent; change the agent at any time without re-scanning
+- **Contact whitelist** — Optionally restrict which WhatsApp contacts the agent responds to; unrecognised senders can receive a custom rejection message or be silently ignored
+- **Persistent sessions** — Each `(channel, WhatsApp contact)` pair maps to a persistent Obsidian AI session; the agent remembers the full conversation history and applies long-term memory across interactions
+- **HITL in channels** — When a channel-triggered agent hits a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the top bar and unblocks automatically once actioned
+- **Global HITL badge** — A new bell icon in the app header polls all sessions for pending approvals and lets you approve or reject tool calls from anywhere in the UI
+- **Auto-reconnect** — The sidecar reconnects all previously authenticated channels automatically on startup; no manual re-scanning after a restart
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/wa/channels` | GET | List all WhatsApp channels |
+| `/wa/channels` | POST | Create a new channel |
+| `/wa/channels/{id}` | GET / PATCH / DELETE | Get, update, or delete a channel |
+| `/wa/channels/{id}/connect` | POST | Start the Baileys socket (triggers QR) |
+| `/wa/channels/{id}/disconnect` | POST | Gracefully disconnect the socket |
+| `/wa/channels/{id}/qr` | GET (SSE) | Stream QR code and connection events |
+| `/wa/channels/{id}/status` | PATCH | Internal — sidecar updates channel status |
+| `/wa/incoming` | POST | Internal — sidecar delivers incoming messages |
+| `/chat/hitl/pending` | GET | List all pending HITL approvals across all sessions |
+
+**Running the sidecar:**
+
+The `dev` script starts the sidecar automatically alongside the frontend and backend. To run it manually:
+
+```bash
+cd wa-bridge && npm install && node index.js
+```
+
+Environment variables: `WA_BRIDGE_PORT` (default `3200`), `FASTAPI_URL` (default `http://localhost:8001`), `WA_AUTH_DIR` (default `wa-bridge/auth/`).
+
+---
+
 ### Docker Sandbox
 
-Agents and teams can now be assigned an isolated Docker container for safe, persistent code execution. When a sandbox is active, seven built-in tools (`sandbox_bash`, `sandbox_write`, `sandbox_read`, `sandbox_ls`, `sandbox_glob`, `sandbox_grep`, `sandbox_delete`) are automatically injected into the agent's tool set — no manual tool configuration needed.
+Agents and teams can now be assigned an isolated Docker container for safe, persistent code execution. When a sandbox is active, nine built-in tools (`sandbox_bash`, `sandbox_write`, `sandbox_read`, `sandbox_ls`, `sandbox_glob`, `sandbox_grep`, `sandbox_delete`, `sandbox_python`, `sandbox_node`) are automatically injected into the agent's tool set — no manual tool configuration needed.
 
 **Start / stop from the dialog** — A new Docker Sandbox section in the agent and team edit dialogs lets you enable the sandbox and, when editing an existing agent/team, start or stop the container with a single button click. A pulsing status dot shows whether the container is live.
 
@@ -969,9 +1028,9 @@ Agents and teams can now be assigned an isolated Docker container for safe, pers
 ### Messaging Channels
 
 - [ ] **Telegram** — Connect any agent to a Telegram bot (via `@BotFather` token); the agent responds to direct messages and group mentions, with full tool execution, RAG, HITL approval, and session history working natively
-- [ ] **WhatsApp** — Connect any agent to a WhatsApp account via QR code scan; the agent handles direct messages and group chats using the WhatsApp Web multi-device protocol — no Meta Business account required
-- [ ] **Channel session continuity** — Each external chat (Telegram chat ID, WhatsApp contact) maps to a persistent Obsidian AI session; the agent remembers previous conversations and applies long-term memory across channel interactions
-- [ ] **Channel HITL** — When a channel-connected agent triggers a HITL-flagged tool, execution pauses; the approval card surfaces in the Obsidian AI web UI and the channel user receives a "waiting for approval" message until resolved
+- [x] **WhatsApp** — Connect any agent to a WhatsApp account via QR code scan; the agent handles direct messages using the WhatsApp Web multi-device protocol — no Meta Business account required *(shipped)*
+- [x] **Channel session continuity** — Each WhatsApp contact maps to a persistent Obsidian AI session; the agent remembers previous conversations and applies long-term memory across channel interactions *(shipped)*
+- [x] **Channel HITL** — When a channel-connected agent triggers a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the web UI and unblocks automatically once actioned *(shipped)*
 - [ ] **Additional channels** — Discord, Slack, Signal, and Matrix following the same channel plugin architecture once Telegram and WhatsApp are stable
 
 ---

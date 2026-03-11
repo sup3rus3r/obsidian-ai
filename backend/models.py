@@ -441,3 +441,33 @@ class AppSetting(Base):
     key        = Column(String, unique=True, index=True, nullable=False)
     value      = Column(Text, nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class WhatsAppChannel(Base):
+    """A WhatsApp account linked to an agent via the WhatsApp Web multi-device protocol."""
+    __tablename__ = "whatsapp_channels"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    user_id          = Column(Integer, ForeignKey("users.id"), nullable=False)
+    agent_id         = Column(Integer, ForeignKey("agents.id"), nullable=False)
+    name             = Column(String, nullable=False)                         # friendly label
+    wa_phone         = Column(String, nullable=True)                          # bound phone number (after auth)
+    status           = Column(String, default="disconnected", nullable=False) # pending_qr | connected | disconnected
+    allowed_jids     = Column(Text, nullable=True)                            # JSON array of allowed WA JIDs, NULL = allow all
+    reject_message   = Column(Text, nullable=True)                            # auto-reply to blocked senders, NULL = silent
+    auth_state_path  = Column(String, nullable=True)                          # path to Baileys auth dir
+    is_active        = Column(Boolean, default=True, nullable=False)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class WAContactSession(Base):
+    """Maps a WhatsApp chat (JID) to a persistent Obsidian AI session."""
+    __tablename__ = "wa_contact_sessions"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    channel_id = Column(Integer, ForeignKey("whatsapp_channels.id"), nullable=False)
+    wa_chat_id = Column(String, nullable=False)   # JID e.g. "15551234567@s.whatsapp.net" or "groupid@g.us"
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

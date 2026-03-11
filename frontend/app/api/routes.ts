@@ -183,4 +183,17 @@ export const AppRoutes = {
     AnalyticsLatency    : (days: number) => `/api/analytics/latency?range_days=${days}`,
     AnalyticsTools      : (days: number) => `/api/analytics/tools?range_days=${days}`,
     AnalyticsCost       : (days: number) => `/api/analytics/cost?range_days=${days}`,
+
+    // WhatsApp Channels
+    WAListChannels      : () => "/api/wa/channels",
+    WACreateChannel     : () => "/api/wa/channels",
+    WAGetChannel        : (id: string) => `/api/wa/channels/${id}`,
+    WAUpdateChannel     : (id: string) => `/api/wa/channels/${id}`,
+    WADeleteChannel     : (id: string) => `/api/wa/channels/${id}`,
+    WAConnect           : (id: string) => `/api/wa/channels/${id}/connect`,
+    WADisconnect        : (id: string) => `/api/wa/channels/${id}/disconnect`,
+    WAChannelQR         : (id: string) => `/api/wa/channels/${id}/qr`,
+
+    // Global HITL (all sessions)
+    HITLGlobalPending   : () => "/api/chat/hitl/pending",
 }

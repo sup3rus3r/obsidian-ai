@@ -4858,6 +4858,52 @@ async def get_pending_hitl(
     ])
 
 
+@router.get("/hitl/pending", response_model=HITLPendingListResponse)
+async def get_all_pending_hitl(
+    current_user: TokenData = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    """
+    Return ALL pending HITL approvals for the current user across all sessions.
+    Used by the global HITL notification badge (includes WhatsApp-triggered sessions).
+    """
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        approvals = await HITLApprovalCollection.find_pending_by_user(mongo_db, str(current_user.user_id))
+        return HITLPendingListResponse(approvals=[
+            HITLApprovalResponse(
+                approval_id=str(a["_id"]),
+                session_id=str(a["session_id"]),
+                tool_call_id=a["tool_call_id"],
+                tool_name=a["tool_name"],
+                tool_arguments=json.loads(a["tool_arguments_json"]) if a.get("tool_arguments_json") else None,
+            )
+            for a in approvals
+        ])
+
+    # SQLite: join sessions to filter by user_id
+    from sqlalchemy import and_
+    approvals = (
+        db.query(HITLApproval)
+        .join(SessionModel, SessionModel.id == HITLApproval.session_id)
+        .filter(
+            SessionModel.user_id == int(current_user.user_id),
+            HITLApproval.status == "pending",
+        )
+        .all()
+    )
+    return HITLPendingListResponse(approvals=[
+        HITLApprovalResponse(
+            approval_id=str(a.id),
+            session_id=str(a.session_id),
+            tool_call_id=a.tool_call_id,
+            tool_name=a.tool_name,
+            tool_arguments=json.loads(a.tool_arguments_json) if a.tool_arguments_json else None,
+        )
+        for a in approvals
+    ])
+
+
 @router.post("/sessions/{session_id}/tool-proposals/{proposal_id}/approve")
 async def approve_tool_proposal(
     session_id: str,

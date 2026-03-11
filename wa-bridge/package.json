@@ -1,0 +1,19 @@
+{
+  "name": "obsidian-wa-bridge",
+  "version": "1.0.0",
+  "description": "Baileys WhatsApp Web sidecar for Obsidian AI",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "axios": "^1.7.2",
+    "express": "^4.19.2",
+    "pino": "^9.3.2",
+    "pino-pretty": "^11.2.1",
+    "qrcode": "^1.5.4"
+  }
+}

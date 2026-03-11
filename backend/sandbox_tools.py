@@ -157,6 +157,37 @@ SANDBOX_TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "sandbox_python",
+            "description": "Execute Python code inside the Docker sandbox and return stdout/stderr. Uses Python 3.12. Has access to numpy, pandas, matplotlib, scikit-learn, requests, httpx, pytest.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python code to execute."},
+                    "timeout": {"type": "integer", "description": "Execution timeout in seconds. Default 30."},
+                },
+                "required": ["code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sandbox_node",
+            "description": "Execute JavaScript/TypeScript code inside the Docker sandbox using Node.js 20 (JS) or ts-node (TS). Has access to standard Node.js APIs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "JavaScript or TypeScript code to execute."},
+                    "typescript": {"type": "boolean", "description": "Run as TypeScript using ts-node. Default false (plain Node.js)."},
+                    "timeout": {"type": "integer", "description": "Execution timeout in seconds. Default 30."},
+                },
+                "required": ["code"],
+            },
+        },
+    },
 ]
 
 
@@ -237,6 +268,78 @@ async def execute_sandbox_tool(tool_name: str, arguments_str: str, container_id:
         flag = "-rf" if recursive else "-f"
         out, code = await _docker_exec(container_id, "rm", flag, path)
         return json.dumps({"success": code == 0, "output": out.strip()})
+
+    elif tool_name == "sandbox_python":
+        code = args.get("code", "")
+        timeout = min(int(args.get("timeout", 30)), 120)
+        if not code:
+            return json.dumps({"error": "No code provided"})
+        loop = asyncio.get_event_loop()
+
+        def _run_python():
+            proc = subprocess.Popen(
+                ["docker", "exec", "-i", "-w", "//workspace", container_id, "python3", "-c", code],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            try:
+                out, _ = proc.communicate(timeout=timeout)
+                return out.decode("utf-8", errors="replace"), proc.returncode
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return f"Error: execution timed out after {timeout}s", 1
+
+        try:
+            out, code_ = await loop.run_in_executor(None, _run_python)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+        return json.dumps({"output": out, "exit_code": code_})
+
+    elif tool_name == "sandbox_node":
+        code = args.get("code", "")
+        use_ts = args.get("typescript", False)
+        timeout = min(int(args.get("timeout", 30)), 120)
+        if not code:
+            return json.dumps({"error": "No code provided"})
+
+        # Write code to a temp file and run it — avoids shell quoting issues with -e flag
+        ext = ".ts" if use_ts else ".js"
+        tmp_file = f"/workspace/.sandbox_repl_tmp{ext}"
+        _, _ = await _docker_exec(
+            container_id, "//bin/sh", "-c",
+            f"cat > {tmp_file}",
+            stdin_data=code.encode("utf-8"),
+        )
+
+        runner = "ts-node" if use_ts else "node"
+        loop = asyncio.get_event_loop()
+
+        def _run_node():
+            proc = subprocess.Popen(
+                ["docker", "exec", "-i", "-w", "//workspace", container_id, runner, tmp_file],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            try:
+                out, _ = proc.communicate(timeout=timeout)
+                return out.decode("utf-8", errors="replace"), proc.returncode
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return f"Error: execution timed out after {timeout}s", 1
+
+        try:
+            out, code_ = await loop.run_in_executor(None, _run_node)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+        # Clean up temp file (best effort)
+        await _docker_exec(container_id, "rm", "-f", tmp_file)
+
+        return json.dumps({"output": out, "exit_code": code_})
 
     return json.dumps({"error": f"Unknown sandbox tool: {tool_name}"})
 

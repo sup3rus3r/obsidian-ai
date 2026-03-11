@@ -22,6 +22,7 @@ export const Routes = {
   EVALS           : '/evals',
   OBSERVABILITY   : '/observability',
   SETTINGS        : '/settings',
+  CHANNELS        : '/channels',
 } as const;
 
 
@@ -79,6 +80,12 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Settings',
     allowedRoles: ['admin', 'user'],
     description: 'Application settings and preferences',
+  },
+  {
+    path: Routes.CHANNELS,
+    label: 'Channels',
+    allowedRoles: ['admin', 'user'],
+    description: 'WhatsApp and messaging channel integrations',
   },
 ];
 

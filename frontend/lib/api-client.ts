@@ -51,6 +51,10 @@ import type {
   LatencyByModelResponse,
   ToolStatsResponse,
   CostByAgentResponse,
+  WAChannel,
+  CreateWAChannelRequest,
+  UpdateWAChannelRequest,
+  HITLApprovalItem,
 } from "@/types/playground"
 
 interface ApiResponse<T> {
@@ -827,6 +831,48 @@ class ApiClient {
 
   async getAnalyticsCost(days: number): Promise<CostByAgentResponse> {
     return this.request<CostByAgentResponse>(AppRoutes.AnalyticsCost(days))
+  }
+
+  // ============= WhatsApp Channels =============
+  async listWAChannels(): Promise<WAChannel[]> {
+    const result = await this.request<WAChannel[]>(AppRoutes.WAListChannels())
+    return Array.isArray(result) ? result : []
+  }
+
+  async createWAChannel(data: CreateWAChannelRequest): Promise<WAChannel> {
+    return this.request<WAChannel>(AppRoutes.WACreateChannel(), {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getWAChannel(id: string): Promise<WAChannel> {
+    return this.request<WAChannel>(AppRoutes.WAGetChannel(id))
+  }
+
+  async updateWAChannel(id: string, data: UpdateWAChannelRequest): Promise<WAChannel> {
+    return this.request<WAChannel>(AppRoutes.WAUpdateChannel(id), {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteWAChannel(id: string): Promise<void> {
+    await this.request<void>(AppRoutes.WADeleteChannel(id), { method: "DELETE" })
+  }
+
+  async connectWAChannel(id: string): Promise<{ status: string; message: string }> {
+    return this.request(AppRoutes.WAConnect(id), { method: "POST" })
+  }
+
+  async disconnectWAChannel(id: string): Promise<{ status: string }> {
+    return this.request(AppRoutes.WADisconnect(id), { method: "POST" })
+  }
+
+  // ============= Global HITL =============
+  async getGlobalPendingHITL(): Promise<HITLApprovalItem[]> {
+    const result = await this.request<{ approvals: HITLApprovalItem[] }>(AppRoutes.HITLGlobalPending())
+    return result.approvals || []
   }
 }
 

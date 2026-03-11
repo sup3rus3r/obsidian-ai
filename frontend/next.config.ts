@@ -12,6 +12,11 @@ const nextConfig: NextConfig = {
         source      : "/api/auth/:path*",
         destination : "/api/auth/:path*",
       },
+      // Exclude file-based API routes that need proper streaming
+      {
+        source      : "/api/wa/channels/:id/qr",
+        destination : "/api/wa/channels/:id/qr",
+      },
       {
         source      : "/api/:path*",
         destination : "http://localhost:8001/:path*",
