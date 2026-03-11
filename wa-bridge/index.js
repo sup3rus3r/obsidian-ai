@@ -11,6 +11,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 
 // Prevent Baileys internal timeouts (prekey upload, etc.) from crashing the process
@@ -283,13 +284,43 @@ async function startChannel(channelId, authPath) {
       const waLid = rawChatId?.endsWith("@lid") ? rawChatId : (rawSender?.endsWith("@lid") ? rawSender : null);
       const isGroup = rawChatId?.endsWith("@g.us") || false;
 
-      const text =
+      let text =
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption ||
         null;
 
       _origStdoutWrite(`[WA-BRIDGE] text=${JSON.stringify(text)} msgKeys=${Object.keys(msg.message||{}).join(",")} waChatId=${waChatId}\n`);
+
+      // Transcribe voice notes via backend
+      if (!text && msg.message?.audioMessage) {
+        try {
+          const audioBuffer = await downloadMediaMessage(msg, "buffer", {});
+          // POST multipart to backend /wa/transcribe
+          const boundary = `----WA${Date.now()}`;
+          const crlf = "\r\n";
+          const bodyParts = [
+            `--${boundary}${crlf}`,
+            `Content-Disposition: form-data; name="file"; filename="audio.ogg"${crlf}`,
+            `Content-Type: audio/ogg${crlf}${crlf}`,
+          ];
+          const tail = `${crlf}--${boundary}--${crlf}`;
+          const head = Buffer.from(bodyParts.join(""));
+          const tailBuf = Buffer.from(tail);
+          const body = Buffer.concat([head, audioBuffer, tailBuf]);
+
+          const resp = await axios.post(
+            `${FASTAPI_URL}/wa/transcribe`,
+            body,
+            { headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` }, responseType: "json", timeout: 120000 }
+          );
+          text = resp.data?.text || null;
+          _origStdoutWrite(`[WA-BRIDGE] transcribed audio: ${JSON.stringify(text)}\n`);
+        } catch (err) {
+          _origStdoutWrite(`[WA-BRIDGE] audio transcription failed: ${err.message}\n`);
+        }
+      }
+
       // Don't add to seenMsgIds if no text — messages.update may deliver the decrypted content later
       if (!text) continue;
 

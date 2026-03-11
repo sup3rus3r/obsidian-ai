@@ -28,4 +28,5 @@ dependencies = [
     "sentence-transformers>=2.2.0; sys_platform == 'win32'",
     "apscheduler>=3.10.0,<4.0",
     "croniter>=3.0.0",
+    "faster-whisper>=1.0.0",
 ]

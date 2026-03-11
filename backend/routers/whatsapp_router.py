@@ -422,6 +422,48 @@ async def update_channel_status(
     return {"ok": True}
 
 
+_whisper_model = None
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+    return _whisper_model
+
+def _run_transcription(audio_bytes: bytes) -> str | None:
+    import io
+    model = _get_whisper_model()
+    audio_buf = io.BytesIO(audio_bytes)
+    segments, _ = model.transcribe(audio_buf, beam_size=1)
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    return text or None
+
+
+@router.post("/transcribe")
+async def transcribe_audio(request: Request):
+    """
+    Called by the Baileys sidecar to transcribe a WhatsApp voice note.
+    Receives multipart/form-data with field 'file', returns {"text": "..."}.
+    No user auth — sidecar is localhost-only.
+    All processing is in-memory; no temp files written.
+    """
+    form = await request.form()
+    upload = form.get("file")
+    if not upload:
+        raise HTTPException(400, "No file field in form data")
+
+    audio_bytes = await upload.read()
+    await upload.close()
+
+    try:
+        loop = asyncio.get_event_loop()
+        text = await loop.run_in_executor(None, _run_transcription, audio_bytes)
+        return {"text": text}
+    except Exception as e:
+        raise HTTPException(500, f"Transcription failed: {e}")
+
+
 @router.post("/incoming")
 async def incoming_message(body: WAIncomingMessage):
     """
