@@ -267,9 +267,7 @@ async def _run_headless_mongo(session_id: str, agent_id: str) -> str | None:
         for m in all_messages
         if m["role"] in ("user", "assistant")
     ]
-    logger.info("agent_runner mongo: session=%s msg_count=%d", session_id, len(messages))
     if not messages:
-        logger.warning("agent_runner mongo: no messages in session %s", session_id)
         return None
 
     api_key = decrypt_api_key(provider_record.get("api_key")) if provider_record.get("api_key") else None
