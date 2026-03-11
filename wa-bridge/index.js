@@ -260,8 +260,12 @@ async function startChannel(channelId, authPath) {
     for (const msg of messages) {
       if (msg.key.fromMe) continue; // Ignore outgoing messages
 
+      // Dedup by raw msg.key.id (not JID-qualified) so the same message arriving
+      // on both @lid and @s.whatsapp.net JIDs is only processed once.
       const msgId = `${channelId}:${msg.key.id}`;
-      if (seenMsgIds.has(msgId)) continue;
+      const rawMsgId = `${channelId}:raw:${msg.key.id}`;
+      if (seenMsgIds.has(msgId) || seenMsgIds.has(rawMsgId)) continue;
+      seenMsgIds.add(rawMsgId);
 
       const rawChatId = msg.key.remoteJid;
       const rawSender = msg.key.participant || msg.key.remoteJid;

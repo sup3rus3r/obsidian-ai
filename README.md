@@ -935,6 +935,7 @@ A lightweight Node.js sidecar (`wa-bridge/`) runs alongside the backend. It mana
 - **Contact whitelist** — Optionally restrict which WhatsApp contacts the agent responds to; unrecognised senders can receive a custom rejection message or be silently ignored
 - **Persistent sessions** — Each `(channel, WhatsApp contact)` pair maps to a persistent Obsidian AI session; the agent remembers the full conversation history and applies long-term memory across interactions
 - **HITL in channels** — When a channel-triggered agent hits a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the top bar and unblocks automatically once actioned
+- **Voice note transcription** — Incoming WhatsApp voice notes are automatically transcribed using a local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) `tiny` model (runs entirely on CPU, no external API). The transcript is passed to the agent as text — no audio files written to disk, no cloud services involved
 - **Global HITL badge** — A new bell icon in the app header polls all sessions for pending approvals and lets you approve or reject tool calls from anywhere in the UI
 - **Auto-reconnect** — The sidecar reconnects all previously authenticated channels automatically on startup; no manual re-scanning after a restart
 
@@ -1030,6 +1031,7 @@ Agents and teams can now be assigned an isolated Docker container for safe, pers
 - [ ] **Telegram** — Connect any agent to a Telegram bot (via `@BotFather` token); the agent responds to direct messages and group mentions, with full tool execution, RAG, HITL approval, and session history working natively
 - [x] **WhatsApp** — Connect any agent to a WhatsApp account via QR code scan; the agent handles direct messages using the WhatsApp Web multi-device protocol — no Meta Business account required *(shipped)*
 - [x] **Channel session continuity** — Each WhatsApp contact maps to a persistent Obsidian AI session; the agent remembers previous conversations and applies long-term memory across channel interactions *(shipped)*
+- [x] **WhatsApp voice note transcription** — Incoming voice notes are transcribed locally using faster-whisper tiny (CPU, int8, ~39 MB model) and passed to the agent as text — no cloud STT, no temp files *(shipped)*
 - [x] **Channel HITL** — When a channel-connected agent triggers a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the web UI and unblocks automatically once actioned *(shipped)*
 - [ ] **Additional channels** — Discord, Slack, Signal, and Matrix following the same channel plugin architecture once Telegram and WhatsApp are stable
 
