@@ -427,8 +427,10 @@ async def incoming_message(body: WAIncomingMessage):
     """
     Called by the Baileys sidecar when a WhatsApp message arrives.
     No user auth — sidecar is localhost-only.
-    Awaited directly so errors surface in logs.
     """
-    from services.whatsapp_service import handle_incoming_message
-    await handle_incoming_message(body.dict(), None)
+    try:
+        from services.whatsapp_service import handle_incoming_message
+        await handle_incoming_message(body.dict(), None)
+    except Exception:
+        pass
     return {"status": "ok"}

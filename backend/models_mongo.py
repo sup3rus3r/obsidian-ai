@@ -1404,6 +1404,21 @@ class WAContactSessionCollection:
         return await collection.find_one({"channel_id": channel_id, "wa_chat_id": wa_chat_id})
 
     @classmethod
+    async def find_by_lid(cls, db, channel_id: str, wa_lid: str) -> Optional[dict]:
+        """Find a session by the @lid JID stored when the session was created."""
+        collection = db[cls.collection_name]
+        return await collection.find_one({"channel_id": channel_id, "wa_lid": wa_lid})
+
+    @classmethod
+    async def update_lid(cls, db, channel_id: str, wa_chat_id: str, wa_lid: str):
+        """Store the @lid JID against an existing session so future messages can be matched."""
+        collection = db[cls.collection_name]
+        await collection.update_one(
+            {"channel_id": channel_id, "wa_chat_id": wa_chat_id},
+            {"$set": {"wa_lid": wa_lid}},
+        )
+
+    @classmethod
     async def find_by_channel(cls, db, channel_id: str) -> list[dict]:
         collection = db[cls.collection_name]
         cursor = collection.find({"channel_id": channel_id})

@@ -1,4 +1,6 @@
 import sys
+import logging
+logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 if sys.stderr.encoding != 'utf-8':

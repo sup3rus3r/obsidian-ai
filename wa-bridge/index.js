@@ -12,6 +12,11 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
 } from "@whiskeysockets/baileys";
+
+// Prevent Baileys internal timeouts (prekey upload, etc.) from crashing the process
+process.on("unhandledRejection", (reason) => {
+  process.stdout.write(`[WA-BRIDGE] unhandledRejection (ignored): ${reason?.message || reason}\n`);
+});
 import express from "express";
 import axios from "axios";
 import { Boom } from "@hapi/boom";
@@ -44,8 +49,8 @@ process.stderr.write = (chunk, ...rest) => _isNoisy(chunk?.toString()) ? true : 
 const channels = new Map();
 /** Track channels currently being started to prevent duplicate sockets */
 const starting = new Set();
-/** Dedup: recently processed message IDs — Set<string>, capped at 500 */
-const seenMsgIds = new Set();
+/** Pending reconnect timers — prevents double-reconnect from multiple close events */
+const reconnectTimers = new Map();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -94,6 +99,10 @@ async function startChannel(channelId, authPath) {
     throw err;
   }
 
+  // In-memory cache of recently sent messages for retry support.
+  // WA will ask us to resend if the recipient's decryption fails.
+  const recentSent = new Map(); // msgId → proto.IMessage
+
   const sock = makeWASocket({
     version,
     auth: {
@@ -102,6 +111,10 @@ async function startChannel(channelId, authPath) {
     },
     logger: silentLogger,
     generateHighQualityLinkPreview: false,
+    // Required: lets Baileys resend our messages when recipient requests retry
+    getMessage: async (key) => {
+      return recentSent.get(key.id) || undefined;
+    },
   });
 
   const entry = {
@@ -109,7 +122,8 @@ async function startChannel(channelId, authPath) {
     qrListeners: new Set(),
     status: "pending_qr",
     authDir: dir,
-    lidMap: new Map(), // lid JID → phone JID
+    lidMap: new Map(),   // lid JID → phone JID (from lid-mapping.update)
+    recentSent,
   };
   channels.set(String(channelId), entry);
   starting.delete(String(channelId));
@@ -140,15 +154,23 @@ async function startChannel(channelId, authPath) {
     if (connection === "close") {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = reason !== DisconnectReason.loggedOut;
+      _origStdoutWrite(`[WA-BRIDGE] connection closed channelId=${channelId} reason=${reason} shouldReconnect=${shouldReconnect} error=${lastDisconnect?.error?.message}\n`);
 
       logger.info({ channelId, reason, shouldReconnect }, "WhatsApp disconnected");
       entry.status = "disconnected";
-      await updateChannelStatus(channelId, "disconnected");
 
       if (shouldReconnect) {
         channels.delete(String(channelId));
-        setTimeout(() => startChannel(channelId, dir), 5000);
+        // Cancel any pending reconnect before scheduling a new one
+        if (reconnectTimers.has(String(channelId))) {
+          clearTimeout(reconnectTimers.get(String(channelId)));
+        }
+        reconnectTimers.set(String(channelId), setTimeout(() => {
+          reconnectTimers.delete(String(channelId));
+          startChannel(channelId, dir);
+        }, 500));
       } else {
+        await updateChannelStatus(channelId, "disconnected");
         // Logged out — remove auth state
         channels.delete(String(channelId));
         fs.rmSync(dir, { recursive: true, force: true });
@@ -162,59 +184,103 @@ async function startChannel(channelId, authPath) {
     return entry.lidMap.get(jid) ?? jid;
   }
 
-  // Populate lid→phone map from contact events
-  function indexContacts(contacts) {
-    for (const c of contacts) {
-      if (c.id?.endsWith("@lid") && c.phoneNumber) {
-        const phoneJid = c.phoneNumber.includes("@") ? c.phoneNumber : `${c.phoneNumber}@s.whatsapp.net`;
-        entry.lidMap.set(c.id, phoneJid);
-      }
+  // LID resolution: populate lidMap from every event that may carry the mapping
+  function storeLidMapping(lid, pn) {
+    if (!lid || !pn) return;
+    const phoneJid = pn.includes("@") ? pn : `${pn}@s.whatsapp.net`;
+    if (!entry.lidMap.has(lid)) {
+      entry.lidMap.set(lid, phoneJid);
+      _origStdoutWrite(`[WA-BRIDGE] lid-mapping stored: ${lid} → ${phoneJid}\n`);
     }
   }
 
+  // lid-mapping.update: fires as single object or array depending on Baileys version
+  sock.ev.on("lid-mapping.update", (data) => {
+    const items = Array.isArray(data) ? data : [data];
+    for (const { lid, pn } of items) storeLidMapping(lid, pn);
+  });
+
+  // messaging-history.set: bulk load on reconnect
+  sock.ev.on("messaging-history.set", ({ lidPnMappings }) => {
+    if (!lidPnMappings?.length) return;
+    for (const { lid, pn } of lidPnMappings) storeLidMapping(lid, pn);
+    _origStdoutWrite(`[WA-BRIDGE] messaging-history: loaded ${lidPnMappings.length} lid mappings\n`);
+  });
+
+  // contacts.upsert/update: some Baileys builds populate phoneNumber here
+  function indexContacts(contacts) {
+    for (const c of contacts) {
+      if (c.id?.endsWith("@lid") && c.phoneNumber) storeLidMapping(c.id, c.phoneNumber);
+      if (c.lid && c.id && !c.id.endsWith("@lid")) storeLidMapping(c.lid, c.id);
+    }
+  }
   sock.ev.on("contacts.upsert", indexContacts);
   sock.ev.on("contacts.update", indexContacts);
 
-  // Per-chat debounce buffer: key = waChatId, value = { timer, lines, meta }
-  const chatBuffers = new Map();
-  const DEBOUNCE_MS = 10000;
+  // Dedup: per-socket-instance seen message IDs
+  const seenMsgIds = new Set();
 
-  function flushChat(waChatId) {
-    const buf = chatBuffers.get(waChatId);
+  // Per-chat debounce buffer: key = phone prefix, value = { timer, lines, meta }
+  const chatBuffers = new Map();
+  const DEBOUNCE_MS = 1000;
+
+  function flushChat(bufKey) {
+    const buf = chatBuffers.get(bufKey);
     if (!buf) return;
-    chatBuffers.delete(waChatId);
+    chatBuffers.delete(bufKey);
     const combinedText = buf.lines.join("\n");
-    notifyBackend(channelId, { ...buf.meta, message_text: combinedText }).catch(() => {});
+    _origStdoutWrite(`[WA-BRIDGE] flushing bufKey=${bufKey} lines=${buf.lines.length} text=${JSON.stringify(combinedText)}\n`);
+    notifyBackend(channelId, { ...buf.meta, message_text: combinedText }).catch((e) => {
+      _origStdoutWrite(`[WA-BRIDGE] notifyBackend error: ${e}\n`);
+    });
   }
 
+  // Track when this socket instance was created so we can process
+  // "append" (history-sync) messages that arrived during a reconnect window
+  const socketStartedAt = Math.floor(Date.now() / 1000);
+
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify" && type !== "append") return;
+    _origStdoutWrite(`[WA-BRIDGE] upsert type=${type} count=${messages.length}\n`);
+
+    // "append" = history sync. Skip old history but process messages that
+    // arrived while we were briefly disconnected (timestamp >= socketStartedAt)
+    if (type !== "notify") {
+      if (type !== "append") return;
+      // Only process append messages that are newer than this socket instance
+      messages = messages.filter(m => {
+        const ts = m.messageTimestamp;
+        const sec = typeof ts === "object" ? ts?.low ?? ts?.toNumber?.() ?? ts : ts;
+        return !m.key.fromMe && sec >= socketStartedAt;
+      });
+      if (messages.length === 0) return;
+      _origStdoutWrite(`[WA-BRIDGE] processing ${messages.length} recent append messages\n`);
+    }
 
     for (const msg of messages) {
       if (msg.key.fromMe) continue; // Ignore outgoing messages
 
-      // Deduplicate — Baileys may deliver the same message twice on retry
       const msgId = `${channelId}:${msg.key.id}`;
       if (seenMsgIds.has(msgId)) continue;
-      seenMsgIds.add(msgId);
-      if (seenMsgIds.size > 500) {
-        const first = seenMsgIds.values().next().value;
-        seenMsgIds.delete(first);
-      }
 
       const rawChatId = msg.key.remoteJid;
       const rawSender = msg.key.participant || msg.key.remoteJid;
-      const senderPn = msg.key.senderPn;
+      // senderPn is set on multi-device for DMs — it's the actual phone number
+      const senderPn = msg.key.senderPn || msg.key.phoneNumber;
 
       function resolveJid(jid) {
         if (!jid?.endsWith("@lid")) return jid;
+        // Prefer senderPn (actual phone number WhatsApp provides)
         if (senderPn) return senderPn.includes("@") ? senderPn : `${senderPn}@s.whatsapp.net`;
+        // Fall back to lidMap populated from contacts events
         return resolveLid(jid);
       }
 
       const waChatId = resolveJid(rawChatId);
       const waSender = resolveJid(rawSender);
-      const waLid = (waSender !== rawSender) ? null : (rawSender?.endsWith("@lid") ? rawSender : null);
+      // If still a @lid after resolution, extract numeric part and treat as phone number
+      // LID format on some WA versions: the numeric part IS the phone without country code prefix
+      // but we can't reliably convert — store as waLid so backend can match by lid
+      const waLid = rawChatId?.endsWith("@lid") ? rawChatId : (rawSender?.endsWith("@lid") ? rawSender : null);
       const isGroup = rawChatId?.endsWith("@g.us") || false;
 
       const text =
@@ -223,19 +289,77 @@ async function startChannel(channelId, authPath) {
         msg.message?.imageMessage?.caption ||
         null;
 
+      _origStdoutWrite(`[WA-BRIDGE] text=${JSON.stringify(text)} msgKeys=${Object.keys(msg.message||{}).join(",")} waChatId=${waChatId}\n`);
+      // Don't add to seenMsgIds if no text — messages.update may deliver the decrypted content later
       if (!text) continue;
 
+      // Mark as seen only after we confirm there's processable content
+      seenMsgIds.add(msgId);
+      if (seenMsgIds.size > 500) {
+        const first = seenMsgIds.values().next().value;
+        seenMsgIds.delete(first);
+      }
+
+      // Use phone-number prefix as buffer key to handle @lid vs @s.whatsapp.net inconsistency
+      const bufKey = waChatId.split("@")[0];
+
       // Buffer messages per chat — flush after DEBOUNCE_MS of silence
-      if (chatBuffers.has(waChatId)) {
-        const buf = chatBuffers.get(waChatId);
+      if (chatBuffers.has(bufKey)) {
+        const buf = chatBuffers.get(bufKey);
         clearTimeout(buf.timer);
         buf.lines.push(text);
-        buf.timer = setTimeout(() => flushChat(waChatId), DEBOUNCE_MS);
+        buf.timer = setTimeout(() => flushChat(bufKey), DEBOUNCE_MS);
       } else {
-        chatBuffers.set(waChatId, {
+        chatBuffers.set(bufKey, {
           lines: [text],
           meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: waLid, is_group: isGroup },
-          timer: setTimeout(() => flushChat(waChatId), DEBOUNCE_MS),
+          timer: setTimeout(() => flushChat(bufKey), DEBOUNCE_MS),
+        });
+      }
+    }
+  });
+
+  // Handle messages that arrived with null content (pending key exchange) and were later decrypted
+  sock.ev.on("messages.update", (updates) => {
+    for (const update of updates) {
+      if (!update.update?.message) continue; // no content update
+      if (update.key.fromMe) continue;
+
+      const msgId = `${channelId}:${update.key.id}`;
+      if (seenMsgIds.has(msgId)) continue; // already processed
+      seenMsgIds.add(msgId);
+
+      const msg = update.update.message;
+      const text =
+        msg.conversation ||
+        msg.extendedTextMessage?.text ||
+        msg.imageMessage?.caption ||
+        null;
+
+      _origStdoutWrite(`[WA-BRIDGE] messages.update decrypted id=${update.key.id} text=${JSON.stringify(text)}\n`);
+      if (!text) continue;
+
+      const rawChatId = update.key.remoteJid;
+      const rawSender = update.key.participant || update.key.remoteJid;
+      function resolveJidU(jid) {
+        if (!jid?.endsWith("@lid")) return jid;
+        return resolveLid(jid);
+      }
+      const waChatId = resolveJidU(rawChatId);
+      const waSender = resolveJidU(rawSender);
+      const isGroup = rawChatId?.endsWith("@g.us") || false;
+      const bufKey = waChatId.split("@")[0];
+
+      if (chatBuffers.has(bufKey)) {
+        const buf = chatBuffers.get(bufKey);
+        clearTimeout(buf.timer);
+        buf.lines.push(text);
+        buf.timer = setTimeout(() => flushChat(bufKey), DEBOUNCE_MS);
+      } else {
+        chatBuffers.set(bufKey, {
+          lines: [text],
+          meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: null, is_group: isGroup },
+          timer: setTimeout(() => flushChat(bufKey), DEBOUNCE_MS),
         });
       }
     }
@@ -292,7 +416,15 @@ app.post("/channels/:id/send", async (req, res) => {
   }
 
   try {
-    await entry.socket.sendMessage(wa_chat_id, { text });
+    const sent = await entry.socket.sendMessage(wa_chat_id, { text });
+    // Cache for retry: if recipient's decryption fails, WA asks us to resend
+    if (sent?.key?.id) {
+      entry.recentSent.set(sent.key.id, sent.message);
+      // Keep cache bounded to last 50 sent messages
+      if (entry.recentSent.size > 50) {
+        entry.recentSent.delete(entry.recentSent.keys().next().value);
+      }
+    }
     res.json({ status: "sent" });
   } catch (err) {
     logger.error({ err }, "Failed to send message");

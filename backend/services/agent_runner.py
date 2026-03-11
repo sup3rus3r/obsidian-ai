@@ -252,10 +252,12 @@ async def _run_headless_mongo(session_id: str, agent_id: str) -> str | None:
 
     agent = await AgentCollection.find_by_id(mongo_db, agent_id)
     if not agent or not agent.get("provider_id"):
+        logger.warning("agent_runner mongo: agent %s not found or no provider_id", agent_id)
         return None
 
     provider_record = await LLMProviderCollection.find_by_id(mongo_db, str(agent["provider_id"]))
     if not provider_record:
+        logger.warning("agent_runner mongo: provider not found for agent %s", agent_id)
         return None
 
     # Message history
@@ -265,7 +267,9 @@ async def _run_headless_mongo(session_id: str, agent_id: str) -> str | None:
         for m in all_messages
         if m["role"] in ("user", "assistant")
     ]
+    logger.info("agent_runner mongo: session=%s msg_count=%d", session_id, len(messages))
     if not messages:
+        logger.warning("agent_runner mongo: no messages in session %s", session_id)
         return None
 
     api_key = decrypt_api_key(provider_record.get("api_key")) if provider_record.get("api_key") else None
