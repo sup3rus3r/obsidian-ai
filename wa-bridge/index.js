@@ -31,8 +31,10 @@ const AUTH_BASE_DIR = process.env.WA_AUTH_DIR || path.join(__dirname, "auth");
 const logger = pino({ level: "info" });
 
 // ── State ─────────────────────────────────────────────────────────────────────
-/** @type {Map<string, { socket: any, qrListeners: Set<(qr: string) => void>, status: string }>} */
+/** @type {Map<string, { socket: any, qrListeners: Set<(qr: string) => void>, status: string, lidMap: Map<string,string> }>} */
 const channels = new Map();
+/** Track channels currently being started to prevent duplicate sockets */
+const starting = new Set();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -65,11 +67,22 @@ async function updateChannelStatus(channelId, status, waPhone = null) {
 // ── Socket lifecycle ──────────────────────────────────────────────────────────
 
 async function startChannel(channelId, authPath) {
+  if (starting.has(String(channelId))) {
+    logger.info({ channelId }, "startChannel: already starting, skipping duplicate");
+    return channels.get(String(channelId));
+  }
+  starting.add(String(channelId));
   const dir = authPath || authDir(channelId);
   ensureDir(dir);
 
-  const { state, saveCreds } = await useMultiFileAuthState(dir);
-  const { version } = await fetchLatestBaileysVersion();
+  let state, saveCreds, version;
+  try {
+    ({ state, saveCreds } = await useMultiFileAuthState(dir));
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch (err) {
+    starting.delete(String(channelId));
+    throw err;
+  }
 
   const sock = makeWASocket({
     version,
@@ -77,7 +90,6 @@ async function startChannel(channelId, authPath) {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger),
     },
-    printQRInTerminal: true,
     logger: logger.child({ channel: channelId }),
     generateHighQualityLinkPreview: false,
   });
@@ -87,8 +99,10 @@ async function startChannel(channelId, authPath) {
     qrListeners: new Set(),
     status: "pending_qr",
     authDir: dir,
+    lidMap: new Map(), // lid JID → phone JID
   };
   channels.set(String(channelId), entry);
+  starting.delete(String(channelId));
 
   // ── Events ──────────────────────────────────────────────────────────────────
 
@@ -132,6 +146,32 @@ async function startChannel(channelId, authPath) {
     }
   });
 
+  // Helper: resolve @lid JID to @s.whatsapp.net using our lid map
+  function resolveLid(jid) {
+    if (!jid || !jid.endsWith("@lid")) return jid;
+    const resolved = entry.lidMap.get(jid);
+    if (resolved) {
+      logger.info({ jid, resolved }, "resolveLid: resolved from lidMap");
+      return resolved;
+    }
+    return jid; // keep as @lid — backend gets raw lid as fallback
+  }
+
+  // Populate lid→phone map from contact events
+  function indexContacts(contacts) {
+    for (const c of contacts) {
+      // c.id may be @lid, c.phoneNumber or c.notify is the phone
+      if (c.id?.endsWith("@lid") && c.phoneNumber) {
+        const phoneJid = c.phoneNumber.includes("@") ? c.phoneNumber : `${c.phoneNumber}@s.whatsapp.net`;
+        entry.lidMap.set(c.id, phoneJid);
+        logger.info({ lid: c.id, phone: phoneJid }, "lidMap: stored mapping");
+      }
+    }
+  }
+
+  sock.ev.on("contacts.upsert", indexContacts);
+  sock.ev.on("contacts.update", indexContacts);
+
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     logger.info({ channelId, type, count: messages.length }, "messages.upsert received");
     if (type !== "notify") return;
@@ -140,9 +180,27 @@ async function startChannel(channelId, authPath) {
       logger.info({ channelId, fromMe: msg.key.fromMe, remoteJid: msg.key.remoteJid }, "processing message");
       if (msg.key.fromMe) continue; // Ignore outgoing messages
 
-      const waChatId = msg.key.remoteJid;
-      const waSender = msg.key.participant || msg.key.remoteJid; // participant set in groups
-      const isGroup = waChatId?.endsWith("@g.us") || false;
+      const rawChatId = msg.key.remoteJid;
+      const rawSender = msg.key.participant || msg.key.remoteJid; // participant set in groups
+
+      // senderPn is set by newer Baileys versions for @lid messages
+      const senderPn = msg.key.senderPn;
+
+      // Resolve @lid: prefer senderPn > lidMap > raw lid
+      function resolveJid(jid) {
+        if (!jid?.endsWith("@lid")) return jid;
+        if (senderPn) return senderPn.includes("@") ? senderPn : `${senderPn}@s.whatsapp.net`;
+        return resolveLid(jid);
+      }
+
+      const waChatId = resolveJid(rawChatId);
+      const waSender = resolveJid(rawSender);
+      // Pass raw lid to backend as fallback for whitelist if still unresolved
+      const waLid = (waSender !== rawSender) ? null : (rawSender?.endsWith("@lid") ? rawSender : null);
+
+      logger.info({ channelId, rawSender, waSender, waLid, senderPn }, "resolved sender JID");
+
+      const isGroup = rawChatId?.endsWith("@g.us") || false;
 
       const text =
         msg.message?.conversation ||
@@ -156,6 +214,7 @@ async function startChannel(channelId, authPath) {
       await notifyBackend(channelId, {
         wa_chat_id: waChatId,
         wa_sender: waSender,
+        wa_lid: waLid,
         message_text: text,
         is_group: isGroup,
       });

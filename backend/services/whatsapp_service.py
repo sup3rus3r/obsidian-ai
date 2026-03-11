@@ -32,12 +32,13 @@ async def handle_incoming_message(payload: dict, db) -> None:
     channel_id = payload["channel_id"]
     wa_chat_id = payload["wa_chat_id"]
     wa_sender = payload["wa_sender"]
+    wa_lid = payload.get("wa_lid")
     message_text = payload["message_text"]
 
     if DATABASE_TYPE == "mongo":
-        await _handle_mongo(channel_id, wa_chat_id, wa_sender, message_text)
+        await _handle_mongo(channel_id, wa_chat_id, wa_sender, message_text, wa_lid=wa_lid)
     else:
-        await _handle_sqlite(channel_id, wa_chat_id, wa_sender, message_text, db)
+        await _handle_sqlite(channel_id, wa_chat_id, wa_sender, message_text, db, wa_lid=wa_lid)
 
 
 # ── SQLite ────────────────────────────────────────────────────────────────────
@@ -48,6 +49,7 @@ async def _handle_sqlite(
     wa_sender: str,
     message_text: str,
     db,
+    wa_lid: str = None,
 ) -> None:
     from models import WhatsAppChannel, WAContactSession, Session as ChatSession, Message
 
@@ -65,8 +67,9 @@ async def _handle_sqlite(
         allowed = json.loads(channel.allowed_jids)
         if allowed:
             sender_num = wa_sender.split("@")[0]
+            lid_num = wa_lid.split("@")[0] if wa_lid else None
             allowed_nums = {j.split("@")[0] for j in allowed}
-            if sender_num not in allowed_nums:
+            if sender_num not in allowed_nums and lid_num not in allowed_nums:
                 if channel.reject_message:
                     await send_message(channel_id, wa_chat_id, channel.reject_message)
                 return
@@ -138,6 +141,7 @@ async def _handle_mongo(
     wa_chat_id: str,
     wa_sender: str,
     message_text: str,
+    wa_lid: str = None,
 ) -> None:
     from database_mongo import get_database
     from models_mongo import WhatsAppChannelCollection, WAContactSessionCollection, SessionCollection, MessageCollection
@@ -157,14 +161,15 @@ async def _handle_mongo(
 
     # Whitelist check — compare by phone number prefix (before @) to handle @lid vs @s.whatsapp.net
     allowed = channel.get("allowed_jids")
-    print(f"[WA] whitelist check: allowed_jids={allowed!r} wa_sender={wa_sender!r}", flush=True)
+    print(f"[WA] whitelist check: allowed_jids={allowed!r} wa_sender={wa_sender!r} wa_lid={wa_lid!r}", flush=True)
     if allowed:
         sender_num = wa_sender.split("@")[0]
+        lid_num = wa_lid.split("@")[0] if wa_lid else None
         allowed_nums = {j.split("@")[0] for j in allowed}
-        print(f"[WA] whitelist: sender_num={sender_num!r} allowed_nums={allowed_nums!r} match={sender_num in allowed_nums}", flush=True)
-        if sender_num not in allowed_nums:
+        print(f"[WA] whitelist: sender_num={sender_num!r} lid_num={lid_num!r} allowed_nums={allowed_nums!r}", flush=True)
+        if sender_num not in allowed_nums and lid_num not in allowed_nums:
             reject_msg = channel.get("reject_message")
-            print(f"[WA] whitelist BLOCKED: sender not in allowed list", flush=True)
+            print(f"[WA] whitelist BLOCKED", flush=True)
             if reject_msg:
                 await send_message(channel_id, wa_chat_id, reject_msg)
             return

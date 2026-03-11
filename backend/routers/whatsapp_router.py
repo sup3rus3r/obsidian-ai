@@ -44,6 +44,7 @@ class WAIncomingMessage(BaseModel):
     channel_id: int | str
     wa_chat_id: str   # JID of the conversation
     wa_sender: str    # JID of the actual sender (differs from wa_chat_id in groups)
+    wa_lid: Optional[str] = None  # Raw @lid JID if sender was resolved from lid
     message_text: str
     is_group: bool = False
 
