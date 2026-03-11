@@ -150,6 +150,7 @@ class AgentCreate(BaseModel):
     knowledge_base_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: bool = False
+    sandbox_enabled: bool = False
     config: Optional[dict] = None
 
 class AgentUpdate(BaseModel):
@@ -163,6 +164,7 @@ class AgentUpdate(BaseModel):
     knowledge_base_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: Optional[bool] = None
+    sandbox_enabled: Optional[bool] = None
     config: Optional[dict] = None
 
 class AgentResponse(BaseModel):
@@ -177,6 +179,9 @@ class AgentResponse(BaseModel):
     knowledge_base_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: bool = False
+    sandbox_enabled: bool = False
+    sandbox_container_id: Optional[str] = None
+    sandbox_host_port: Optional[int] = None
     config: Optional[dict] = None
     is_active: bool
     created_at: datetime
@@ -269,6 +274,7 @@ class TeamCreate(BaseModel):
     description: Optional[str] = None
     mode: str = "coordinate"   # coordinate | route | collaborate
     agent_ids: list[str]
+    sandbox_enabled: bool = False
     config: Optional[dict] = None
 
 class TeamUpdate(BaseModel):
@@ -276,6 +282,7 @@ class TeamUpdate(BaseModel):
     description: Optional[str] = None
     mode: Optional[str] = None
     agent_ids: Optional[list[str]] = None
+    sandbox_enabled: Optional[bool] = None
     config: Optional[dict] = None
 
 class TeamResponse(BaseModel):
@@ -284,6 +291,9 @@ class TeamResponse(BaseModel):
     description: Optional[str] = None
     mode: str
     agent_ids: list[str]
+    sandbox_enabled: bool = False
+    sandbox_container_id: Optional[str] = None
+    sandbox_host_port: Optional[int] = None
     config: Optional[dict] = None
     is_active: bool
     created_at: datetime

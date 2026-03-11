@@ -2,7 +2,7 @@ import type { Message, ToolCall, ReasoningStep, AgentStep, ToolRound, FileAttach
 
 // Stream directly to the backend, bypassing the Next.js rewrite proxy
 // which buffers the entire SSE response instead of streaming it through.
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8001"
 
 export interface KBContextEvent {
   kbs: { id: string; name: string }[]

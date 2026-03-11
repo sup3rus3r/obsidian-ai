@@ -7,7 +7,7 @@ import { Sidebar } from "./sidebar/sidebar"
 import { ModelSelector } from "./model-selector"
 import { ArtifactPanel } from "./artifact-panel"
 import { usePlaygroundStore } from "@/stores/playground-store"
-import { PanelLeftClose, PanelLeft, SquarePen, PanelRight } from "lucide-react"
+import { PanelLeftClose, PanelLeft, SquarePen, PanelRight, Terminal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Tooltip,
@@ -155,6 +155,16 @@ function TopBar() {
       {selectedEntity ? (
         <>
           <span className="text-sm font-medium">{selectedEntity.name}</span>
+          {selectedEntity.sandbox_enabled && (
+            <span className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full font-medium ${
+              selectedEntity.sandbox_container_id
+                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                : "bg-muted text-muted-foreground"
+            }`}>
+              <Terminal className="h-3 w-3" />
+              {selectedEntity.sandbox_container_id ? "Sandbox" : "Sandbox off"}
+            </span>
+          )}
           <ModelSelector />
           <div className="ml-auto flex items-center gap-1">
             {(artifacts.length > 0 || !!streamingArtifact) && (

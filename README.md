@@ -55,6 +55,7 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
   - [Security & Authentication](#security--authentication)
   - [Admin Panel & RBAC](#admin-panel--rbac)
   - [Agent Import / Export](#agent-import--export)
+  - [Docker Sandbox](#docker-sandbox)
   - [Dual Database Support](#dual-database-support)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
@@ -455,6 +456,30 @@ Share agent configurations as portable JSON files across any Obsidian AI instanc
   }
 }
 ```
+
+---
+
+### Docker Sandbox
+
+Give any agent or team an isolated Docker container for safe code execution and file operations. When sandbox is enabled, the agent gains a set of built-in tools to interact with the container and automatically surfaces any files it creates as artifacts in the chat panel.
+
+- **Per-agent and per-team** — Enable sandbox independently on individual agents or entire teams; all agents in a sandboxed team share the same container
+- **Isolated container** — Each sandbox runs the `obsidian-webdev-base` image with a 512 MB memory cap, 1 CPU limit, and `/workspace` as the working directory
+- **Start / stop controls** — Launch or terminate the container directly from the agent or team edit dialog; a pulsing status dot shows whether the container is live
+- **Sandbox status badge** — A live indicator appears in the chat header whenever a sandbox-enabled agent or team has an active container
+- **Built-in sandbox tools** — When an active sandbox container is detected, seven tools are automatically injected into the agent's tool set:
+
+| Tool | Description |
+|------|-------------|
+| `sandbox_bash` | Run any shell command inside the container |
+| `sandbox_write` | Write content to a file (creates parent directories automatically) |
+| `sandbox_read` | Read a file's contents back from the container |
+| `sandbox_ls` | List files and directories |
+| `sandbox_glob` | Find files matching a shell glob pattern |
+| `sandbox_grep` | Search file contents with regex |
+| `sandbox_delete` | Delete a file or directory |
+
+- **Automatic artifact surfacing** — The agent is instructed via system prompt to call `sandbox_read` after creating or modifying any file and wrap the result in an `<artifact>` tag, so files appear in the artifact panel with live preview, copy, and download
 
 ---
 
@@ -880,104 +905,26 @@ Recent additions shipped to the platform.
 
 ---
 
-### Visual DAG Editor + Parallel Execution Engine
+### Docker Sandbox
 
-Workflows now support full directed-acyclic-graph (DAG) pipelines with a drag-and-drop visual editor and a parallel async execution engine — transforming the platform from a sequential automation tool into a real orchestration engine.
+Agents and teams can now be assigned an isolated Docker container for safe, persistent code execution. When a sandbox is active, seven built-in tools (`sandbox_bash`, `sandbox_write`, `sandbox_read`, `sandbox_ls`, `sandbox_glob`, `sandbox_grep`, `sandbox_delete`) are automatically injected into the agent's tool set — no manual tool configuration needed.
 
-**Visual editor:**
+**Start / stop from the dialog** — A new Docker Sandbox section in the agent and team edit dialogs lets you enable the sandbox and, when editing an existing agent/team, start or stop the container with a single button click. A pulsing status dot shows whether the container is live.
 
-- **React Flow canvas** (`@xyflow/react`) — drag nodes, connect them with edges, and rearrange the layout freely
-- **Node side-panel** — click any node to configure its assigned agent, task description, and name without leaving the canvas
-- **Add / delete nodes** — insert new steps or remove existing ones; the graph updates live
-- **Layout persistence** — node `{x, y}` positions are stored with the workflow definition and restored when the editor reopens
-- **Cycle detection** — a DFS topological sort validates the graph on save; cyclic graphs are rejected with an inline error before they can be executed
+**Sandbox status badge** — A live indicator appears in the chat header whenever the selected agent or team has sandbox enabled and an active container.
 
-**Parallel execution engine:**
-
-- **Topological DAG executor** — resolves the execution order at runtime using `asyncio.wait(return_when=FIRST_COMPLETED)` loops; nodes with no unsatisfied dependencies are dispatched concurrently
-- **Fan-out / fan-join patterns** — a node can feed multiple downstream nodes simultaneously; a downstream node waits for all its dependencies before starting
-- **Input routing** — root nodes (no incoming edges) receive the workflow's initial user input; all other nodes receive a formatted summary of every upstream node's output
-- **Live run visualization** — SSE events are keyed by `node_id` (replacing the old `step_order` scheme); node colors update in real-time as the graph executes:
-  - **Gray** — not yet started
-  - **Blue pulsing** — currently running
-  - **Green** — completed successfully
-  - **Red** — failed
-- **Backward-compatible data model** — existing sequential workflows (legacy `order`-based steps) continue to work without migration; the executor detects the format automatically
-
-**New SSE events:**
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `node_start` | `node_id`, `node_name` | Node has begun executing |
-| `node_content_delta` | `node_id`, `delta` | Streaming token for this node |
-| `node_complete` | `node_id`, `output` | Node finished; output available |
-| `node_error` | `node_id`, `error` | Node failed with an error message |
-
-**Scheduler parity** — scheduled workflows run the same DAG executor; parallel execution applies to scheduled runs as well as manual runs.
-
----
-
-### Agent Versioning, Eval Harness & Prompt Auto-Optimizer
-
-Three interconnected features that form a complete quality and safety flywheel for your agents.
-
-**Agent Versioning** — Every `PUT /agents/{id}` automatically snapshots the full agent configuration before applying changes. The Version History panel in the agent dialog lists all snapshots with timestamps; click any version to open a two-column diff, then restore it with one click. Rollbacks are themselves versioned, so nothing is ever irreversible. Old snapshots are pruned daily (keeping the most recent always).
-
-**Eval Harness** — Define named test suites with input/expected-output pairs and a grading method per case (`exact_match`, `contains`, or `llm_judge`). Trigger runs from the new **Evals** page or via the optimizer. Results are stored per run with per-case breakdowns; the LLM judge grading method shows the model's scoring reasoning inline.
-
-**Prompt Auto-Optimizer** — Available in the agent edit dialog (amber ⚡ icon). Collects recent conversation sessions, runs an LLM failure analysis to extract patterns (labeled by severity), then proposes a rewritten system prompt. Optionally validate the proposal against an eval suite before reviewing it — the panel shows baseline vs. proposed scores. Accept to apply (a version snapshot is taken first), or reject with a reason. All past runs are listed for reference. APScheduler runs the optimizer automatically every Monday at 02:00 for agents with enough trace data.
-
----
-
-### Provider Import / Export
-
-Export and import LLM endpoint configurations as portable JSON files, making it easy to replicate your provider setup across instances or share it with teammates.
-
-**How it works:**
-
-- **Single export** — Download any individual provider as a JSON file from its row in the Endpoints panel (Download icon per row)
-- **Bulk export** — Download all providers in a single JSON file via the header-level DownloadCloud button
-- **Import** — Upload a previously exported JSON file using the Upload button; the importer auto-detects whether it's a single provider or a bulk envelope and calls the correct endpoint
-- **API key handling** — API keys are **always excluded** from exports for security reasons; after import, each provider's key field is blank and must be re-entered by the user
-- **Name deduplication** — On import, if a provider with the same name already exists it is updated in place; otherwise a new provider is created
-- **Permission-gated** — Import is only available to users with the `manage_providers` permission
-
-**Export file formats:**
-
-Single provider:
-```json
-{
-  "aios_export_version": "1",
-  "exported_at": "2026-01-01T00:00:00Z",
-  "provider": {
-    "name": "My OpenAI",
-    "provider_type": "openai",
-    "model_id": "gpt-4o",
-    "base_url": null,
-    "config": {}
-  }
-}
-```
-
-Bulk (all providers):
-```json
-{
-  "aios_export_version": "1",
-  "exported_at": "2026-01-01T00:00:00Z",
-  "providers": [
-    { "name": "My OpenAI", "provider_type": "openai", "model_id": "gpt-4o", ... },
-    { "name": "Local Ollama", "provider_type": "ollama", "model_id": "llama3.2", ... }
-  ]
-}
-```
+**Automatic file surfacing** — When a sandbox is active, a system prompt injection instructs the agent to call `sandbox_read` after creating or modifying any file and wrap the result in an `<artifact>` tag. Files produced inside the container appear automatically in the artifact panel with live preview, copy, and download.
 
 **New API endpoints:**
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/providers/export` | GET | Bulk export all providers |
-| `/providers/{id}/export` | GET | Export a single provider |
-| `/providers/import` | POST | Import a single or bulk provider JSON |
+| `/agents/{id}/sandbox/start` | POST | Start a sandbox container for an agent |
+| `/agents/{id}/sandbox/stop` | POST | Stop and remove the agent's container |
+| `/agents/{id}/sandbox/status` | GET | Get current container status |
+| `/teams/{id}/sandbox/start` | POST | Start a sandbox container for a team |
+| `/teams/{id}/sandbox/stop` | POST | Stop and remove the team's container |
+| `/teams/{id}/sandbox/status` | GET | Get current container status |
 
 ---
 
@@ -987,14 +934,12 @@ Bulk (all providers):
 
 ### Agent Orchestration
 
-- [x] **Visual DAG editor + parallel execution** — Drag-and-drop canvas for building non-linear agent pipelines; nodes run concurrently when dependencies allow, with live color-coded run visualization driven by SSE
 - [ ] **Agent-as-tool** — Allow agents to call other agents as tools (hierarchical delegation)
 - [ ] **Agent Supervision Trees** — Supervisor agents watch over worker agents in real-time; if a worker's output falls outside defined quality bounds, the supervisor automatically intervenes, corrects, retries, or escalates to HITL
 - [ ] **Meta-Agent** — Describe a workflow or agent in plain English and have the platform auto-generate the full configuration: system prompt, tools, MCP servers, and workflow steps
 
 ### Intelligence & Learning
 
-- [x] **Prompt Auto-Optimizer** — Analyzes recent conversation traces to identify failure patterns and proposes an improved system prompt; validates against an eval suite before surfacing for review; weekly APScheduler auto-sweep
 - [ ] **Memory Graph** — Upgrade agent memory from flat key-value facts to a typed relational graph; memories have explicit relationships (e.g. *"User works at [Company]"*, *"[Company] uses [Tool]"*) that agents can traverse for richer, multi-hop context
 
 ### Observability & Debugging
@@ -1010,18 +955,11 @@ Bulk (all providers):
 ### Evaluation & Testing
 
 - [ ] **Replay & Simulation Mode** — Re-run any past session through a different agent configuration side-by-side to see exactly how responses would have changed; makes prompt iteration grounded in real historical conversations
-- [x] **Eval harness** — Define test suites with input/expected-output pairs and grading methods (`exact_match`, `contains`, `llm_judge`); run against any agent config and get scored results with per-case breakdowns
-- [x] **Regression testing** — Run eval suites before and after prompt changes to catch quality regressions; integrated with the Prompt Auto-Optimizer for automated validation
 
 ### Security & Governance
 
 - [ ] **Adversarial / Red Team Mode** — A dedicated red-team agent automatically probes your agents for prompt injection, jailbreaks, persona drift, and instruction-following failures, then generates a security report with specific vulnerabilities found
 - [ ] **Audit logs** — Immutable record of all agent actions, tool calls, and data accessed
-
-### Developer Experience
-
-- [x] **Provider Import / Export** — Export endpoint configurations (name, type, model ID, base URL, config) as portable JSON and import them on any instance; API keys are intentionally excluded and must be re-entered on import
-- [x] **Agent versioning** — Auto-snapshot on every save; version history panel with side-by-side diff view and one-click rollback; daily pruning of old snapshots
 
 ### UX & Productivity
 

@@ -22,6 +22,9 @@ export interface Agent {
   knowledge_base_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
+  sandbox_enabled?: boolean
+  sandbox_container_id?: string | null
+  sandbox_host_port?: number | null
   config?: Record<string, unknown>
   is_active: boolean
   created_at: string
@@ -33,6 +36,9 @@ export interface Team {
   description?: string
   mode: "coordinate" | "route" | "collaborate"
   agent_ids: string[]
+  sandbox_enabled?: boolean
+  sandbox_container_id?: string | null
+  sandbox_host_port?: number | null
   config?: Record<string, unknown>
   is_active: boolean
   created_at: string
@@ -151,6 +157,7 @@ export interface CreateAgentRequest {
   knowledge_base_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
+  sandbox_enabled?: boolean
   config?: Record<string, unknown>
 }
 
@@ -165,7 +172,14 @@ export interface UpdateAgentRequest {
   knowledge_base_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
+  sandbox_enabled?: boolean
   config?: Record<string, unknown>
+}
+
+export interface SandboxStatus {
+  status: "running" | "stopped"
+  container_id?: string | null
+  host_port?: number | null
 }
 
 // Knowledge Bases

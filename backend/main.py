@@ -40,6 +40,7 @@ from routers.versions_router import router as versions_router
 from routers.eval_router import router as eval_router
 from routers.optimizer_router import router as optimizer_router
 from routers.settings_router import router as settings_router
+from routers.sandbox_router import router as sandbox_router
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import connect_to_mongo, close_mongo_connection, get_database
@@ -536,6 +537,30 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add sandbox columns to agents if missing
+        for col, typedef in [
+            ("sandbox_enabled", "BOOLEAN DEFAULT 0"),
+            ("sandbox_container_id", "TEXT"),
+            ("sandbox_host_port", "INTEGER"),
+        ]:
+            try:
+                conn.execute(sqlalchemy.text(f"ALTER TABLE agents ADD COLUMN {col} {typedef}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
+        # Add sandbox columns to teams if missing
+        for col, typedef in [
+            ("sandbox_enabled", "BOOLEAN DEFAULT 0"),
+            ("sandbox_container_id", "TEXT"),
+            ("sandbox_host_port", "INTEGER"),
+        ]:
+            try:
+                conn.execute(sqlalchemy.text(f"ALTER TABLE teams ADD COLUMN {col} {typedef}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
 
 # ── Module-level APScheduler job functions ────────────────────────────────────
 # Must be at module scope (not closures) so APScheduler can pickle them for the
@@ -829,6 +854,7 @@ app.include_router(versions_router)
 app.include_router(eval_router)
 app.include_router(optimizer_router)
 app.include_router(settings_router)
+app.include_router(sandbox_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

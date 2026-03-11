@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { useState } from "react"
 import { SidebarSection } from "./sidebar-section"
 import { useConfirm } from "@/hooks/use-confirm"
+import { toast } from "sonner"
 
 interface EntitySelectorProps {
   onAddAgent?: () => void
@@ -56,6 +57,9 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onEditTeam,
     setDeletingId(entityId)
     try {
       await onDelete(entityId)
+      toast.success(`${mode === "agent" ? "Agent" : "Team"} deleted`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete")
     } finally {
       setDeletingId(null)
     }

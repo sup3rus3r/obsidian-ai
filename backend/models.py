@@ -64,6 +64,9 @@ class Agent(Base):
     model_id      = Column(String, nullable=True)              # model to use, e.g. "claude-sonnet-4-6"
     hitl_confirmation_tools_json = Column(Text, nullable=True)  # JSON array of tool names requiring HITL
     allow_tool_creation = Column(Boolean, default=False, nullable=False)  # agent can propose new tools
+    sandbox_enabled      = Column(Boolean, default=False, nullable=False)  # Docker sandbox toggle
+    sandbox_container_id = Column(String, nullable=True)                   # running container ID
+    sandbox_host_port    = Column(Integer, nullable=True)                  # mapped host port
     config_json   = Column(Text, nullable=True)            # JSON: {temperature, max_tokens, ...}
     is_active     = Column(Boolean, default=True)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
@@ -80,6 +83,9 @@ class Team(Base):
     description    = Column(Text, nullable=True)
     mode           = Column(String, default="coordinate")  # coordinate | route | collaborate
     agent_ids_json = Column(Text, nullable=False)          # JSON array of agent IDs
+    sandbox_enabled      = Column(Boolean, default=False, nullable=False)  # shared Docker sandbox
+    sandbox_container_id = Column(String, nullable=True)
+    sandbox_host_port    = Column(Integer, nullable=True)
     config_json    = Column(Text, nullable=True)
     is_active      = Column(Boolean, default=True)
     created_at     = Column(DateTime(timezone=True), server_default=func.now())

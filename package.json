@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"npm run api\"",
-    "api": "cd backend && uv run uvicorn main:app --reload"
+    "api": "cd backend && uv run uvicorn main:app --reload --port 8001"
   },
   "keywords": [],
   "author": "",

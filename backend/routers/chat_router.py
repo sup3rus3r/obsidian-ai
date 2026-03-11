@@ -19,6 +19,8 @@ from llm.provider_factory import create_provider_from_config
 from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
 from file_storage import FileStorageService
 from rag_service import RAGService
+from sandbox_tools import SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool
+from builtin_tools import BUILTIN_TOOL_SCHEMAS, execute_builtin_tool, is_builtin_tool
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
@@ -239,6 +241,20 @@ Example:
   </artifact_patch>
 """
 
+
+_SANDBOX_SYSTEM_HINT = """
+
+## Docker Sandbox
+You have access to an isolated Docker sandbox at /workspace. Use the sandbox tools freely to create, edit, and run files.
+
+**Important — surfacing files to the user:**
+After creating or significantly modifying any file, always read it back with `sandbox_read` and present its content as an artifact so the user can view, copy, and download it. Choose the artifact type that matches the file (html, python, javascript, typescript, markdown, json, text, etc.).
+
+Example: after writing /workspace/app.py, call `sandbox_read` with path="/workspace/app.py", then wrap the returned content in:
+<artifact id="app_py" title="app.py" type="python">...content...</artifact>
+
+This gives the user a live preview and download option in the artifact panel.
+"""
 
 _ARTIFACT_ID_RE = re.compile(r'<artifact\s+[^>]*\bid\s*=\s*"([^"]*)"[^>]*\btitle\s*=\s*"([^"]*)"', re.DOTALL)
 _ARTIFACT_ID_RE2 = re.compile(r'<artifact\s+[^>]*\btitle\s*=\s*"([^"]*)"[^>]*\bid\s*=\s*"([^"]*)"', re.DOTALL)
@@ -899,39 +915,40 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
 
 
 def _build_tools_for_llm(agent, db) -> list[dict] | None:
-    """Retrieve agent's tool definitions and format them for the LLM (OpenAI-compatible format)."""
-    if not agent.tools_json:
-        return None
-    try:
-        tool_ids = json.loads(agent.tools_json)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not tool_ids:
-        return None
+    """Retrieve agent's tool definitions and format them for the LLM (OpenAI-compatible format).
+    Built-in tools (web_search, fetch_url) are always included."""
+    tools: list[dict] = list(BUILTIN_TOOL_SCHEMAS)
 
-    tool_defs = db.query(ToolDefinition).filter(
-        ToolDefinition.id.in_(tool_ids),
-        ToolDefinition.is_active == True,
-    ).all()
-
-    if not tool_defs:
-        return None
-
-    tools = []
-    for td in tool_defs:
+    if agent.tools_json:
         try:
-            parameters = json.loads(td.parameters_json) if td.parameters_json else {"type": "object", "properties": {}}
-        except json.JSONDecodeError:
-            parameters = {"type": "object", "properties": {}}
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": td.name,
-                "description": td.description or "",
-                "parameters": parameters,
-            },
-        })
-    return tools if tools else None
+            tool_ids = json.loads(agent.tools_json)
+        except (json.JSONDecodeError, TypeError):
+            tool_ids = []
+
+        if tool_ids:
+            tool_defs = db.query(ToolDefinition).filter(
+                ToolDefinition.id.in_(tool_ids),
+                ToolDefinition.is_active == True,
+            ).all()
+
+            builtin_names = {t["function"]["name"] for t in BUILTIN_TOOL_SCHEMAS}
+            for td in tool_defs:
+                if td.name in builtin_names:
+                    continue  # skip user-defined tools that shadow builtins
+                try:
+                    parameters = json.loads(td.parameters_json) if td.parameters_json else {"type": "object", "properties": {}}
+                except json.JSONDecodeError:
+                    parameters = {"type": "object", "properties": {}}
+                tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": td.name,
+                        "description": td.description or "",
+                        "parameters": parameters,
+                    },
+                })
+
+    return tools
 
 
 def _load_mcp_server_configs(agent, db) -> list[dict]:
@@ -999,9 +1016,16 @@ def _merge_tools(native_tools: list[dict] | None, mcp_tools: list[dict]) -> list
 
 
 async def _execute_mcp_or_native_tool(
-    tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], db
+    tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], db,
+    sandbox_container_id: str | None = None,
 ) -> str:
-    """Route a tool call to either an MCP server or native tool handler."""
+    """Route a tool call to either a builtin, sandbox, MCP server, or native tool handler."""
+    if is_builtin_tool(tc_name):
+        return await execute_builtin_tool(tc_name, tc_arguments)
+    if is_sandbox_tool(tc_name):
+        if not sandbox_container_id:
+            return json.dumps({"error": "Sandbox is not running for this agent"})
+        return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
         server_name, original_tool_name = parsed
@@ -1019,9 +1043,16 @@ async def _execute_mcp_or_native_tool(
 
 
 async def _execute_mcp_or_native_tool_mongo(
-    tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], mongo_db
+    tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], mongo_db,
+    sandbox_container_id: str | None = None,
 ) -> str:
-    """Route a tool call to either an MCP server or native tool handler (MongoDB)."""
+    """Route a tool call to either a builtin, sandbox, MCP server, or native tool handler (MongoDB)."""
+    if is_builtin_tool(tc_name):
+        return await execute_builtin_tool(tc_name, tc_arguments)
+    if is_sandbox_tool(tc_name):
+        if not sandbox_container_id:
+            return json.dumps({"error": "Sandbox is not running for this agent"})
+        return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
         server_name, original_tool_name = parsed
@@ -1697,8 +1728,12 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     ).order_by(AgentMemory.created_at.desc()).limit(_MEMORY_CAP).all()
 
     _edit_target = _edit_target_early
-    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + _build_artifact_context(past_messages)
+    _sandbox_active = getattr(agent, "sandbox_enabled", False) and getattr(agent, "sandbox_container_id", None)
+    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "") + _build_artifact_context(past_messages)
     tools = _build_tools_for_llm(agent, db)
+    # Inject sandbox tools if agent has an active sandbox container
+    if _sandbox_active:
+        tools = list(tools or []) + SANDBOX_TOOL_SCHEMAS
     mcp_server_configs = _load_mcp_server_configs(agent, db)
 
     if request.stream:
@@ -2275,7 +2310,13 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
 
                 # Execute the tool
                 _tool_start = time.time()
-                result = _execute_tool(tc.name, tc.arguments, db)
+                _sandbox_cid = getattr(agent, "sandbox_container_id", None) if agent else None
+                if is_builtin_tool(tc.name):
+                    result = await execute_builtin_tool(tc.name, tc.arguments)
+                elif is_sandbox_tool(tc.name):
+                    result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid) if _sandbox_cid else json.dumps({"error": "Sandbox is not running for this agent"})
+                else:
+                    result = _execute_tool(tc.name, tc.arguments, db)
                 _tc.record_tool_span(
                     tool_name=tc.name,
                     arguments_str=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
@@ -2700,7 +2741,8 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "status": "running"})}
 
                     _tool_start = time.time()
-                    result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db)
+                    _sandbox_cid = getattr(agent, "sandbox_container_id", None) if agent else None
+                    result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db, sandbox_container_id=_sandbox_cid)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     _tc.record_tool_span(
                         tool_name=tc.name,
@@ -2817,7 +2859,7 @@ def _norm_tool_args(args) -> str:
         return str(args)
 
 
-async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools: list | None, db) -> str:
+async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools: list | None, db, sandbox_container_id: str | None = None) -> str:
     """Non-streaming chat that executes tool calls in a loop until a final text response.
 
     Used by team modes (route/collaborate) where agents need to use tools
@@ -2842,14 +2884,19 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
             tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in unique_calls],
         ))
         for tc in unique_calls:
-            result = _execute_tool(tc.name, tc.arguments, db)
+            if is_builtin_tool(tc.name):
+                result = await execute_builtin_tool(tc.name, tc.arguments)
+            elif is_sandbox_tool(tc.name):
+                result = await execute_sandbox_tool(tc.name, tc.arguments, sandbox_container_id) if sandbox_container_id else json.dumps({"error": "Sandbox is not running for this agent"})
+            else:
+                result = _execute_tool(tc.name, tc.arguments, db)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     # Final call without tools to force a text response
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
     return final.content or ""
 
 
-async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db) -> str:
+async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db, sandbox_container_id: str | None = None) -> str:
     """Non-streaming chat with tool execution loop (MongoDB version)."""
     chat_messages = list(messages)
     for _round in range(MAX_TOOL_ROUNDS):
@@ -2869,7 +2916,12 @@ async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None,
             tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in unique_calls],
         ))
         for tc in unique_calls:
-            result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
+            if is_builtin_tool(tc.name):
+                result = await execute_builtin_tool(tc.name, tc.arguments)
+            elif is_sandbox_tool(tc.name):
+                result = await execute_sandbox_tool(tc.name, tc.arguments, sandbox_container_id) if sandbox_container_id else json.dumps({"error": "Sandbox is not running for this agent"})
+            else:
+                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
     return final.content or ""
@@ -3047,7 +3099,7 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
             if mcp_configs:
                 content = await _chat_with_tools_and_mcp(llm, messages, effective_system_prompt, tools, db, mcp_configs)
             else:
-                content = await _chat_with_tools(llm, messages, effective_system_prompt, tools, db)
+                content = await _chat_with_tools(llm, messages, effective_system_prompt, tools, db, sandbox_container_id=getattr(agent, "sandbox_container_id", None))
             return agent, provider, content
 
         tasks = [get_agent_response(ag, pr) for ag, pr in agents_with_providers]
@@ -3268,7 +3320,7 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
                 if mcp_configs:
                     content = await _chat_with_tools_and_mcp(llm, agent_messages, effective_system_prompt, tools, db, mcp_configs)
                 else:
-                    content = await _chat_with_tools(llm, agent_messages, effective_system_prompt, tools, db)
+                    content = await _chat_with_tools(llm, agent_messages, effective_system_prompt, tools, db, sandbox_container_id=getattr(ag, "sandbox_container_id", None))
                 accumulated_context.append({"agent_name": ag.name, "response": content})
                 contributing_agents.append({"id": str(ag.id), "name": ag.name})
                 # Emit intermediate output so the frontend can show each agent's contribution
@@ -3282,46 +3334,49 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
 
 
 async def _build_tools_for_llm_mongo(agent, mongo_db) -> list[dict] | None:
-    """Retrieve agent's tool definitions from MongoDB and format them for the LLM."""
-    tools_raw = agent.get("tools_json") or agent.get("tools")
-    if not tools_raw:
-        return None
-    if isinstance(tools_raw, str):
-        try:
-            tool_ids = json.loads(tools_raw)
-        except (json.JSONDecodeError, TypeError):
-            return None
-    elif isinstance(tools_raw, list):
-        tool_ids = tools_raw
-    else:
-        return None
-    if not tool_ids:
-        return None
+    """Retrieve agent's tool definitions from MongoDB and format them for the LLM.
+    Built-in tools (web_search, fetch_url) are always included."""
+    tools: list[dict] = list(BUILTIN_TOOL_SCHEMAS)
+    builtin_names = {t["function"]["name"] for t in BUILTIN_TOOL_SCHEMAS}
 
-    tools = []
-    for tid in tool_ids:
-        td = await ToolDefinitionCollection.find_by_id(mongo_db, str(tid))
-        if not td or not td.get("is_active", True):
-            continue
-        params = td.get("parameters_json") or td.get("parameters")
-        if isinstance(params, str):
+    tools_raw = agent.get("tools_json") or agent.get("tools")
+    if tools_raw:
+        if isinstance(tools_raw, str):
             try:
-                parameters = json.loads(params)
-            except json.JSONDecodeError:
-                parameters = {"type": "object", "properties": {}}
-        elif isinstance(params, dict):
-            parameters = params
+                tool_ids = json.loads(tools_raw)
+            except (json.JSONDecodeError, TypeError):
+                tool_ids = []
+        elif isinstance(tools_raw, list):
+            tool_ids = tools_raw
         else:
-            parameters = {"type": "object", "properties": {}}
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": td.get("name", ""),
-                "description": td.get("description", ""),
-                "parameters": parameters,
-            },
-        })
-    return tools if tools else None
+            tool_ids = []
+
+        for tid in tool_ids:
+            td = await ToolDefinitionCollection.find_by_id(mongo_db, str(tid))
+            if not td or not td.get("is_active", True):
+                continue
+            if td.get("name") in builtin_names:
+                continue  # skip user-defined tools that shadow builtins
+            params = td.get("parameters_json") or td.get("parameters")
+            if isinstance(params, str):
+                try:
+                    parameters = json.loads(params)
+                except json.JSONDecodeError:
+                    parameters = {"type": "object", "properties": {}}
+            elif isinstance(params, dict):
+                parameters = params
+            else:
+                parameters = {"type": "object", "properties": {}}
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": td.get("name", ""),
+                    "description": td.get("description", ""),
+                    "parameters": parameters,
+                },
+            })
+
+    return tools
 
 
 def _create_llm_for_mongo_provider(provider_record, model_id: str):
@@ -3478,8 +3533,12 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
 
     llm = _create_llm_for_mongo_provider(provider_record, agent.get("model_id") or provider_record.get("model_id") or "gpt-4o")
     _edit_target_mongo = _edit_target_mongo_early
-    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + _build_artifact_context(past_messages)
+    _sandbox_active_mongo = agent.get("sandbox_enabled") and agent.get("sandbox_container_id")
+    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active_mongo else "") + _build_artifact_context(past_messages)
     tools = await _build_tools_for_llm_mongo(agent, mongo_db)
+    # Inject sandbox tools if agent has an active sandbox container
+    if _sandbox_active_mongo:
+        tools = list(tools or []) + SANDBOX_TOOL_SCHEMAS
     mcp_server_configs = await _load_mcp_server_configs_mongo(agent, mongo_db)
 
     if request.stream:
@@ -3818,7 +3877,13 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "status": "running"})}
 
                 _tool_start = time.time()
-                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
+                _sandbox_cid = (agent or {}).get("sandbox_container_id") if agent else None
+                if is_builtin_tool(tc.name):
+                    result = await execute_builtin_tool(tc.name, tc.arguments)
+                elif is_sandbox_tool(tc.name):
+                    result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid) if _sandbox_cid else json.dumps({"error": "Sandbox is not running for this agent"})
+                else:
+                    result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
                 await _record_tool_span_mongo(
                     tool_name=tc.name,
                     arguments_str=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
@@ -4214,7 +4279,8 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                     yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "status": "running"})}
 
                     _tool_start = time.time()
-                    result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db)
+                    _sandbox_cid_mongo = agent.get("sandbox_container_id") if agent else None
+                    result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db, sandbox_container_id=_sandbox_cid_mongo)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     await _record_tool_span_mcp_mongo(
                         tool_name=tc.name,
@@ -4415,7 +4481,7 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
             if mcp_configs:
                 content = await _chat_with_tools_and_mcp_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db, mcp_configs)
             else:
-                content = await _chat_with_tools_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db)
+                content = await _chat_with_tools_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db, sandbox_container_id=agent.get("sandbox_container_id"))
             return agent, provider, content
 
         tasks = [get_agent_response(ag, pr) for ag, pr in agents_with_providers]
@@ -4579,7 +4645,7 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
                 if mcp_configs:
                     content = await _chat_with_tools_and_mcp_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db, mcp_configs)
                 else:
-                    content = await _chat_with_tools_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db)
+                    content = await _chat_with_tools_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db, sandbox_container_id=ag.get("sandbox_container_id"))
                 accumulated_context.append({"agent_name": name, "response": content})
                 contributing_agents.append({"id": str(ag["_id"]), "name": name})
                 yield {

@@ -45,6 +45,7 @@ import type {
   RejectOptimizationRequest,
   SessionTrace,
   WorkflowRunTrace,
+  SandboxStatus,
 } from "@/types/playground"
 
 interface ApiResponse<T> {
@@ -775,6 +776,31 @@ class ApiClient {
       method: "PUT",
       body: JSON.stringify({ rating }),
     })
+  }
+
+  // ============= Sandbox =============
+  async startAgentSandbox(agentId: string): Promise<SandboxStatus> {
+    return this.request<SandboxStatus>(AppRoutes.AgentSandboxStart(agentId), { method: "POST" })
+  }
+
+  async stopAgentSandbox(agentId: string): Promise<{ status: string }> {
+    return this.request<{ status: string }>(AppRoutes.AgentSandboxStop(agentId), { method: "POST" })
+  }
+
+  async getAgentSandboxStatus(agentId: string): Promise<SandboxStatus> {
+    return this.request<SandboxStatus>(AppRoutes.AgentSandboxStatus(agentId))
+  }
+
+  async startTeamSandbox(teamId: string): Promise<SandboxStatus> {
+    return this.request<SandboxStatus>(AppRoutes.TeamSandboxStart(teamId), { method: "POST" })
+  }
+
+  async stopTeamSandbox(teamId: string): Promise<{ status: string }> {
+    return this.request<{ status: string }>(AppRoutes.TeamSandboxStop(teamId), { method: "POST" })
+  }
+
+  async getTeamSandboxStatus(teamId: string): Promise<SandboxStatus> {
+    return this.request<SandboxStatus>(AppRoutes.TeamSandboxStatus(teamId))
   }
 }
 

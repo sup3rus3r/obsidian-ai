@@ -24,7 +24,7 @@ import Link from "next/link"
 import { apiClient } from "@/lib/api-client"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite } from "@/types/playground"
-import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X } from "lucide-react"
+import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square } from "lucide-react"
 
 // ─── Version diff helpers ────────────────────────────────────────────────────
 
@@ -218,6 +218,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [selectedKBs, setSelectedKBs] = useState<string[]>([])
   const [hitlTools, setHitlTools] = useState<string[]>([])
   const [allowToolCreation, setAllowToolCreation] = useState(false)
+  const [sandboxEnabled, setSandboxEnabled] = useState(false)
+  const [sandboxRunning, setSandboxRunning] = useState(false)
+  const [sandboxLoading, setSandboxLoading] = useState(false)
   const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([])
   const [availableMCPServers, setAvailableMCPServers] = useState<MCPServer[]>([])
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([])
@@ -263,6 +266,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setSelectedKBs(agent.knowledge_base_ids || [])
       setHitlTools(agent.hitl_confirmation_tools || [])
       setAllowToolCreation(agent.allow_tool_creation ?? false)
+      setSandboxEnabled(agent.sandbox_enabled ?? false)
+      setSandboxRunning(agent.sandbox_container_id != null && agent.sandbox_enabled === true)
       apiClient.listAgentMemories(agent.id).then(setMemories).catch(() => {})
       setVersions([])
       setVersionsOpen(false)
@@ -281,6 +286,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setOptimizerOpen(false)
       setOptimizationRuns([])
       setActiveOptRun(null)
+      setSandboxEnabled(false)
+      setSandboxRunning(false)
     }
     return () => {
       if (optPollTimer) clearInterval(optPollTimer)
@@ -304,6 +311,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           knowledge_base_ids: selectedKBs,
           hitl_confirmation_tools: hitlTools.length > 0 ? hitlTools : undefined,
           allow_tool_creation: allowToolCreation,
+          sandbox_enabled: sandboxEnabled,
         })
         setAgents(agents.map((a) => (a.id === updated.id ? updated : a)))
         onSaved?.(updated)
@@ -319,6 +327,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           knowledge_base_ids: selectedKBs.length > 0 ? selectedKBs : undefined,
           hitl_confirmation_tools: hitlTools.length > 0 ? hitlTools : undefined,
           allow_tool_creation: allowToolCreation,
+          sandbox_enabled: sandboxEnabled,
         })
         setAgents([...agents, newAgent])
         setSelectedAgent(newAgent.id)
@@ -331,6 +340,28 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setError(err?.message || "Failed to save agent")
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleSandboxToggle = async () => {
+    if (!isEditing || !agent) return
+    setSandboxLoading(true)
+    try {
+      if (sandboxRunning) {
+        await apiClient.stopAgentSandbox(agent.id)
+        setSandboxRunning(false)
+        const updated = { ...agent, sandbox_enabled: sandboxEnabled, sandbox_container_id: null, sandbox_host_port: null }
+        setAgents(agents.map((a) => (a.id === agent.id ? updated : a)))
+      } else {
+        const status = await apiClient.startAgentSandbox(agent.id)
+        setSandboxRunning(status.status === "running")
+        const updated = { ...agent, sandbox_enabled: true, sandbox_container_id: status.container_id ?? null, sandbox_host_port: status.host_port ?? null }
+        setAgents(agents.map((a) => (a.id === agent.id ? updated : a)))
+      }
+    } catch (err: any) {
+      console.error("Sandbox toggle failed:", err)
+    } finally {
+      setSandboxLoading(false)
     }
   }
 
@@ -861,6 +892,55 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                 {allowToolCreation ? "Enabled — agent can propose new tools" : "Disabled"}
               </span>
             </button>
+          </div>
+
+          {/* Docker Sandbox Section */}
+          <div className="grid gap-2">
+            <Label className="flex items-center gap-1.5">
+              <Terminal className="h-3.5 w-3.5 text-emerald-500" />
+              Docker Sandbox
+            </Label>
+            <p className="text-xs text-muted-foreground -mt-1">
+              Spin up an isolated Docker container for this agent. Injects file and shell tools (bash, read, write, ls, glob, grep, delete) into every conversation.
+            </p>
+            <button
+              type="button"
+              onClick={() => setSandboxEnabled((v) => !v)}
+              className="w-full flex items-center gap-2 p-2 rounded text-xs hover:bg-muted/50 transition-colors text-left border border-border"
+            >
+              {sandboxEnabled ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+              ) : (
+                <Circle className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+              )}
+              <span className={sandboxEnabled ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-muted-foreground"}>
+                {sandboxEnabled ? "Enabled — sandbox tools will be injected" : "Disabled"}
+              </span>
+            </button>
+            {isEditing && sandboxEnabled && (
+              <div className="flex items-center gap-2 mt-1">
+                <div className={`h-2 w-2 rounded-full shrink-0 ${sandboxRunning ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/40"}`} />
+                <span className="text-xs text-muted-foreground flex-1">
+                  {sandboxRunning ? "Container running" : "Container stopped"}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSandboxToggle}
+                  disabled={sandboxLoading}
+                  className="h-6 px-2 text-xs gap-1"
+                >
+                  {sandboxLoading ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : sandboxRunning ? (
+                    <><Square className="h-3 w-3" /> Stop</>
+                  ) : (
+                    <><Play className="h-3 w-3" /> Start</>
+                  )}
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* Version History Section (edit mode only) */}

@@ -142,6 +142,9 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
             knowledge_base_ids=knowledge_base_ids,
             hitl_confirmation_tools=hitl_confirmation_tools,
             allow_tool_creation=bool(agent.get("allow_tool_creation", False)),
+            sandbox_enabled=bool(agent.get("sandbox_enabled", False)),
+            sandbox_container_id=agent.get("sandbox_container_id"),
+            sandbox_host_port=agent.get("sandbox_host_port"),
             config=config,
             is_active=agent.get("is_active", True),
             created_at=agent["created_at"],
@@ -167,6 +170,9 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
         knowledge_base_ids=knowledge_base_ids,
         hitl_confirmation_tools=hitl_confirmation_tools,
         allow_tool_creation=bool(agent.allow_tool_creation),
+        sandbox_enabled=bool(agent.sandbox_enabled),
+        sandbox_container_id=agent.sandbox_container_id,
+        sandbox_host_port=agent.sandbox_host_port,
         config=config,
         is_active=agent.is_active,
         created_at=agent.created_at,
@@ -330,19 +336,26 @@ async def delete_agent(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    is_admin = current_user.role == "admin"
+
     if DATABASE_TYPE == "mongo":
         mongo_db = get_database()
-        success = await AgentCollection.delete(mongo_db, agent_id, current_user.user_id)
-        if not success:
+        agent = await AgentCollection.find_by_id(mongo_db, agent_id)
+        if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
+        if not is_admin and str(agent.get("user_id")) != str(current_user.user_id):
+            raise HTTPException(status_code=403, detail="Not authorized to delete this agent")
+        await mongo_db[AgentCollection.collection_name].update_one(
+            {"_id": agent["_id"]},
+            {"$set": {"is_active": False}},
+        )
         return {"message": "Agent deleted"}
 
-    agent = db.query(Agent).filter(
-        Agent.id == int(agent_id),
-        Agent.user_id == int(current_user.user_id),
-    ).first()
+    agent = db.query(Agent).filter(Agent.id == int(agent_id)).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if not is_admin and agent.user_id != int(current_user.user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to delete this agent")
 
     agent.is_active = False
     db.commit()
