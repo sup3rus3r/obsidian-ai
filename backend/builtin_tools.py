@@ -124,30 +124,31 @@ def _strip_html(html: str) -> str:
 # web_search — DuckDuckGo HTML (no API key)
 # ---------------------------------------------------------------------------
 
-def _parse_ddg_results(html: str, max_results: int) -> list[dict]:
-    """Parse DuckDuckGo HTML search results page."""
+def _parse_ddg_lite_results(html: str, max_results: int) -> list[dict]:
+    """Parse DuckDuckGo Lite search results page (stable table-based layout)."""
     results = []
 
-    # Each result block: <div class="result__body"> ... </div>
-    # Title: <a class="result__a" href="...">...</a>
-    # Snippet: <a class="result__snippet">...</a>
-    title_pattern = re.compile(
-        r'class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+    # DDG Lite uses a simple table layout:
+    # Result links: <a class="result-link" href="...">Title</a>
+    # Snippets: <td class="result-snippet">...</td>
+    # Also handle uddg= redirect URLs
+    link_pattern = re.compile(
+        r'class="result-link"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
         re.DOTALL,
     )
     snippet_pattern = re.compile(
-        r'class="result__snippet"[^>]*>(.*?)</a>',
+        r'class="result-snippet"[^>]*>(.*?)</td>',
         re.DOTALL,
     )
 
-    titles = title_pattern.findall(html)
+    links = link_pattern.findall(html)
     snippets = snippet_pattern.findall(html)
 
-    for i, (url, title_html) in enumerate(titles[:max_results]):
+    for i, (url, title_html) in enumerate(links[:max_results]):
         title = _strip_html(f"<span>{title_html}</span>") or "No title"
         snippet = _strip_html(f"<span>{snippets[i]}</span>") if i < len(snippets) else ""
-        # DDG wraps URLs — decode them
-        if url.startswith("//duckduckgo.com/l/?"):
+        # Decode uddg= redirect URLs
+        if "duckduckgo.com" in url and "uddg=" in url:
             m = re.search(r"uddg=([^&]+)", url)
             if m:
                 url = urllib.parse.unquote(m.group(1))
@@ -169,49 +170,50 @@ async def _web_search(query: str, max_results: int = 8) -> str:
         ),
         "Accept-Language": "en-US,en;q=0.9",
     }
-    params = {"q": query, "kl": "us-en"}
 
+    results = []
+
+    # Primary: DuckDuckGo Lite (stable table-based HTML, no JS required)
     try:
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=15.0, headers=headers
         ) as client:
-            resp = await client.get("https://html.duckduckgo.com/html/", params=params)
+            resp = await client.post(
+                "https://lite.duckduckgo.com/lite/",
+                data={"q": query, "kl": "us-en"},
+                headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+            )
             resp.raise_for_status()
-            html = resp.text
+            results = _parse_ddg_lite_results(resp.text, max_results)
     except Exception as e:
-        return json.dumps({"error": f"Search request failed: {e}"})
+        pass
 
-    results = _parse_ddg_results(html, max_results)
-
+    # Fallback: DuckDuckGo Instant Answer API
     if not results:
-        # Fallback: try DuckDuckGo Instant Answer API
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0, headers=headers) as client:
                 ia_resp = await client.get(
                     "https://api.duckduckgo.com/",
                     params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
-                    headers=headers,
                 )
                 data = ia_resp.json()
-            ia_results = []
             if data.get("AbstractText"):
-                ia_results.append({
+                results.append({
                     "title": data.get("Heading", query),
                     "snippet": data["AbstractText"],
                     "url": data.get("AbstractURL", ""),
                 })
             for topic in data.get("RelatedTopics", [])[:max_results]:
                 if isinstance(topic, dict) and topic.get("Text"):
-                    ia_results.append({
+                    results.append({
                         "title": topic["Text"][:80],
                         "snippet": topic["Text"],
                         "url": topic.get("FirstURL", ""),
                     })
-                    if len(ia_results) >= max_results:
+                    if len(results) >= max_results:
                         break
-            if data.get("Answer") and not ia_results:
-                ia_results.append({"title": "Answer", "snippet": str(data["Answer"]), "url": ""})
-            results = ia_results
+            if data.get("Answer") and not results:
+                results.append({"title": "Answer", "snippet": str(data["Answer"]), "url": ""})
         except Exception:
             pass
 
