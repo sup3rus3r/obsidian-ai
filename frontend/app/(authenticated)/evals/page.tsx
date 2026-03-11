@@ -45,12 +45,14 @@ function formatDate(d: string) {
 function ScoreBadge({ score, total, passed }: { score: number | null; total: number; passed: number }) {
   if (score === null) return null
   const pct = Math.round(score * 100)
-  const color = pct >= 80 ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+  const allPassed = passed === total
+  const color = allPassed ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
     : pct >= 50 ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
     : "bg-red-500/15 text-red-600 dark:text-red-400"
+  const label = allPassed ? "PASS" : "FAIL"
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${color}`}>
-      {passed}/{total} ({pct}%)
+      {label} · {passed}/{total} ({pct}%)
     </span>
   )
 }
@@ -105,7 +107,9 @@ function RunResultsPanel({ run, onClose }: { run: EvalRun; onClose: () => void }
                   : <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
                 }
                 <span className="flex-1 truncate font-mono">{res.input.slice(0, 80)}{res.input.length > 80 ? "…" : ""}</span>
-                <span className="shrink-0 text-[10px] font-mono text-muted-foreground">{Math.round(res.score * 100)}%</span>
+                <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded ${res.passed ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-red-500/15 text-red-500"}`}>
+                  {res.passed ? "PASS" : "FAIL"} {Math.round(res.score * 100)}%
+                </span>
                 {expanded === res.case_id ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />}
               </button>
               {expanded === res.case_id && (
