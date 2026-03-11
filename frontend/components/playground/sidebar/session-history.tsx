@@ -89,7 +89,7 @@ export function SessionHistory() {
           <p className="text-xs text-muted-foreground">No conversations yet</p>
         </div>
       ) : (
-        <div className="space-y-1">
+        <div className="space-y-1 max-h-72 overflow-y-auto pr-0.5">
           {sessions.map((session) => (
             <div
               key={session.id}

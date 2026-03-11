@@ -390,10 +390,20 @@ async def _run_optimization_sqlite(
             return
 
         if not patterns_raw:
-            _update(run_id, status="failed",
-                    error_message="No failure patterns detected — prompt looks good",
-                    completed_at=datetime.now(timezone.utc))
-            return
+            if eval_context_text:
+                # Eval data shows failures but LLM found no patterns — synthesize one
+                patterns_raw = [{
+                    "pattern": "eval_test_failures",
+                    "description": "Agent responses failed eval test cases — actual output did not match expected output.",
+                    "frequency": 1,
+                    "severity": "high",
+                    "example_trace_ids": [],
+                }]
+            else:
+                _update(run_id, status="failed",
+                        error_message="No failure patterns detected — prompt looks good",
+                        completed_at=datetime.now(timezone.utc))
+                return
 
         _update(run_id, failure_patterns=json.dumps(patterns_raw))
 
@@ -402,7 +412,8 @@ async def _run_optimization_sqlite(
 
         optimizer_user = (
             f"Current system prompt:\n{current_prompt}\n\n"
-            f"Failure patterns:\n{json.dumps(patterns_raw, indent=2)}"
+            f"Failure patterns:\n{json.dumps(patterns_raw, indent=2)}\n\n"
+            + (f"Eval test cases that failed:\n{eval_context_text}" if eval_context_text else "")
         )
         try:
             proposal_raw = await _call_llm_json(provider, _PROMPT_OPTIMIZER_SYSTEM, optimizer_user, agent_model_id=agent.model_id)
@@ -613,10 +624,19 @@ async def _run_optimization_mongo(
             return
 
         if not patterns_raw:
-            await _update(run_id, status="failed",
-                          error_message="No failure patterns detected — prompt looks good",
-                          completed_at=datetime.now(timezone.utc))
-            return
+            if eval_context_text:
+                patterns_raw = [{
+                    "pattern": "eval_test_failures",
+                    "description": "Agent responses failed eval test cases — actual output did not match expected output.",
+                    "frequency": 1,
+                    "severity": "high",
+                    "example_trace_ids": [],
+                }]
+            else:
+                await _update(run_id, status="failed",
+                              error_message="No failure patterns detected — prompt looks good",
+                              completed_at=datetime.now(timezone.utc))
+                return
 
         await _update(run_id, failure_patterns=json.dumps(patterns_raw))
 
@@ -625,7 +645,8 @@ async def _run_optimization_mongo(
 
         optimizer_user = (
             f"Current system prompt:\n{current_prompt}\n\n"
-            f"Failure patterns:\n{json.dumps(patterns_raw, indent=2)}"
+            f"Failure patterns:\n{json.dumps(patterns_raw, indent=2)}\n\n"
+            + (f"Eval test cases that failed:\n{eval_context_text}" if eval_context_text else "")
         )
         try:
             proposal_raw = await _call_llm_json(provider, _PROMPT_OPTIMIZER_SYSTEM, optimizer_user, agent_model_id=agent_model_id)
