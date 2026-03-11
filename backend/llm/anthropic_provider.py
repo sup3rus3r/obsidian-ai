@@ -170,6 +170,7 @@ class AnthropicProvider(BaseLLMProvider):
                 tool_call_id = ""
                 tool_call_name = ""
                 tool_call_args = ""
+                _stop_reason: str | None = None
 
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
@@ -217,15 +218,18 @@ class AnthropicProvider(BaseLLMProvider):
                             )
                         current_block_type = None
 
-                    elif event_type == "message_stop":
-                        yield LLMStreamChunk(type="done")
-                        return
-
                     elif event_type == "message_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("stop_reason"):
+                            _stop_reason = delta["stop_reason"]
                         usage = event.get("usage")
                         if usage:
-                            yield LLMStreamChunk(type="done", usage=usage)
+                            yield LLMStreamChunk(type="done", usage=usage, finish_reason=_stop_reason)
                             return
+
+                    elif event_type == "message_stop":
+                        yield LLMStreamChunk(type="done", finish_reason=_stop_reason)
+                        return
 
     async def list_models(self) -> list[dict]:
         # Anthropic doesn't have a models listing API

@@ -159,6 +159,7 @@ class OpenAIProvider(BaseLLMProvider):
         content_buffer = ""
         in_think = False
         accumulated_usage: dict | None = None
+        _last_finish_reason: str | None = None
 
         async for line in response.aiter_lines():
             if not line.startswith("data: "):
@@ -187,7 +188,7 @@ class OpenAIProvider(BaseLLMProvider):
                         "input_tokens": accumulated_usage.get("prompt_tokens", 0),
                         "output_tokens": accumulated_usage.get("completion_tokens", 0),
                     }
-                yield LLMStreamChunk(type="done", usage=normalized_usage)
+                yield LLMStreamChunk(type="done", usage=normalized_usage, finish_reason=_last_finish_reason)
                 return
 
             try:
@@ -202,7 +203,10 @@ class OpenAIProvider(BaseLLMProvider):
             if not chunk.get("choices"):
                 continue
 
-            delta = chunk["choices"][0].get("delta", {})
+            choice = chunk["choices"][0]
+            if choice.get("finish_reason"):
+                _last_finish_reason = choice["finish_reason"]
+            delta = choice.get("delta", {})
 
             # Handle reasoning_content field (DeepSeek R1 via OpenRouter and similar)
             if delta.get("reasoning_content"):

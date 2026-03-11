@@ -415,6 +415,73 @@ def _build_artifact_context(past_messages) -> str:
     return "\n" + "\n".join(lines) + "\n"
 
 
+# Cost per 1M tokens in USD (input, output). Covers common models; unknown models return None.
+_MODEL_COST_PER_1M: dict[str, tuple[float, float]] = {
+    # Anthropic — Claude 4.x
+    "claude-opus-4-6":              (15.0,   75.0),
+    "claude-sonnet-4-6":            (3.0,    15.0),
+    "claude-haiku-4-5-20251001":    (0.8,    4.0),
+    "claude-sonnet-4-5-20250929":   (3.0,    15.0),
+    "claude-opus-4-5-20251101":     (15.0,   75.0),
+    "claude-opus-4-20250514":       (15.0,   75.0),
+    "claude-sonnet-4-20250514":     (3.0,    15.0),
+    # OpenAI — GPT-5 series
+    "gpt-5.4":                      (2.5,    15.0),
+    "gpt-5.4-pro":                  (30.0,   180.0),
+    "gpt-5.2":                      (1.75,   14.0),
+    "gpt-5.1":                      (1.25,   10.0),
+    "gpt-5":                        (1.25,   10.0),
+    "gpt-5-mini":                   (0.25,   2.0),
+    "gpt-5-nano":                   (0.05,   0.4),
+    # OpenAI — GPT-4.1 series
+    "gpt-4.1":                      (2.0,    8.0),
+    "gpt-4.1-mini":                 (0.4,    1.6),
+    "gpt-4.1-nano":                 (0.1,    0.4),
+    # OpenAI — GPT-4o series
+    "gpt-4o":                       (2.5,    10.0),
+    "gpt-4o-mini":                  (0.15,   0.6),
+    # OpenAI — legacy
+    "gpt-4-turbo":                  (10.0,   30.0),
+    "gpt-4":                        (30.0,   60.0),
+    "gpt-3.5-turbo":                (0.5,    1.5),
+    # OpenAI — reasoning (o-series)
+    "o1":                           (15.0,   60.0),
+    "o1-pro":                       (150.0,  600.0),
+    "o1-mini":                      (3.0,    12.0),
+    "o3":                           (2.0,    8.0),
+    "o3-pro":                       (20.0,   80.0),
+    "o3-mini":                      (1.1,    4.4),
+    "o4-mini":                      (1.1,    4.4),
+    # Google — Gemini
+    "gemini-2.0-flash":             (0.1,    0.4),
+    "gemini-2.5-pro":               (1.25,   10.0),
+    "gemini-2.5-flash":             (0.075,  0.3),
+    "gemini-1.5-pro":               (3.5,    10.5),
+    "gemini-1.5-flash":             (0.075,  0.3),
+}
+
+_ANTHROPIC_CACHE_READ_PER_1M  = 0.3   # USD per 1M cache-read tokens
+_ANTHROPIC_CACHE_WRITE_PER_1M = 3.75  # USD per 1M cache-write tokens (sonnet pricing)
+
+
+def _estimate_cost_usd(
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> float | None:
+    """Return estimated USD cost for an LLM call, or None if model is unknown."""
+    rates = _MODEL_COST_PER_1M.get(model_name)
+    if rates is None:
+        return None
+    input_rate, output_rate = rates
+    cost = (input_tokens / 1_000_000) * input_rate + (output_tokens / 1_000_000) * output_rate
+    cost += (cache_read_tokens / 1_000_000) * _ANTHROPIC_CACHE_READ_PER_1M
+    cost += (cache_creation_tokens / 1_000_000) * _ANTHROPIC_CACHE_WRITE_PER_1M
+    return round(cost, 8)
+
+
 class _TraceContext:
     """Lightweight mutable trace state for a single streaming generator invocation."""
     __slots__ = ("session_id", "workflow_run_id", "sequence", "db")
@@ -431,20 +498,30 @@ class _TraceContext:
         return seq
 
     def record_llm_span(self, model_name: str, usage: dict, duration_ms: int,
-                        round_number: int = 0, prompt_preview: str = "", response_preview: str = ""):
+                        round_number: int = 0, prompt_preview: str = "", response_preview: str = "",
+                        stop_reason: str | None = None):
         if not self.db:
             return
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        cache_read_tokens = usage.get("cache_read_input_tokens", 0) or 0
+        cache_creation_tokens = usage.get("cache_creation_input_tokens", 0) or 0
+        cost_usd = _estimate_cost_usd(model_name, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
         span = TraceSpan(
             session_id=self.session_id,
             workflow_run_id=self.workflow_run_id,
             span_type="llm_call",
             name=model_name,
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            cost_usd=cost_usd,
             duration_ms=duration_ms,
             status="success",
-            input_data=json.dumps({"prompt_preview": prompt_preview[:500]}),
-            output_data=json.dumps({"response_preview": response_preview[:500]}),
+            stop_reason=stop_reason,
+            input_data=json.dumps({"prompt_preview": prompt_preview[:5000]}),
+            output_data=json.dumps({"response_preview": response_preview[:5000]}),
             sequence=self._next_seq(),
             round_number=round_number,
         )
@@ -463,10 +540,12 @@ class _TraceContext:
             name=tool_name,
             input_tokens=0,
             output_tokens=0,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
             duration_ms=duration_ms,
             status=status,
-            input_data=json.dumps({"arguments": arguments_str[:1000]}),
-            output_data=json.dumps({"result": str(result)[:1000]}),
+            input_data=json.dumps({"arguments": arguments_str[:5000]}),
+            output_data=json.dumps({"result": str(result)[:5000]}),
             sequence=self._next_seq(),
             round_number=round_number,
         )
@@ -1998,6 +2077,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
         for _round in range(MAX_TOOL_ROUNDS):
             tool_calls_collected = []
             _llm_round_start = time.time()
+            _stop_reason: str | None = None
 
             # Merge dynamically approved tools into tools list for this round
             _dynamic_schemas = _get_dynamic_tool_schemas_sqlite(session_id, db)
@@ -2026,6 +2106,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 elif chunk.type == "done":
                     if chunk.usage:
                         token_usage = chunk.usage
+                    _stop_reason = chunk.finish_reason
                     break
                 elif chunk.type == "error":
                     yield {
@@ -2039,8 +2120,9 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 usage=token_usage,
                 duration_ms=int((time.time() - _llm_round_start) * 1000),
                 round_number=_round,
-                prompt_preview=(messages[-1].content or "")[:500] if messages else "",
-                response_preview=full_content[:500],
+                prompt_preview=(messages[-1].content or "") if messages else "",
+                response_preview=full_content,
+                stop_reason=_stop_reason,
             )
 
             # If no tool calls were made, we have the final response
@@ -2486,6 +2568,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
             for _round in range(MAX_TOOL_ROUNDS):
                 tool_calls_collected = []
                 _llm_round_start = time.time()
+                _stop_reason: str | None = None
                 # Merge dynamically approved tools into tools list for this round
                 _dynamic_schemas_mcp = _get_dynamic_tool_schemas_sqlite(session_id, db)
                 _round_tools_mcp = list(tools) + _dynamic_schemas_mcp if tools else (_dynamic_schemas_mcp or None)
@@ -2506,6 +2589,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     elif chunk.type == "done":
                         if chunk.usage:
                             token_usage = chunk.usage
+                        _stop_reason = chunk.finish_reason
                         break
                     elif chunk.type == "error":
                         yield {"event": "error", "data": json.dumps({"error": chunk.error})}
@@ -2516,8 +2600,9 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     usage=token_usage,
                     duration_ms=int((time.time() - _llm_round_start) * 1000),
                     round_number=_round,
-                    prompt_preview=(messages[-1].content or "")[:500] if messages else "",
-                    response_preview=full_content[:500],
+                    prompt_preview=(messages[-1].content or "") if messages else "",
+                    response_preview=full_content,
+                    stop_reason=_stop_reason,
                 )
 
                 if not tool_calls_collected:

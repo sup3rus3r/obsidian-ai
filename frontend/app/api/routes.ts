@@ -176,4 +176,11 @@ export const AppRoutes = {
     // Platform Settings
     GetOptimizerSettings    : () => "/api/settings/optimizer",
     UpdateOptimizerSettings : () => "/api/settings/optimizer",
+
+    // Analytics
+    AnalyticsOverview   : (days: number) => `/api/analytics/overview?range_days=${days}`,
+    AnalyticsTokens     : (days: number) => `/api/analytics/tokens?range_days=${days}`,
+    AnalyticsLatency    : (days: number) => `/api/analytics/latency?range_days=${days}`,
+    AnalyticsTools      : (days: number) => `/api/analytics/tools?range_days=${days}`,
+    AnalyticsCost       : (days: number) => `/api/analytics/cost?range_days=${days}`,
 }

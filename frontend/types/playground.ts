@@ -740,3 +740,72 @@ export interface TriggerOptimizationRequest {
 export interface RejectOptimizationRequest {
   reason?: string
 }
+
+// ─── Analytics ──────────────────────────────────────────────────────────────
+
+export interface TokenBucket {
+  date: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  cost_usd: number
+  call_count: number
+}
+
+export interface LatencyBucket {
+  model: string
+  p50_ms: number
+  p95_ms: number
+  avg_ms: number
+  call_count: number
+}
+
+export interface ToolStat {
+  name: string
+  call_count: number
+  error_count: number
+  avg_duration_ms: number
+  error_rate: number
+}
+
+export interface CostByAgent {
+  agent_id: string | null
+  agent_name: string | null
+  total_cost_usd: number
+  total_input_tokens: number
+  total_output_tokens: number
+  session_count: number
+}
+
+export interface AnalyticsOverview {
+  total_sessions: number
+  total_llm_calls: number
+  total_tool_calls: number
+  total_input_tokens: number
+  total_output_tokens: number
+  total_cost_usd: number
+  avg_latency_ms: number
+  error_rate: number
+}
+
+export interface TokensOverTimeResponse {
+  buckets: TokenBucket[]
+  range_days: number
+}
+
+export interface LatencyByModelResponse {
+  models: LatencyBucket[]
+}
+
+export interface ToolStatsResponse {
+  tools: ToolStat[]
+}
+
+export interface CostByAgentResponse {
+  agents: CostByAgent[]
+}
+
+export interface AnalyticsOverviewResponse {
+  overview: AnalyticsOverview
+}

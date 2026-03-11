@@ -46,6 +46,11 @@ import type {
   SessionTrace,
   WorkflowRunTrace,
   SandboxStatus,
+  AnalyticsOverviewResponse,
+  TokensOverTimeResponse,
+  LatencyByModelResponse,
+  ToolStatsResponse,
+  CostByAgentResponse,
 } from "@/types/playground"
 
 interface ApiResponse<T> {
@@ -801,6 +806,27 @@ class ApiClient {
 
   async getTeamSandboxStatus(teamId: string): Promise<SandboxStatus> {
     return this.request<SandboxStatus>(AppRoutes.TeamSandboxStatus(teamId))
+  }
+
+  // ============= Analytics =============
+  async getAnalyticsOverview(days: number): Promise<AnalyticsOverviewResponse> {
+    return this.request<AnalyticsOverviewResponse>(AppRoutes.AnalyticsOverview(days))
+  }
+
+  async getAnalyticsTokens(days: number): Promise<TokensOverTimeResponse> {
+    return this.request<TokensOverTimeResponse>(AppRoutes.AnalyticsTokens(days))
+  }
+
+  async getAnalyticsLatency(days: number): Promise<LatencyByModelResponse> {
+    return this.request<LatencyByModelResponse>(AppRoutes.AnalyticsLatency(days))
+  }
+
+  async getAnalyticsTools(days: number): Promise<ToolStatsResponse> {
+    return this.request<ToolStatsResponse>(AppRoutes.AnalyticsTools(days))
+  }
+
+  async getAnalyticsCost(days: number): Promise<CostByAgentResponse> {
+    return this.request<CostByAgentResponse>(AppRoutes.AnalyticsCost(days))
   }
 }
 

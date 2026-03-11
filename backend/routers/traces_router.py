@@ -25,8 +25,12 @@ def _span_to_response(span, is_mongo: bool = False) -> TraceSpanResponse:
             name=span["name"],
             input_tokens=span.get("input_tokens", 0),
             output_tokens=span.get("output_tokens", 0),
+            cache_read_tokens=span.get("cache_read_tokens", 0),
+            cache_creation_tokens=span.get("cache_creation_tokens", 0),
+            cost_usd=span.get("cost_usd"),
             duration_ms=span.get("duration_ms", 0),
             status=span.get("status", "success"),
+            stop_reason=span.get("stop_reason"),
             input_data=span.get("input_data"),
             output_data=span.get("output_data"),
             sequence=span.get("sequence", 0),
@@ -42,8 +46,12 @@ def _span_to_response(span, is_mongo: bool = False) -> TraceSpanResponse:
         name=span.name,
         input_tokens=span.input_tokens or 0,
         output_tokens=span.output_tokens or 0,
+        cache_read_tokens=span.cache_read_tokens or 0,
+        cache_creation_tokens=span.cache_creation_tokens or 0,
+        cost_usd=span.cost_usd,
         duration_ms=span.duration_ms or 0,
         status=span.status or "success",
+        stop_reason=span.stop_reason,
         input_data=span.input_data,
         output_data=span.output_data,
         sequence=span.sequence or 0,
@@ -53,10 +61,12 @@ def _span_to_response(span, is_mongo: bool = False) -> TraceSpanResponse:
 
 
 def _aggregate(spans: list[TraceSpanResponse]) -> dict:
+    total_cost = sum(s.cost_usd for s in spans if s.cost_usd is not None)
     return {
         "total_duration_ms": sum(s.duration_ms for s in spans),
         "total_input_tokens": sum(s.input_tokens for s in spans),
         "total_output_tokens": sum(s.output_tokens for s in spans),
+        "total_cost_usd": round(total_cost, 6),
     }
 
 

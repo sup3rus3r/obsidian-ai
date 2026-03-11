@@ -13,6 +13,7 @@ import {
   ChevronDown,
   BookOpen,
   FlaskConical,
+  BarChart2,
 } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
@@ -32,6 +33,7 @@ const navItems = [
   { label: "Sessions", icon: History, path: Routes.SESSIONS },
   { label: "Knowledge", icon: BookOpen, path: Routes.KNOWLEDGE },
   { label: "Evals", icon: FlaskConical, path: Routes.EVALS },
+  { label: "Observability", icon: BarChart2, path: Routes.OBSERVABILITY },
   { label: "Settings", icon: Settings, path: Routes.SETTINGS },
 ]
 

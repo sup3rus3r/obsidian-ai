@@ -41,6 +41,7 @@ from routers.eval_router import router as eval_router
 from routers.optimizer_router import router as optimizer_router
 from routers.settings_router import router as settings_router
 from routers.sandbox_router import router as sandbox_router
+from routers.analytics_router import router as analytics_router
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import connect_to_mongo, close_mongo_connection, get_database
@@ -384,6 +385,42 @@ def _run_sqlite_migrations(engine):
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add cache_read_tokens to trace_spans if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE trace_spans ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add cache_creation_tokens to trace_spans if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE trace_spans ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add cost_usd to trace_spans if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE trace_spans ADD COLUMN cost_usd REAL"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add stop_reason to trace_spans if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE trace_spans ADD COLUMN stop_reason TEXT"
+            ))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -855,6 +892,7 @@ app.include_router(eval_router)
 app.include_router(optimizer_router)
 app.include_router(settings_router)
 app.include_router(sandbox_router)
+app.include_router(analytics_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

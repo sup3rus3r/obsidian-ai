@@ -784,8 +784,12 @@ class TraceSpanResponse(BaseModel):
     name: str
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cost_usd: Optional[float] = None
     duration_ms: int = 0
     status: str             # success | error
+    stop_reason: Optional[str] = None
     input_data: Optional[str] = None    # raw JSON string, parsed lazily on frontend
     output_data: Optional[str] = None   # raw JSON string, parsed lazily on frontend
     sequence: int = 0
@@ -801,6 +805,7 @@ class SessionTraceResponse(BaseModel):
     total_duration_ms: int
     total_input_tokens: int
     total_output_tokens: int
+    total_cost_usd: float = 0.0
     span_count: int
     spans: list[TraceSpanResponse]
 
@@ -810,6 +815,7 @@ class WorkflowRunTraceResponse(BaseModel):
     total_duration_ms: int
     total_input_tokens: int
     total_output_tokens: int
+    total_cost_usd: float = 0.0
     span_count: int
     spans: list[TraceSpanResponse]
 
@@ -838,6 +844,68 @@ class ToolProposalResponse(BaseModel):
 
 class ToolProposalPendingListResponse(BaseModel):
     proposals: list[ToolProposalResponse]
+
+
+# ============================================================================
+# Analytics Schemas
+# ============================================================================
+
+class TokenBucket(BaseModel):
+    date: str           # ISO date string YYYY-MM-DD
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost_usd: float
+    call_count: int
+
+class LatencyBucket(BaseModel):
+    model: str
+    p50_ms: int
+    p95_ms: int
+    avg_ms: int
+    call_count: int
+
+class ToolStat(BaseModel):
+    name: str
+    call_count: int
+    error_count: int
+    avg_duration_ms: int
+    error_rate: float
+
+class CostByAgent(BaseModel):
+    agent_id: Optional[str]
+    agent_name: Optional[str]
+    total_cost_usd: float
+    total_input_tokens: int
+    total_output_tokens: int
+    session_count: int
+
+class AnalyticsOverview(BaseModel):
+    total_sessions: int
+    total_llm_calls: int
+    total_tool_calls: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cost_usd: float
+    avg_latency_ms: int
+    error_rate: float
+
+class TokensOverTimeResponse(BaseModel):
+    buckets: list[TokenBucket]
+    range_days: int
+
+class LatencyByModelResponse(BaseModel):
+    models: list[LatencyBucket]
+
+class ToolStatsResponse(BaseModel):
+    tools: list[ToolStat]
+
+class CostByAgentResponse(BaseModel):
+    agents: list[CostByAgent]
+
+class AnalyticsOverviewResponse(BaseModel):
+    overview: AnalyticsOverview
 
 
 # ============================================================================

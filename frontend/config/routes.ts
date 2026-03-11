@@ -19,8 +19,9 @@ export const Routes = {
   PLAYGROUND  : '/playground',
   SESSIONS    : '/sessions',
   KNOWLEDGE   : '/knowledge',
-  EVALS       : '/evals',
-  SETTINGS    : '/settings',
+  EVALS           : '/evals',
+  OBSERVABILITY   : '/observability',
+  SETTINGS        : '/settings',
 } as const;
 
 
@@ -66,6 +67,12 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Evals',
     allowedRoles: ['admin', 'user'],
     description: 'Eval suites for testing agent performance',
+  },
+  {
+    path: Routes.OBSERVABILITY,
+    label: 'Observability',
+    allowedRoles: ['admin', 'user'],
+    description: 'Token usage, latency, cost, and tool analytics',
   },
   {
     path: Routes.SETTINGS,

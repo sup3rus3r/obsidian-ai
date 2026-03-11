@@ -338,21 +338,25 @@ class TraceSpan(Base):
     """A single observable unit of work within a session or workflow run."""
     __tablename__ = "trace_spans"
 
-    id              = Column(Integer, primary_key=True, index=True)
-    session_id      = Column(Integer, ForeignKey("sessions.id"), nullable=True, index=True)
-    workflow_run_id = Column(Integer, ForeignKey("workflow_runs.id"), nullable=True, index=True)
-    message_id      = Column(Integer, ForeignKey("messages.id"), nullable=True)
-    span_type       = Column(String, nullable=False)               # llm_call | tool_call | mcp_call | workflow_step
-    name            = Column(String, nullable=False)               # model name OR tool name
-    input_tokens    = Column(Integer, default=0, nullable=False)
-    output_tokens   = Column(Integer, default=0, nullable=False)
-    duration_ms     = Column(Integer, default=0, nullable=False)
-    status          = Column(String, default="success", nullable=False)  # success | error
-    input_data      = Column(Text, nullable=True)                  # JSON string (truncated)
-    output_data     = Column(Text, nullable=True)                  # JSON string (truncated)
-    sequence        = Column(Integer, default=0, nullable=False)   # ordering within a generator invocation
-    round_number    = Column(Integer, default=0, nullable=False)   # tool loop round index
-    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    id                    = Column(Integer, primary_key=True, index=True)
+    session_id            = Column(Integer, ForeignKey("sessions.id"), nullable=True, index=True)
+    workflow_run_id       = Column(Integer, ForeignKey("workflow_runs.id"), nullable=True, index=True)
+    message_id            = Column(Integer, ForeignKey("messages.id"), nullable=True)
+    span_type             = Column(String, nullable=False)               # llm_call | tool_call | mcp_call | workflow_step
+    name                  = Column(String, nullable=False)               # model name OR tool name
+    input_tokens          = Column(Integer, default=0, nullable=False)
+    output_tokens         = Column(Integer, default=0, nullable=False)
+    cache_read_tokens     = Column(Integer, default=0, nullable=False)   # Anthropic prompt cache read tokens
+    cache_creation_tokens = Column(Integer, default=0, nullable=False)   # Anthropic prompt cache write tokens
+    cost_usd              = Column(Float, nullable=True)                 # estimated cost in USD
+    duration_ms           = Column(Integer, default=0, nullable=False)
+    status                = Column(String, default="success", nullable=False)  # success | error
+    stop_reason           = Column(String, nullable=True)                # end_turn | max_tokens | tool_use | stop
+    input_data            = Column(Text, nullable=True)                  # JSON string
+    output_data           = Column(Text, nullable=True)                  # JSON string
+    sequence              = Column(Integer, default=0, nullable=False)   # ordering within a generator invocation
+    round_number          = Column(Integer, default=0, nullable=False)   # tool loop round index
+    created_at            = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class EvalSuite(Base):
