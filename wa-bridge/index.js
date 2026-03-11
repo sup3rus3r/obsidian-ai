@@ -31,13 +31,13 @@ const AUTH_BASE_DIR = process.env.WA_AUTH_DIR || path.join(__dirname, "auth");
 const logger = pino({ level: "warn" });
 const silentLogger = pino({ level: "silent" });
 
-// Suppress libsignal noise (harmless key renegotiation logs from Baileys internals)
-const _SIGNAL_NOISE = ["Bad MAC", "Failed to decrypt message", "Closing open session", "Closing session: SessionEntry"];
-const _isSignalNoise = (args) => typeof args[0] === "string" && _SIGNAL_NOISE.some(s => args[0].includes(s));
-const _origLog = console.log.bind(console);
-const _origError = console.error.bind(console);
-console.log = (...args) => { if (!_isSignalNoise(args)) _origLog(...args); };
-console.error = (...args) => { if (!_isSignalNoise(args)) _origError(...args); };
+// Suppress libsignal noise written directly to stdout/stderr
+const _SIGNAL_NOISE = ["Bad MAC", "Failed to decrypt message", "Closing open session", "Closing session: SessionEntry", "_chains"];
+const _isNoisy = (s) => typeof s === "string" && _SIGNAL_NOISE.some(p => s.includes(p));
+const _origStdoutWrite = process.stdout.write.bind(process.stdout);
+const _origStderrWrite = process.stderr.write.bind(process.stderr);
+process.stdout.write = (chunk, ...rest) => _isNoisy(chunk?.toString()) ? true : _origStdoutWrite(chunk, ...rest);
+process.stderr.write = (chunk, ...rest) => _isNoisy(chunk?.toString()) ? true : _origStderrWrite(chunk, ...rest);
 
 // ── State ─────────────────────────────────────────────────────────────────────
 /** @type {Map<string, { socket: any, qrListeners: Set<(qr: string) => void>, status: string, lidMap: Map<string,string> }>} */
@@ -78,11 +78,10 @@ async function updateChannelStatus(channelId, status, waPhone = null) {
 // ── Socket lifecycle ──────────────────────────────────────────────────────────
 
 async function startChannel(channelId, authPath) {
-  if (starting.has(String(channelId))) {
-    logger.info({ channelId }, "startChannel: already starting, skipping duplicate");
-    return channels.get(String(channelId));
-  }
-  starting.add(String(channelId));
+  const key = String(channelId);
+  if (starting.has(key)) return channels.get(key);
+  if (channels.has(key)) return channels.get(key); // already running
+  starting.add(key);
   const dir = authPath || authDir(channelId);
   ensureDir(dir);
 
@@ -147,7 +146,7 @@ async function startChannel(channelId, authPath) {
       await updateChannelStatus(channelId, "disconnected");
 
       if (shouldReconnect) {
-        // Back-off and reconnect
+        channels.delete(String(channelId));
         setTimeout(() => startChannel(channelId, dir), 5000);
       } else {
         // Logged out — remove auth state
