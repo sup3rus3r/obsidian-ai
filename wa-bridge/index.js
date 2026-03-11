@@ -260,12 +260,8 @@ async function startChannel(channelId, authPath) {
     for (const msg of messages) {
       if (msg.key.fromMe) continue; // Ignore outgoing messages
 
-      // Dedup by raw msg.key.id (not JID-qualified) so the same message arriving
-      // on both @lid and @s.whatsapp.net JIDs is only processed once.
       const msgId = `${channelId}:${msg.key.id}`;
-      const rawMsgId = `${channelId}:raw:${msg.key.id}`;
-      if (seenMsgIds.has(msgId) || seenMsgIds.has(rawMsgId)) continue;
-      seenMsgIds.add(rawMsgId);
+      if (seenMsgIds.has(msgId)) continue;
 
       const rawChatId = msg.key.remoteJid;
       const rawSender = msg.key.participant || msg.key.remoteJid;
@@ -298,6 +294,9 @@ async function startChannel(channelId, authPath) {
 
       // Transcribe voice notes via backend
       if (!text && msg.message?.audioMessage) {
+        // Mark seen immediately so a duplicate arrival on the other JID doesn't also transcribe
+        seenMsgIds.add(msgId);
+        if (seenMsgIds.size > 500) { const first = seenMsgIds.values().next().value; seenMsgIds.delete(first); }
         try {
           const audioBuffer = await downloadMediaMessage(msg, "buffer", {});
           // POST multipart to backend /wa/transcribe
