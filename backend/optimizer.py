@@ -157,6 +157,25 @@ def _build_trace_text(sessions: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def _build_eval_context_text(eval_runs: list[dict]) -> str:
+    """Format eval run results into a readable block for the LLM."""
+    parts: list[str] = []
+    for run in eval_runs:
+        score = run.get("score")
+        total = run.get("total_cases", 0)
+        passed = run.get("passed_cases", 0)
+        parts.append(f"=== Eval Run (score={score}, passed={passed}/{total}) ===")
+        results = run.get("results", [])
+        for r in results:
+            status = "PASS" if r.get("passed") else "FAIL"
+            parts.append(f"[{status}] Input: {_truncate(r.get('input', ''), 300)}")
+            parts.append(f"  Expected: {_truncate(r.get('expected_output', ''), 300)}")
+            parts.append(f"  Actual:   {_truncate(r.get('actual_output', ''), 300)}")
+            if r.get("reasoning"):
+                parts.append(f"  Reasoning: {_truncate(r.get('reasoning', ''), 300)}")
+    return "\n".join(parts)
+
+
 def _create_provider_from_record(provider_record, agent_model_id: str | None = None):
     """Create an LLM provider from either a SQLAlchemy ORM object or a Mongo dict.
 
@@ -313,7 +332,27 @@ async def _run_optimization_sqlite(
             ChatSession.user_id == user_id,
         ).order_by(ChatSession.created_at.desc()).limit(max_traces).all()
 
-        if len(sessions) < min_traces:
+        # Fetch eval run results if a suite is selected
+        eval_context_text = ""
+        if eval_suite_id:
+            from models import EvalRun as EvalRunModel
+            recent_eval_runs = db.query(EvalRunModel).filter(
+                EvalRunModel.suite_id == eval_suite_id,
+                EvalRunModel.agent_id == agent_id,
+            ).order_by(EvalRunModel.id.desc()).limit(5).all()
+            eval_runs_data = []
+            for er in recent_eval_runs:
+                results = json.loads(er.results_json) if er.results_json else []
+                eval_runs_data.append({
+                    "score": er.score,
+                    "total_cases": er.total_cases,
+                    "passed_cases": er.passed_cases,
+                    "results": results,
+                })
+            eval_context_text = _build_eval_context_text(eval_runs_data)
+
+        # Require min_traces only when no eval data is available
+        if len(sessions) < min_traces and not eval_context_text:
             _update(run_id, status="failed",
                     error_message=f"Not enough traces: found {len(sessions)}, need {min_traces}",
                     completed_at=datetime.now(timezone.utc))
@@ -336,10 +375,12 @@ async def _run_optimization_sqlite(
 
         # ── Stage 3: failure analysis ──────────────────────────────────────────
         trace_text = _build_trace_text(trace_sessions)
-        analysis_user = (
-            f"Agent system prompt:\n{_truncate(current_prompt, 1000)}\n\n"
-            f"Conversation traces:\n{trace_text}"
-        )
+        analysis_parts = [f"Agent system prompt:\n{_truncate(current_prompt, 1000)}"]
+        if trace_text:
+            analysis_parts.append(f"Conversation traces:\n{trace_text}")
+        if eval_context_text:
+            analysis_parts.append(f"Eval run results (use these as primary failure signal):\n{eval_context_text}")
+        analysis_user = "\n\n".join(analysis_parts)
         try:
             patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent.model_id)
         except Exception as e:
@@ -514,7 +555,27 @@ async def _run_optimization_mongo(
         ).sort("updated_at", -1).limit(max_traces)
         all_sessions = await _cursor.to_list(length=max_traces)
 
-        if len(all_sessions) < min_traces:
+        # Fetch eval run results if a suite is selected
+        eval_context_text = ""
+        if eval_suite_id:
+            _eval_run_coll = mongo_db[EvalRunCollection.collection_name]
+            _eval_cursor = _eval_run_coll.find(
+                {"suite_id": eval_suite_id, "agent_id": agent_id}
+            ).sort("_id", -1).limit(5)
+            recent_eval_runs = await _eval_cursor.to_list(length=5)
+            eval_runs_data = []
+            for er in recent_eval_runs:
+                results = json.loads(er["results_json"]) if er.get("results_json") else []
+                eval_runs_data.append({
+                    "score": er.get("score"),
+                    "total_cases": er.get("total_cases", 0),
+                    "passed_cases": er.get("passed_cases", 0),
+                    "results": results,
+                })
+            eval_context_text = _build_eval_context_text(eval_runs_data)
+
+        # Require min_traces only when no eval data is available
+        if len(all_sessions) < min_traces and not eval_context_text:
             await _update(run_id, status="failed",
                           error_message=f"Not enough traces: found {len(all_sessions)}, need {min_traces}",
                           completed_at=datetime.now(timezone.utc))
@@ -537,10 +598,12 @@ async def _run_optimization_mongo(
         # ── Stage 3: failure analysis ──────────────────────────────────────────
         agent_model_id = agent.get("model_id")
         trace_text = _build_trace_text(trace_sessions)
-        analysis_user = (
-            f"Agent system prompt:\n{_truncate(current_prompt, 1000)}\n\n"
-            f"Conversation traces:\n{trace_text}"
-        )
+        analysis_parts = [f"Agent system prompt:\n{_truncate(current_prompt, 1000)}"]
+        if trace_text:
+            analysis_parts.append(f"Conversation traces:\n{trace_text}")
+        if eval_context_text:
+            analysis_parts.append(f"Eval run results (use these as primary failure signal):\n{eval_context_text}")
+        analysis_user = "\n\n".join(analysis_parts)
         try:
             patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent_model_id)
         except Exception as e:
