@@ -28,13 +28,24 @@ const PORT = parseInt(process.env.WA_BRIDGE_PORT || "3200");
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8001";
 const AUTH_BASE_DIR = process.env.WA_AUTH_DIR || path.join(__dirname, "auth");
 
-const logger = pino({ level: "info" });
+const logger = pino({ level: "warn" });
+const silentLogger = pino({ level: "silent" });
+
+// Suppress libsignal noise (harmless key renegotiation logs from Baileys internals)
+const _SIGNAL_NOISE = ["Bad MAC", "Failed to decrypt message", "Closing open session", "Closing session: SessionEntry"];
+const _isSignalNoise = (args) => typeof args[0] === "string" && _SIGNAL_NOISE.some(s => args[0].includes(s));
+const _origLog = console.log.bind(console);
+const _origError = console.error.bind(console);
+console.log = (...args) => { if (!_isSignalNoise(args)) _origLog(...args); };
+console.error = (...args) => { if (!_isSignalNoise(args)) _origError(...args); };
 
 // ── State ─────────────────────────────────────────────────────────────────────
 /** @type {Map<string, { socket: any, qrListeners: Set<(qr: string) => void>, status: string, lidMap: Map<string,string> }>} */
 const channels = new Map();
 /** Track channels currently being started to prevent duplicate sockets */
 const starting = new Set();
+/** Dedup: recently processed message IDs — Set<string>, capped at 500 */
+const seenMsgIds = new Set();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -88,9 +99,9 @@ async function startChannel(channelId, authPath) {
     version,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger),
+      keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
     },
-    logger: logger.child({ channel: channelId }),
+    logger: silentLogger,
     generateHighQualityLinkPreview: false,
   });
 
@@ -149,22 +160,15 @@ async function startChannel(channelId, authPath) {
   // Helper: resolve @lid JID to @s.whatsapp.net using our lid map
   function resolveLid(jid) {
     if (!jid || !jid.endsWith("@lid")) return jid;
-    const resolved = entry.lidMap.get(jid);
-    if (resolved) {
-      logger.info({ jid, resolved }, "resolveLid: resolved from lidMap");
-      return resolved;
-    }
-    return jid; // keep as @lid — backend gets raw lid as fallback
+    return entry.lidMap.get(jid) ?? jid;
   }
 
   // Populate lid→phone map from contact events
   function indexContacts(contacts) {
     for (const c of contacts) {
-      // c.id may be @lid, c.phoneNumber or c.notify is the phone
       if (c.id?.endsWith("@lid") && c.phoneNumber) {
         const phoneJid = c.phoneNumber.includes("@") ? c.phoneNumber : `${c.phoneNumber}@s.whatsapp.net`;
         entry.lidMap.set(c.id, phoneJid);
-        logger.info({ lid: c.id, phone: phoneJid }, "lidMap: stored mapping");
       }
     }
   }
@@ -172,21 +176,37 @@ async function startChannel(channelId, authPath) {
   sock.ev.on("contacts.upsert", indexContacts);
   sock.ev.on("contacts.update", indexContacts);
 
+  // Per-chat debounce buffer: key = waChatId, value = { timer, lines, meta }
+  const chatBuffers = new Map();
+  const DEBOUNCE_MS = 10000;
+
+  function flushChat(waChatId) {
+    const buf = chatBuffers.get(waChatId);
+    if (!buf) return;
+    chatBuffers.delete(waChatId);
+    const combinedText = buf.lines.join("\n");
+    notifyBackend(channelId, { ...buf.meta, message_text: combinedText }).catch(() => {});
+  }
+
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    logger.info({ channelId, type, count: messages.length }, "messages.upsert received");
-    if (type !== "notify") return;
+    if (type !== "notify" && type !== "append") return;
 
     for (const msg of messages) {
-      logger.info({ channelId, fromMe: msg.key.fromMe, remoteJid: msg.key.remoteJid }, "processing message");
       if (msg.key.fromMe) continue; // Ignore outgoing messages
 
-      const rawChatId = msg.key.remoteJid;
-      const rawSender = msg.key.participant || msg.key.remoteJid; // participant set in groups
+      // Deduplicate — Baileys may deliver the same message twice on retry
+      const msgId = `${channelId}:${msg.key.id}`;
+      if (seenMsgIds.has(msgId)) continue;
+      seenMsgIds.add(msgId);
+      if (seenMsgIds.size > 500) {
+        const first = seenMsgIds.values().next().value;
+        seenMsgIds.delete(first);
+      }
 
-      // senderPn is set by newer Baileys versions for @lid messages
+      const rawChatId = msg.key.remoteJid;
+      const rawSender = msg.key.participant || msg.key.remoteJid;
       const senderPn = msg.key.senderPn;
 
-      // Resolve @lid: prefer senderPn > lidMap > raw lid
       function resolveJid(jid) {
         if (!jid?.endsWith("@lid")) return jid;
         if (senderPn) return senderPn.includes("@") ? senderPn : `${senderPn}@s.whatsapp.net`;
@@ -195,11 +215,7 @@ async function startChannel(channelId, authPath) {
 
       const waChatId = resolveJid(rawChatId);
       const waSender = resolveJid(rawSender);
-      // Pass raw lid to backend as fallback for whitelist if still unresolved
       const waLid = (waSender !== rawSender) ? null : (rawSender?.endsWith("@lid") ? rawSender : null);
-
-      logger.info({ channelId, rawSender, waSender, waLid, senderPn }, "resolved sender JID");
-
       const isGroup = rawChatId?.endsWith("@g.us") || false;
 
       const text =
@@ -208,16 +224,21 @@ async function startChannel(channelId, authPath) {
         msg.message?.imageMessage?.caption ||
         null;
 
-      logger.info({ channelId, waChatId, waSender, hasText: !!text }, "message details");
-      if (!text) continue; // Skip non-text messages for now
+      if (!text) continue;
 
-      await notifyBackend(channelId, {
-        wa_chat_id: waChatId,
-        wa_sender: waSender,
-        wa_lid: waLid,
-        message_text: text,
-        is_group: isGroup,
-      });
+      // Buffer messages per chat — flush after DEBOUNCE_MS of silence
+      if (chatBuffers.has(waChatId)) {
+        const buf = chatBuffers.get(waChatId);
+        clearTimeout(buf.timer);
+        buf.lines.push(text);
+        buf.timer = setTimeout(() => flushChat(waChatId), DEBOUNCE_MS);
+      } else {
+        chatBuffers.set(waChatId, {
+          lines: [text],
+          meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: waLid, is_group: isGroup },
+          timer: setTimeout(() => flushChat(waChatId), DEBOUNCE_MS),
+        });
+      }
     }
   });
 

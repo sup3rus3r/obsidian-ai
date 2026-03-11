@@ -148,32 +148,23 @@ async def _handle_mongo(
 
     mongo_db = get_database()
 
-    print(f"[WA] incoming mongo: channel_id={channel_id} wa_chat_id={wa_chat_id} wa_sender={wa_sender}", flush=True)
-
     channel = await WhatsAppChannelCollection.find_by_id(mongo_db, str(channel_id))
-    print(f"[WA] channel found={bool(channel)} status={channel.get('status') if channel else None} is_active={channel.get('is_active') if channel else None}", flush=True)
     if not channel or not channel.get("is_active"):
-        print("[WA] dropping: channel not found or inactive", flush=True)
         return
     if channel.get("status") == "disconnected":
-        print("[WA] dropping: status=disconnected", flush=True)
         return
 
     # Whitelist check — compare by phone number prefix (before @) to handle @lid vs @s.whatsapp.net
     allowed = channel.get("allowed_jids")
-    print(f"[WA] whitelist check: allowed_jids={allowed!r} wa_sender={wa_sender!r} wa_lid={wa_lid!r}", flush=True)
     if allowed:
         sender_num = wa_sender.split("@")[0]
         lid_num = wa_lid.split("@")[0] if wa_lid else None
         allowed_nums = {j.split("@")[0] for j in allowed}
-        print(f"[WA] whitelist: sender_num={sender_num!r} lid_num={lid_num!r} allowed_nums={allowed_nums!r}", flush=True)
         if sender_num not in allowed_nums and lid_num not in allowed_nums:
             reject_msg = channel.get("reject_message")
-            print(f"[WA] whitelist BLOCKED", flush=True)
             if reject_msg:
                 await send_message(channel_id, wa_chat_id, reject_msg)
             return
-    print(f"[WA] whitelist passed", flush=True)
 
     # Get or create contact session
     contact = await WAContactSessionCollection.find_by_channel_and_chat(
@@ -207,14 +198,10 @@ async def _handle_mongo(
         "content": message_text,
     })
 
-    print(f"[WA] running agent session_id={session_id} agent_id={channel['agent_id']}", flush=True)
     try:
         reply = await _run_agent_mongo(session_id, message_text, channel["agent_id"])
-    except Exception as e:
-        import traceback
-        print(f"[WA] agent error: {e}\n{traceback.format_exc()}", flush=True)
+    except Exception:
         return
-    print(f"[WA] agent reply={reply!r}", flush=True)
 
     if reply:
         await MessageCollection.create(mongo_db, {
