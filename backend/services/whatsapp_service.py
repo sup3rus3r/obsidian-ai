@@ -157,14 +157,18 @@ async def _handle_mongo(
 
     # Whitelist check — compare by phone number prefix (before @) to handle @lid vs @s.whatsapp.net
     allowed = channel.get("allowed_jids")
+    print(f"[WA] whitelist check: allowed_jids={allowed!r} wa_sender={wa_sender!r}", flush=True)
     if allowed:
         sender_num = wa_sender.split("@")[0]
         allowed_nums = {j.split("@")[0] for j in allowed}
+        print(f"[WA] whitelist: sender_num={sender_num!r} allowed_nums={allowed_nums!r} match={sender_num in allowed_nums}", flush=True)
         if sender_num not in allowed_nums:
             reject_msg = channel.get("reject_message")
+            print(f"[WA] whitelist BLOCKED: sender not in allowed list", flush=True)
             if reject_msg:
                 await send_message(channel_id, wa_chat_id, reject_msg)
             return
+    print(f"[WA] whitelist passed", flush=True)
 
     # Get or create contact session
     contact = await WAContactSessionCollection.find_by_channel_and_chat(
