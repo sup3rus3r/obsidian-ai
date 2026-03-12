@@ -828,6 +828,9 @@ export interface WAChannel {
   status: "pending_qr" | "connected" | "disconnected"
   allowed_jids: string[] | null
   reject_message: string | null
+  voice_reply_enabled: boolean
+  voice_reply_jids: string[]
+  voice_reply_voice: string
   is_active: boolean
   created_at: string | null
   updated_at: string | null
@@ -843,6 +846,9 @@ export interface UpdateWAChannelRequest {
   agent_id?: string
   allowed_jids?: string[] | null
   reject_message?: string | null
+  voice_reply_enabled?: boolean
+  voice_reply_jids?: string[]
+  voice_reply_voice?: string
 }
 
 export interface HITLApprovalItem {

@@ -27,8 +27,20 @@ import {
   Plus,
   X,
   Save,
+  Mic,
 } from "lucide-react"
 import { toast } from "sonner"
+
+const VOICE_OPTIONS = [
+  { value: "marius", label: "Marius (Male)" },
+  { value: "javert", label: "Javert (Male)" },
+  { value: "jean", label: "Jean (Male)" },
+  { value: "alba", label: "Alba (Female)" },
+  { value: "fantine", label: "Fantine (Female)" },
+  { value: "cosette", label: "Cosette (Female)" },
+  { value: "eponine", label: "Eponine (Female)" },
+  { value: "azelma", label: "Azelma (Female)" },
+]
 
 function StatusBadge({ status }: { status: WAChannel["status"] }) {
   if (status === "connected") return <Badge className="bg-emerald-500/15 text-emerald-600 border-emerald-500/30">Connected</Badge>
@@ -55,6 +67,13 @@ export default function ChannelDetailPage() {
   const [newJid, setNewJid] = useState("")
   const [isGroupEntry, setIsGroupEntry] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // Voice reply state
+  const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
+  const [voiceReplyJids, setVoiceReplyJids] = useState<string[]>([])
+  const [voiceReplyAllContacts, setVoiceReplyAllContacts] = useState(true)
+  const [voiceReplyVoice, setVoiceReplyVoice] = useState("marius")
+  const [newVoiceJid, setNewVoiceJid] = useState("")
 
   // QR state
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
@@ -85,6 +104,10 @@ export default function ChannelDetailPage() {
       setAllowAll(jids.length === 0)
       setEditAllowedJids(jids)
       setEditRejectMessage(ch.reject_message ?? "")
+      setVoiceReplyEnabled(ch.voice_reply_enabled ?? false)
+      setVoiceReplyJids(ch.voice_reply_jids ?? [])
+      setVoiceReplyAllContacts((ch.voice_reply_jids ?? []).length === 0)
+      setVoiceReplyVoice(ch.voice_reply_voice ?? "marius")
 
       if (ch.status === "pending_qr") {
         startQRStream()
@@ -108,7 +131,6 @@ export default function ChannelDetailPage() {
       try {
         const data = JSON.parse(e.data)
         if (data.type === "qr") {
-          // Sidecar sends a pre-rendered base64 PNG data URL
           setQrDataUrl(data.qr)
           setQrConnecting(false)
         } else if (data.type === "connected") {
@@ -169,6 +191,9 @@ export default function ChannelDetailPage() {
         agent_id: editAgentId,
         allowed_jids: allowAll ? [] : editAllowedJids,
         reject_message: editRejectMessage.trim() || null,
+        voice_reply_enabled: voiceReplyEnabled,
+        voice_reply_jids: voiceReplyAllContacts ? [] : voiceReplyJids,
+        voice_reply_voice: voiceReplyVoice,
       }
       const updated = await apiClient.updateWAChannel(channelId, updates)
       setChannel(updated)
@@ -183,7 +208,6 @@ export default function ChannelDetailPage() {
   const addJid = () => {
     const jid = newJid.trim()
     if (!jid) return
-    // Group entries stored as-is; phone numbers get @s.whatsapp.net appended
     const normalised = isGroupEntry
       ? jid
       : jid.includes("@") ? jid : `${jid.replace(/\D/g, "")}@s.whatsapp.net`
@@ -196,7 +220,17 @@ export default function ChannelDetailPage() {
 
   const removeJid = (jid: string) => setEditAllowedJids((prev) => prev.filter((j) => j !== jid))
 
-  const agentName = (id: string) => agents.find((a) => String(a.id) === String(id))?.name ?? id
+  const addVoiceJid = () => {
+    const jid = newVoiceJid.trim()
+    if (!jid) return
+    const normalised = jid.includes("@") ? jid : `${jid.replace(/\D/g, "")}@s.whatsapp.net`
+    if (!voiceReplyJids.includes(normalised)) {
+      setVoiceReplyJids((prev) => [...prev, normalised])
+    }
+    setNewVoiceJid("")
+  }
+
+  const removeVoiceJid = (jid: string) => setVoiceReplyJids((prev) => prev.filter((j) => j !== jid))
 
   if (isLoading) {
     return (
@@ -325,7 +359,6 @@ export default function ChannelDetailPage() {
 
             {!allowAll && (
               <div className="space-y-2">
-                {/* Existing JIDs */}
                 {editAllowedJids.map((jid) => (
                   <div key={jid} className="flex items-center gap-2 text-sm">
                     {!jid.includes("@") && (
@@ -337,7 +370,6 @@ export default function ChannelDetailPage() {
                     </Button>
                   </div>
                 ))}
-                {/* Add new */}
                 <div className="flex gap-2">
                   <Button
                     size="sm"
@@ -372,6 +404,88 @@ export default function ChannelDetailPage() {
               />
               <p className="text-xs text-muted-foreground">Leave empty to silently ignore blocked messages.</p>
             </div>
+          </div>
+
+          <Separator />
+
+          {/* Voice replies */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Mic className="h-4 w-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">Voice replies</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Reply to voice notes with a generated voice note.
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant={voiceReplyEnabled ? "default" : "outline"}
+                size="sm"
+                className="text-xs h-7"
+                onClick={() => setVoiceReplyEnabled((v) => !v)}
+              >
+                {voiceReplyEnabled ? "Enabled" : "Disabled"}
+              </Button>
+            </div>
+
+            {voiceReplyEnabled && (
+              <div className="space-y-3 pl-6">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Voice</Label>
+                  <Select value={voiceReplyVoice} onValueChange={setVoiceReplyVoice}>
+                    <SelectTrigger className="h-8 w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VOICE_OPTIONS.map((v) => (
+                        <SelectItem key={v.value} value={v.value} className="text-xs">{v.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">Respond with voice to:</p>
+                    <Button
+                      variant={voiceReplyAllContacts ? "default" : "outline"}
+                      size="sm"
+                      className="text-xs h-6"
+                      onClick={() => setVoiceReplyAllContacts((v) => !v)}
+                    >
+                      {voiceReplyAllContacts ? "All contacts" : "Specific contacts"}
+                    </Button>
+                  </div>
+
+                  {!voiceReplyAllContacts && (
+                    <div className="space-y-1.5">
+                      {voiceReplyJids.map((jid) => (
+                        <div key={jid} className="flex items-center gap-2">
+                          <span className="flex-1 truncate font-mono text-xs bg-muted px-2 py-1 rounded">{jid}</span>
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeVoiceJid(jid)}>
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      ))}
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Phone number (e.g. 15551234567)"
+                          className="text-xs h-8"
+                          value={newVoiceJid}
+                          onChange={(e) => setNewVoiceJid(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && addVoiceJid()}
+                        />
+                        <Button size="sm" variant="outline" className="h-8 px-2" onClick={addVoiceJid}>
+                          <Plus className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

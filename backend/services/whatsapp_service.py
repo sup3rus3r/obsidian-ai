@@ -42,6 +42,31 @@ async def send_message(channel_id: int | str, wa_chat_id: str, text: str, should
         logger.exception("send_message: failed to reach sidecar: %s", e)
 
 
+async def send_audio(channel_id: int | str, wa_chat_id: str, ogg_bytes: bytes) -> None:
+    """Send an OGG Opus audio buffer as a WhatsApp voice note via the Baileys sidecar."""
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            await client.post(
+                f"{SIDECAR_URL}/channels/{channel_id}/send-audio",
+                content=ogg_bytes,
+                headers={"Content-Type": "audio/ogg", "X-WA-Chat-Id": wa_chat_id},
+            )
+    except Exception as e:
+        logger.exception("send_audio: failed to reach sidecar: %s", e)
+
+
+def _should_send_voice(channel: dict, wa_sender: str) -> bool:
+    """Return True if this sender should receive a voice reply."""
+    if not channel.get("voice_reply_enabled"):
+        return False
+    jids = channel.get("voice_reply_jids") or []
+    if not jids:
+        return True  # enabled for all contacts
+    sender_num = wa_sender.split("@")[0]
+    allowed_nums = {j.split("@")[0] for j in jids}
+    return sender_num in allowed_nums
+
+
 async def handle_incoming_message(payload: dict, db) -> None:
     """
     Route an incoming WhatsApp message to the correct agent session and reply.
@@ -161,7 +186,21 @@ async def _handle_sqlite(
         db.commit()
 
         should_quote = is_group or message_count > 1
-        await send_message(channel_id, wa_chat_id, reply, should_quote=should_quote)
+        channel_dict = {
+            "voice_reply_enabled": getattr(channel, "voice_reply_enabled", False),
+            "voice_reply_jids": json.loads(channel.voice_reply_jids) if getattr(channel, "voice_reply_jids", None) else [],
+            "voice_reply_voice": getattr(channel, "voice_reply_voice", None) or "marius",
+        }
+        if _should_send_voice(channel_dict, wa_chat_id):
+            try:
+                from services.tts_service import synthesize
+                ogg = await synthesize(reply, voice=channel_dict["voice_reply_voice"])
+                await send_audio(channel_id, wa_chat_id, ogg)
+            except Exception as e:
+                logger.warning("TTS failed, falling back to text: %s", e)
+                await send_message(channel_id, wa_chat_id, reply, should_quote=should_quote)
+        else:
+            await send_message(channel_id, wa_chat_id, reply, should_quote=should_quote)
 
 
 async def _run_agent_sqlite(session_id: int, user_message: str, agent_id: int, db) -> str | None:
@@ -280,7 +319,17 @@ async def _handle_mongo(
             "content": reply,
         })
         should_quote = is_group or message_count > 1
-        await send_message(channel_id, reply_chat_id, reply, should_quote=should_quote)
+        if _should_send_voice(channel, reply_chat_id):
+            try:
+                from services.tts_service import synthesize
+                voice = channel.get("voice_reply_voice") or "marius"
+                ogg = await synthesize(reply, voice=voice)
+                await send_audio(channel_id, reply_chat_id, ogg)
+            except Exception as e:
+                logger.warning("TTS failed, falling back to text: %s", e)
+                await send_message(channel_id, reply_chat_id, reply, should_quote=should_quote)
+        else:
+            await send_message(channel_id, reply_chat_id, reply, should_quote=should_quote)
 
 
 async def _run_agent_mongo(session_id: str, user_message: str, agent_id: str) -> str | None:

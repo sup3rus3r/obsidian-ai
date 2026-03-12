@@ -38,6 +38,9 @@ class WAChannelUpdate(BaseModel):
     agent_id: Optional[int | str] = None
     allowed_jids: Optional[list[str]] = None  # None = no change; [] = allow all
     reject_message: Optional[str] = None
+    voice_reply_enabled: Optional[bool] = None
+    voice_reply_jids: Optional[list[str]] = None  # None = no change; [] = all contacts
+    voice_reply_voice: Optional[str] = None  # Kokoro voice id, e.g. "af_heart"
 
 
 class WAIncomingMessage(BaseModel):
@@ -63,6 +66,9 @@ def _channel_dict(ch) -> dict:
         "status": ch.status,
         "allowed_jids": json.loads(ch.allowed_jids) if ch.allowed_jids else None,
         "reject_message": ch.reject_message,
+        "voice_reply_enabled": getattr(ch, "voice_reply_enabled", False) or False,
+        "voice_reply_jids": json.loads(ch.voice_reply_jids) if getattr(ch, "voice_reply_jids", None) else [],
+        "voice_reply_voice": getattr(ch, "voice_reply_voice", None) or "default",
         "is_active": ch.is_active,
         "created_at": ch.created_at.isoformat() if ch.created_at else None,
         "updated_at": ch.updated_at.isoformat() if ch.updated_at else None,
@@ -80,6 +86,9 @@ def _serialize_mongo_channel(ch: dict) -> dict:
         "status": ch.get("status", "disconnected"),
         "allowed_jids": ch.get("allowed_jids"),
         "reject_message": ch.get("reject_message"),
+        "voice_reply_enabled": ch.get("voice_reply_enabled", False),
+        "voice_reply_jids": ch.get("voice_reply_jids") or [],
+        "voice_reply_voice": ch.get("voice_reply_voice") or "default",
         "is_active": ch.get("is_active", True),
         "created_at": ch["created_at"].isoformat() if ch.get("created_at") else None,
         "updated_at": ch["updated_at"].isoformat() if ch.get("updated_at") else None,
@@ -217,6 +226,12 @@ async def update_channel(
             updates["allowed_jids"] = body.allowed_jids
         if body.reject_message is not None:
             updates["reject_message"] = body.reject_message
+        if body.voice_reply_enabled is not None:
+            updates["voice_reply_enabled"] = body.voice_reply_enabled
+        if body.voice_reply_jids is not None:
+            updates["voice_reply_jids"] = body.voice_reply_jids
+        if body.voice_reply_voice is not None:
+            updates["voice_reply_voice"] = body.voice_reply_voice
         ch = await WhatsAppChannelCollection.update(mongo_db, str(channel_id), str(current_user.user_id), updates)
         if not ch:
             raise HTTPException(404, "Channel not found")
@@ -238,6 +253,12 @@ async def update_channel(
         ch.allowed_jids = json.dumps(body.allowed_jids) if body.allowed_jids else None
     if body.reject_message is not None:
         ch.reject_message = body.reject_message or None
+    if body.voice_reply_enabled is not None:
+        ch.voice_reply_enabled = body.voice_reply_enabled
+    if body.voice_reply_jids is not None:
+        ch.voice_reply_jids = json.dumps(body.voice_reply_jids) if body.voice_reply_jids else None
+    if body.voice_reply_voice is not None:
+        ch.voice_reply_voice = body.voice_reply_voice or "af_heart"
     db.commit()
     db.refresh(ch)
     return _channel_dict(ch)

@@ -520,6 +520,42 @@ app.post("/channels/:id/send", async (req, res) => {
   }
 });
 
+/** Send an outgoing voice note (OGG Opus) */
+app.post("/channels/:id/send-audio", async (req, res) => {
+  const { id } = req.params;
+  const waChatId = req.headers["x-wa-chat-id"];
+
+  if (!waChatId) return res.status(400).json({ error: "Missing X-WA-Chat-Id header" });
+
+  const entry = channels.get(id);
+  if (!entry || entry.status !== "connected") {
+    return res.status(503).json({ error: "Channel not connected" });
+  }
+
+  try {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const audioBuffer = Buffer.concat(chunks);
+
+    const sent = await entry.socket.sendMessage(waChatId, {
+      audio: audioBuffer,
+      mimetype: "audio/ogg; codecs=opus",
+      ptt: true,  // ptt=true displays as a voice note in WhatsApp
+    });
+
+    if (sent?.key?.id) {
+      entry.recentSent.set(sent.key.id, sent.message);
+      if (entry.recentSent.size > 50) {
+        entry.recentSent.delete(entry.recentSent.keys().next().value);
+      }
+    }
+    res.json({ status: "sent" });
+  } catch (err) {
+    logger.error({ err }, "Failed to send audio message");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 /** SSE stream of QR / status events for a channel */
 app.get("/channels/:id/events", (req, res) => {
   const { id } = req.params;

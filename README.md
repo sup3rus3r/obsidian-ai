@@ -591,6 +591,41 @@ node index.js
 
 The WhatsApp bridge will be available at `http://localhost:3200`.
 
+### Voice Reply Setup (Optional)
+
+WhatsApp channels support AI-generated voice note replies powered by [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (Kyutai, CPU-native, ~471MB). This is **optional** — text replies work without it.
+
+**System requirement: ffmpeg**
+
+ffmpeg is required to convert synthesised audio to OGG Opus format for WhatsApp. Install it and ensure it is on your system PATH:
+
+```bash
+# Windows
+winget install ffmpeg
+
+# macOS
+brew install ffmpeg
+
+# Ubuntu / Debian
+sudo apt update && sudo apt install -y ffmpeg
+
+# Fedora / RHEL
+sudo dnf install ffmpeg
+
+# Arch Linux
+sudo pacman -S ffmpeg
+```
+
+> Restart the backend after installing ffmpeg so the new PATH is picked up.
+
+**Model download**
+
+The Pocket TTS model (~471MB) is downloaded automatically from HuggingFace on the first synthesis request and cached locally. The first voice reply will be slow while it downloads; all subsequent replies are fast (~3x faster than real-time on CPU).
+
+**Fallback**
+
+If Pocket TTS fails for any reason, the system automatically falls back to [Kokoro](https://github.com/hexgrad/kokoro) TTS. If both fail, the reply is sent as text.
+
 ### Docker Sandbox Base Image
 
 If you plan to use the Docker Sandbox feature, build the base image once before starting agents with sandbox enabled:
@@ -955,6 +990,7 @@ A lightweight Node.js sidecar (`wa-bridge/`) runs alongside the backend. It mana
 - **Persistent sessions** — Each `(channel, WhatsApp contact)` pair maps to a persistent Obsidian AI session; the agent remembers the full conversation history and applies long-term memory across interactions
 - **HITL in channels** — When a channel-triggered agent hits a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the top bar and unblocks automatically once actioned
 - **Voice note transcription** — Incoming WhatsApp voice notes are automatically transcribed using a local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) `small` model (244 MB, runs entirely on CPU, no external API). The transcript is passed to the agent as text — no audio files written to disk, no cloud services involved
+- **Voice note replies** — Optionally reply with a generated voice note instead of text. Powered by [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (Kyutai, ~471MB, CPU-native, ~3x faster than real-time) with automatic fallback to [Kokoro](https://github.com/hexgrad/kokoro). Enable per channel, choose from 8 voices, and optionally restrict voice replies to specific contacts. Requires `ffmpeg` on your system PATH (see [Voice Reply Setup](#voice-reply-setup-optional))
 - **Global HITL badge** — A new bell icon in the app header polls all sessions for pending approvals and lets you approve or reject tool calls from anywhere in the UI
 - **Auto-reconnect** — The sidecar reconnects all previously authenticated channels automatically on startup; no manual re-scanning after a restart
 
@@ -1051,6 +1087,7 @@ Agents and teams can now be assigned an isolated Docker container for safe, pers
 - [x] **WhatsApp** — Connect any agent to a WhatsApp account via QR code scan; the agent handles direct messages using the WhatsApp Web multi-device protocol — no Meta Business account required *(shipped)*
 - [x] **Channel session continuity** — Each WhatsApp contact maps to a persistent Obsidian AI session; the agent remembers previous conversations and applies long-term memory across channel interactions *(shipped)*
 - [x] **WhatsApp voice note transcription** — Incoming voice notes are transcribed locally using faster-whisper tiny (CPU, int8, ~39 MB model) and passed to the agent as text — no cloud STT, no temp files *(shipped)*
+- [x] **WhatsApp voice note replies** — Agents can reply with generated voice notes using Pocket TTS (CPU-native, ~471MB); per-channel toggle, 8 voices, per-contact targeting, automatic text fallback *(shipped)*
 - [x] **Channel HITL** — When a channel-connected agent triggers a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the web UI and unblocks automatically once actioned *(shipped)*
 - [ ] **Additional channels** — Discord, Slack, Signal, and Matrix following the same channel plugin architecture once Telegram and WhatsApp are stable
 
