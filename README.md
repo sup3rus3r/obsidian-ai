@@ -576,6 +576,21 @@ npm run dev
 
 The frontend will be available at `http://localhost:3000`.
 
+### WhatsApp Bridge Setup
+
+```bash
+# Navigate to the wa-bridge directory
+cd wa-bridge
+
+# Install Node.js dependencies
+npm install
+
+# Start the WhatsApp bridge
+node index.js
+```
+
+The WhatsApp bridge will be available at `http://localhost:3200`.
+
 ### Docker Sandbox Base Image
 
 If you plan to use the Docker Sandbox feature, build the base image once before starting agents with sandbox enabled:

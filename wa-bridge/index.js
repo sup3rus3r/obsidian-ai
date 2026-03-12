@@ -122,6 +122,7 @@ async function startChannel(channelId, authPath) {
     socket: sock,
     qrListeners: new Set(),
     status: "pending_qr",
+    lastQr: null,        // last QR PNG so new SSE listeners can replay it
     authDir: dir,
     lidMap: new Map(),   // lid JID → phone JID (from lid-mapping.update)
     recentSent,
@@ -140,6 +141,7 @@ async function startChannel(channelId, authPath) {
       entry.status = "pending_qr";
       // Render as base64 PNG so the frontend doesn't need a QR library
       const qrPng = await QRCode.toDataURL(qr, { width: 280, margin: 2 });
+      entry.lastQr = qrPng;
       for (const listener of entry.qrListeners) {
         listener(qrPng);
       }
@@ -147,6 +149,7 @@ async function startChannel(channelId, authPath) {
 
     if (connection === "open") {
       entry.status = "connected";
+      entry.lastQr = null;
       const phone = sock.user?.id?.split(":")[0] || null;
       logger.info({ channelId, phone }, "WhatsApp connected");
       await updateChannelStatus(channelId, "connected", phone);
@@ -493,6 +496,11 @@ app.get("/channels/:id/events", (req, res) => {
 
   entry.qrListeners.add(onQR);
 
+  // Replay last QR immediately if one was already generated before this listener connected
+  if (entry.lastQr) {
+    onQR(entry.lastQr);
+  }
+
   // Also watch for connection open via polling the entry status
   const poll = setInterval(() => {
     if (entry.status === "connected") {
@@ -535,6 +543,8 @@ app.listen(PORT, async () => {
       const dir = path.join(AUTH_BASE_DIR, channelId);
       // Only reconnect if creds.json exists (i.e. was previously authenticated)
       if (!fs.existsSync(path.join(dir, "creds.json"))) continue;
+      // Reset status to disconnected first — backend may show stale "connected" from a previous run
+      await updateChannelStatus(channelId, "disconnected").catch(() => {});
       logger.info({ channelId }, "Auto-reconnecting channel on startup");
       startChannel(channelId, dir).catch((err) =>
         logger.warn({ err, channelId }, "Auto-reconnect failed")
