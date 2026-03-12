@@ -4040,9 +4040,13 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
         # Update session token totals in Mongo (raw increment)
         _sessions_col = mongo_db["sessions"]
         from bson import ObjectId as _ObjId
+        from datetime import datetime as _dt
         await _sessions_col.update_one(
             {"_id": _ObjId(session_id)},
-            {"$inc": {"total_input_tokens": input_tokens, "total_output_tokens": output_tokens}},
+            {
+                "$inc": {"total_input_tokens": input_tokens, "total_output_tokens": output_tokens},
+                "$set": {"updated_at": _dt.utcnow()},
+            },
         )
         updated_session = await SessionCollection.find_by_id(mongo_db, session_id)
 
@@ -4439,9 +4443,13 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
             # Update session token totals in Mongo (raw increment)
             _sessions_col = mongo_db["sessions"]
             from bson import ObjectId as _ObjId
+            from datetime import datetime as _dt
             await _sessions_col.update_one(
                 {"_id": _ObjId(session_id)},
-                {"$inc": {"total_input_tokens": input_tokens, "total_output_tokens": output_tokens}},
+                {
+                    "$inc": {"total_input_tokens": input_tokens, "total_output_tokens": output_tokens},
+                    "$set": {"updated_at": _dt.utcnow()},
+                },
             )
             updated_session = await SessionCollection.find_by_id(mongo_db, session_id)
 

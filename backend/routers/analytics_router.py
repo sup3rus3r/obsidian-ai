@@ -47,22 +47,23 @@ def _empty_overview() -> AnalyticsOverviewResponse:
 # ─── Mongo helpers ────────────────────────────────────────────────────────────
 
 async def _mongo_get_spans_for_user(mongo_db, user_id: str, since: datetime, span_types=None) -> list[dict]:
-    """Fetch all trace spans belonging to sessions owned by user, optionally filtered by span_type."""
+    """Fetch all trace spans belonging to sessions owned by user, filtered by span created_at."""
     sessions = await SessionCollection.find_by_user(mongo_db, user_id)
-    since_naive = since.replace(tzinfo=None) if since.tzinfo else since
-    session_ids = [
-        str(s["_id"]) for s in sessions
-        if s.get("created_at") and (
-            s["created_at"] if s["created_at"].tzinfo is None else s["created_at"].replace(tzinfo=None)
-        ) >= since_naive
-    ]
+    session_ids = [str(s["_id"]) for s in sessions]
     if not session_ids:
         return []
 
+    since_naive = since.replace(tzinfo=None) if since.tzinfo else since
     spans = []
     for sid in session_ids:
         s_spans = await TraceSpanCollection.find_by_session(mongo_db, sid)
-        spans.extend(s_spans)
+        for sp in s_spans:
+            created = sp.get("created_at")
+            if created:
+                created_naive = created.replace(tzinfo=None) if created.tzinfo else created
+                if created_naive < since_naive:
+                    continue
+            spans.append(sp)
 
     if span_types:
         spans = [s for s in spans if s.get("span_type") in span_types]
@@ -70,14 +71,18 @@ async def _mongo_get_spans_for_user(mongo_db, user_id: str, since: datetime, spa
 
 
 async def _mongo_get_sessions_for_user(mongo_db, user_id: str, since: datetime) -> list[dict]:
+    """Return sessions that have activity (updated_at or created_at) within the time range."""
     sessions = await SessionCollection.find_by_user(mongo_db, user_id)
     since_naive = since.replace(tzinfo=None) if since.tzinfo else since
-    return [
-        s for s in sessions
-        if s.get("created_at") and (
-            s["created_at"] if s["created_at"].tzinfo is None else s["created_at"].replace(tzinfo=None)
-        ) >= since_naive
-    ]
+    result = []
+    for s in sessions:
+        # Use updated_at if available (reflects last chat), fall back to created_at
+        ts = s.get("updated_at") or s.get("created_at")
+        if ts:
+            ts_naive = ts.replace(tzinfo=None) if ts.tzinfo else ts
+            if ts_naive >= since_naive:
+                result.append(s)
+    return result
 
 
 # ─── Overview ────────────────────────────────────────────────────────────────
