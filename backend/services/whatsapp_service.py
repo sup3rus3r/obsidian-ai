@@ -17,13 +17,26 @@ logger = logging.getLogger(__name__)
 SIDECAR_URL = os.environ.get("WA_SIDECAR_URL", "http://localhost:3200")
 
 
-async def send_message(channel_id: int | str, wa_chat_id: str, text: str) -> None:
+async def send_typing(channel_id: int | str, wa_chat_id: str, action: str = "composing") -> None:
+    """Send a typing presence update (composing/paused) via the Baileys sidecar."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(
+                f"{SIDECAR_URL}/channels/{channel_id}/typing",
+                json={"wa_chat_id": wa_chat_id, "action": action},
+            )
+    except Exception:
+        pass  # Non-critical — don't let typing failures affect message delivery
+
+
+async def send_message(channel_id: int | str, wa_chat_id: str, text: str, should_quote: bool = False) -> None:
     """Send a text message back to a WhatsApp chat via the Baileys sidecar."""
     try:
+        body = {"wa_chat_id": wa_chat_id, "text": text, "should_quote": should_quote}
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
+            await client.post(
                 f"{SIDECAR_URL}/channels/{channel_id}/send",
-                json={"wa_chat_id": wa_chat_id, "text": text},
+                json=body,
             )
     except Exception as e:
         logger.exception("send_message: failed to reach sidecar: %s", e)
@@ -40,12 +53,14 @@ async def handle_incoming_message(payload: dict, db) -> None:
     wa_sender = payload["wa_sender"]
     wa_lid = payload.get("wa_lid")
     message_text = payload["message_text"]
+    is_group = payload.get("is_group", False)
     wa_group_name = payload.get("wa_group_name")
+    message_count = payload.get("message_count", 1)
 
     if DATABASE_TYPE == "mongo":
-        await _handle_mongo(channel_id, wa_chat_id, wa_sender, message_text, wa_lid=wa_lid, wa_group_name=wa_group_name)
+        await _handle_mongo(channel_id, wa_chat_id, wa_sender, message_text, wa_lid=wa_lid, wa_group_name=wa_group_name, is_group=is_group, message_count=message_count)
     else:
-        await _handle_sqlite(channel_id, wa_chat_id, wa_sender, message_text, db, wa_lid=wa_lid, wa_group_name=wa_group_name)
+        await _handle_sqlite(channel_id, wa_chat_id, wa_sender, message_text, db, wa_lid=wa_lid, wa_group_name=wa_group_name, is_group=is_group, message_count=message_count)
 
 
 # ── SQLite ────────────────────────────────────────────────────────────────────
@@ -58,6 +73,8 @@ async def _handle_sqlite(
     db,
     wa_lid: str = None,
     wa_group_name: str = None,
+    is_group: bool = False,
+    message_count: int = 1,
 ) -> None:
     from models import WhatsAppChannel, WAContactSession, Session as ChatSession, Message
 
@@ -85,18 +102,22 @@ async def _handle_sqlite(
                     await send_message(channel_id, wa_chat_id, channel.reject_message)
                 return
 
-    # Get or create a session for this (channel, wa_chat_id) pair
+    # In group chats, key sessions per sender so each member has their own conversation.
+    # In DMs, key by wa_chat_id (the contact's JID) as before.
+    session_key = wa_sender if is_group else wa_chat_id
+
     contact_session = db.query(WAContactSession).filter(
         WAContactSession.channel_id == channel_id,
-        WAContactSession.wa_chat_id == wa_chat_id,
+        WAContactSession.wa_chat_id == session_key,
     ).first()
 
     if not contact_session:
+        title = f"{wa_group_name}/{wa_sender}" if is_group else wa_chat_id
         session = ChatSession(
             user_id=channel.user_id,
             entity_type="agent",
             entity_id=channel.agent_id,
-            title=wa_chat_id,
+            title=title,
         )
         db.add(session)
         db.commit()
@@ -104,7 +125,7 @@ async def _handle_sqlite(
 
         contact_session = WAContactSession(
             channel_id=channel_id,
-            wa_chat_id=wa_chat_id,
+            wa_chat_id=session_key,
             session_id=session.id,
         )
         db.add(contact_session)
@@ -124,8 +145,10 @@ async def _handle_sqlite(
     db.add(user_msg)
     db.commit()
 
-    # Run the agent headlessly
+    # Show typing indicator while agent is running
+    await send_typing(channel_id, wa_chat_id, "composing")
     reply = await _run_agent_sqlite(session.id, message_text, channel.agent_id, db)
+    await send_typing(channel_id, wa_chat_id, "paused")
 
     if reply:
         # Save assistant message
@@ -137,7 +160,8 @@ async def _handle_sqlite(
         db.add(assistant_msg)
         db.commit()
 
-        await send_message(channel_id, wa_chat_id, reply)
+        should_quote = is_group or message_count > 1
+        await send_message(channel_id, wa_chat_id, reply, should_quote=should_quote)
 
 
 async def _run_agent_sqlite(session_id: int, user_message: str, agent_id: int, db) -> str | None:
@@ -154,6 +178,8 @@ async def _handle_mongo(
     message_text: str,
     wa_lid: str = None,
     wa_group_name: str = None,
+    is_group: bool = False,
+    message_count: int = 1,
 ) -> None:
     from database_mongo import get_database
     from models_mongo import WhatsAppChannelCollection, WAContactSessionCollection, SessionCollection, MessageCollection
@@ -190,27 +216,28 @@ async def _handle_mongo(
                     await send_message(channel_id, wa_chat_id, reject_msg)
                 return
 
-    # Get or create contact session.
-    # WA multi-device uses @lid JIDs which are random internal identifiers unrelated to phone numbers.
-    # Resolution order:
-    #   1. Exact match on wa_chat_id (normal @s.whatsapp.net or already-stored @lid)
-    #   2. If wa_chat_id is @lid, look up by stored wa_lid field (set on first message from this contact)
+    # In group chats, key sessions per sender so each member has their own conversation.
+    # In DMs, key by wa_chat_id as before.
+    # WA multi-device uses @lid JIDs; for DMs we do the usual lid resolution.
+    session_key = wa_sender if is_group else wa_chat_id
+    reply_chat_id = wa_chat_id  # always reply to the group/DM chat
+
     contact = await WAContactSessionCollection.find_by_channel_and_chat(
-        mongo_db, str(channel_id), wa_chat_id
+        mongo_db, str(channel_id), session_key
     )
 
-    if not contact and wa_chat_id.endswith("@lid"):
+    if not contact and not is_group and wa_chat_id.endswith("@lid"):
         contact = await WAContactSessionCollection.find_by_lid(mongo_db, str(channel_id), wa_chat_id)
         if contact:
-            # Use the stored canonical chat_id for sending the reply
-            wa_chat_id = contact["wa_chat_id"]
+            reply_chat_id = contact["wa_chat_id"]
 
     if not contact:
+        title = f"{wa_group_name}/{wa_sender}" if is_group else wa_chat_id
         session = await SessionCollection.create(mongo_db, {
             "user_id": channel["user_id"],
             "entity_type": "agent",
             "entity_id": channel["agent_id"],
-            "title": wa_chat_id,
+            "title": title,
             "is_active": True,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
@@ -219,17 +246,15 @@ async def _handle_mongo(
         session_id = str(session["_id"])
         contact_data = {
             "channel_id": str(channel_id),
-            "wa_chat_id": wa_chat_id,
+            "wa_chat_id": session_key,
             "session_id": session_id,
         }
-        # Store the @lid so future messages with this lid resolve to this session
-        if wa_lid:
+        if wa_lid and not is_group:
             contact_data["wa_lid"] = wa_lid
         await WAContactSessionCollection.create(mongo_db, contact_data)
     else:
         session_id = contact["session_id"]
-        # If we have a lid now but didn't store it before, update the session
-        if wa_lid and not contact.get("wa_lid"):
+        if wa_lid and not is_group and not contact.get("wa_lid"):
             await WAContactSessionCollection.update_lid(mongo_db, str(channel_id), contact["wa_chat_id"], wa_lid)
 
     # Save user message
@@ -239,11 +264,14 @@ async def _handle_mongo(
         "content": message_text,
     })
 
+    await send_typing(channel_id, reply_chat_id, "composing")
     try:
         reply = await _run_agent_mongo(session_id, message_text, channel["agent_id"])
     except Exception as e:
         logger.exception("handle_incoming_message: agent run failed for session %s: %s", session_id, e)
+        await send_typing(channel_id, reply_chat_id, "paused")
         return
+    await send_typing(channel_id, reply_chat_id, "paused")
 
     if reply:
         await MessageCollection.create(mongo_db, {
@@ -251,7 +279,8 @@ async def _handle_mongo(
             "role": "assistant",
             "content": reply,
         })
-        await send_message(channel_id, wa_chat_id, reply)
+        should_quote = is_group or message_count > 1
+        await send_message(channel_id, reply_chat_id, reply, should_quote=should_quote)
 
 
 async def _run_agent_mongo(session_id: str, user_message: str, agent_id: str) -> str | None:

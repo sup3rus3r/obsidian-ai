@@ -118,6 +118,8 @@ async function startChannel(channelId, authPath) {
     },
   });
 
+  const lastMsgCache = new Map(); // bufKey → last raw Baileys WAMessage (never serialized)
+
   const entry = {
     socket: sock,
     qrListeners: new Set(),
@@ -126,6 +128,7 @@ async function startChannel(channelId, authPath) {
     authDir: dir,
     lidMap: new Map(),   // lid JID → phone JID (from lid-mapping.update)
     recentSent,
+    lastMsgCache,
   };
   channels.set(String(channelId), entry);
   starting.delete(String(channelId));
@@ -153,6 +156,8 @@ async function startChannel(channelId, authPath) {
       const phone = sock.user?.id?.split(":")[0] || null;
       logger.info({ channelId, phone }, "WhatsApp connected");
       await updateChannelStatus(channelId, "connected", phone);
+      // Announce global available presence so typing indicators are visible to contacts
+      sock.sendPresenceUpdate("available").catch(() => {});
     }
 
     if (connection === "close") {
@@ -224,17 +229,23 @@ async function startChannel(channelId, authPath) {
   // Dedup: per-socket-instance seen message IDs
   const seenMsgIds = new Set();
 
-  // Per-chat debounce buffer: key = phone prefix, value = { timer, lines, meta }
+  // Per-chat debounce buffer: key = phone prefix, value = { timer, lines, meta, lastMsg }
   const chatBuffers = new Map();
   const DEBOUNCE_MS = 1000;
 
   function flushChat(bufKey) {
     const buf = chatBuffers.get(bufKey);
     if (!buf) return;
+    // Store the last Baileys msg object in the per-entry cache before clearing the buffer
+    if (buf.lastMsg) lastMsgCache.set(bufKey, buf.lastMsg);
     chatBuffers.delete(bufKey);
     const combinedText = buf.lines.join("\n");
     _origStdoutWrite(`[WA-BRIDGE] flushing bufKey=${bufKey} lines=${buf.lines.length} text=${JSON.stringify(combinedText)}\n`);
-    notifyBackend(channelId, { ...buf.meta, message_text: combinedText }).catch((e) => {
+    notifyBackend(channelId, {
+      ...buf.meta,
+      message_text: combinedText,
+      message_count: buf.lines.length,
+    }).catch((e) => {
       _origStdoutWrite(`[WA-BRIDGE] notifyBackend error: ${e}\n`);
     });
   }
@@ -352,10 +363,12 @@ async function startChannel(channelId, authPath) {
         const buf = chatBuffers.get(bufKey);
         clearTimeout(buf.timer);
         buf.lines.push(text);
+        buf.lastMsg = msg;
         buf.timer = setTimeout(() => flushChat(bufKey), DEBOUNCE_MS);
       } else {
         chatBuffers.set(bufKey, {
           lines: [text],
+          lastMsg: msg,
           meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: waLid, is_group: isGroup, wa_group_name: waGroupName },
           timer: setTimeout(() => flushChat(bufKey), DEBOUNCE_MS),
         });
@@ -394,14 +407,18 @@ async function startChannel(channelId, authPath) {
       const isGroup = rawChatId?.endsWith("@g.us") || false;
       const bufKey = waChatId.split("@")[0];
 
+      // Reconstruct a minimal WAMessage-shaped object for quoting
+      const syntheticMsg = { key: update.key, message: update.update.message };
       if (chatBuffers.has(bufKey)) {
         const buf = chatBuffers.get(bufKey);
         clearTimeout(buf.timer);
         buf.lines.push(text);
+        buf.lastMsg = syntheticMsg;
         buf.timer = setTimeout(() => flushChat(bufKey), DEBOUNCE_MS);
       } else {
         chatBuffers.set(bufKey, {
           lines: [text],
+          lastMsg: syntheticMsg,
           meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: null, is_group: isGroup },
           timer: setTimeout(() => flushChat(bufKey), DEBOUNCE_MS),
         });
@@ -449,10 +466,33 @@ app.post("/channels/:id/stop", (req, res) => {
   res.json({ status: "stopped" });
 });
 
+/** Typing presence — composing or paused */
+app.post("/channels/:id/typing", async (req, res) => {
+  const { id } = req.params;
+  const { wa_chat_id, action } = req.body; // action: "composing" | "paused"
+  const entry = channels.get(id);
+  if (!entry || entry.status !== "connected") {
+    return res.status(503).json({ error: "Channel not connected" });
+  }
+  try {
+    _origStdoutWrite(`[WA-BRIDGE] typing ${action} → ${wa_chat_id}\n`);
+    if (action !== "paused") {
+      // Subscribe to presence for this chat so WA relays our typing to participants
+      await entry.socket.presenceSubscribe(wa_chat_id).catch(() => {});
+      await entry.socket.sendPresenceUpdate("available", wa_chat_id);
+    }
+    await entry.socket.sendPresenceUpdate(action === "paused" ? "paused" : "composing", wa_chat_id);
+    res.json({ status: "ok" });
+  } catch (err) {
+    _origStdoutWrite(`[WA-BRIDGE] typing presence error: ${err?.message || err}\n`);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 /** Send an outgoing message */
 app.post("/channels/:id/send", async (req, res) => {
   const { id } = req.params;
-  const { wa_chat_id, text } = req.body;
+  const { wa_chat_id, text, should_quote } = req.body;
 
   const entry = channels.get(id);
   if (!entry || entry.status !== "connected") {
@@ -460,7 +500,11 @@ app.post("/channels/:id/send", async (req, res) => {
   }
 
   try {
-    const sent = await entry.socket.sendMessage(wa_chat_id, { text });
+    // Look up the cached Baileys message object (never serialized — lives in sidecar memory)
+    const bufKey = wa_chat_id.split("@")[0];
+    const cachedMsg = should_quote ? entry.lastMsgCache?.get(bufKey) : null;
+    const sendOpts = cachedMsg ? { quoted: cachedMsg } : {};
+    const sent = await entry.socket.sendMessage(wa_chat_id, { text }, sendOpts);
     // Cache for retry: if recipient's decryption fails, WA asks us to resend
     if (sent?.key?.id) {
       entry.recentSent.set(sent.key.id, sent.message);

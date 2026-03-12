@@ -13,9 +13,20 @@ actioned from the web UI exactly as with regular sessions.
 import asyncio
 import json
 import logging
+import re
 import time
 
 from config import DATABASE_TYPE
+
+_ARTIFACT_RE = re.compile(
+    r"<artifact(?:_patch)?\b[^>]*>.*?</artifact(?:_patch)?>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_artifacts(text: str) -> str:
+    """Remove any artifact/artifact_patch XML blocks from a WA reply."""
+    return _ARTIFACT_RE.sub("", text).strip()
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +67,6 @@ async def _run_headless_sqlite(session_id: int, agent_id: int, db) -> str | None
         _execute_tool,
         _build_tools_for_llm,
         _build_memory_injection,
-        _ARTIFACT_SYSTEM_HINT,
         _SANDBOX_SYSTEM_HINT,
         _MEMORY_CAP,
     )
@@ -109,7 +119,7 @@ async def _run_headless_sqlite(session_id: int, agent_id: int, db) -> str | None
     system_prompt = (
         (agent.system_prompt or "")
         + _build_memory_injection(_agent_memories)
-        + _ARTIFACT_SYSTEM_HINT
+        + "\n\nIMPORTANT: You are responding via WhatsApp. Reply in plain text only. Do NOT use artifacts, XML tags, or markdown code blocks. Keep responses concise and conversational."
         + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "")
     )
 
@@ -225,7 +235,7 @@ async def _run_headless_sqlite(session_id: int, agent_id: int, db) -> str | None
 
         full_content = ""
 
-    return full_content or None
+    return _strip_artifacts(full_content) or None
 
 
 # ── MongoDB ───────────────────────────────────────────────────────────────────
@@ -244,7 +254,6 @@ async def _run_headless_mongo(session_id: str, agent_id: str) -> str | None:
         _execute_tool_mongo,
         _build_tools_for_llm_mongo,
         _build_memory_injection_dicts,
-        _ARTIFACT_SYSTEM_HINT,
         _SANDBOX_SYSTEM_HINT,
         _MEMORY_CAP,
     )
@@ -289,7 +298,7 @@ async def _run_headless_mongo(session_id: str, agent_id: str) -> str | None:
     system_prompt = (
         (agent.get("system_prompt") or "")
         + _build_memory_injection_dicts(_agent_memories)
-        + _ARTIFACT_SYSTEM_HINT
+        + "\n\nIMPORTANT: You are responding via WhatsApp. Reply in plain text only. Do NOT use artifacts, XML tags, or markdown code blocks. Keep responses concise and conversational."
         + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "")
     )
 
@@ -396,4 +405,4 @@ async def _run_headless_mongo(session_id: str, agent_id: str) -> str | None:
 
         full_content = ""
 
-    return full_content or None
+    return _strip_artifacts(full_content) or None
