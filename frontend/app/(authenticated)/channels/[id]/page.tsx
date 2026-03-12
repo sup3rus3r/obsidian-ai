@@ -53,6 +53,7 @@ export default function ChannelDetailPage() {
   const [editRejectMessage, setEditRejectMessage] = useState("")
   const [allowAll, setAllowAll] = useState(true)
   const [newJid, setNewJid] = useState("")
+  const [isGroupEntry, setIsGroupEntry] = useState(false)
   const [saving, setSaving] = useState(false)
 
   // QR state
@@ -182,12 +183,15 @@ export default function ChannelDetailPage() {
   const addJid = () => {
     const jid = newJid.trim()
     if (!jid) return
-    // Normalise: if user enters a phone number, convert to JID format
-    const normalised = jid.includes("@") ? jid : `${jid.replace(/\D/g, "")}@s.whatsapp.net`
+    // Group entries stored as-is; phone numbers get @s.whatsapp.net appended
+    const normalised = isGroupEntry
+      ? jid
+      : jid.includes("@") ? jid : `${jid.replace(/\D/g, "")}@s.whatsapp.net`
     if (!editAllowedJids.includes(normalised)) {
       setEditAllowedJids((prev) => [...prev, normalised])
     }
     setNewJid("")
+    setIsGroupEntry(false)
   }
 
   const removeJid = (jid: string) => setEditAllowedJids((prev) => prev.filter((j) => j !== jid))
@@ -324,6 +328,9 @@ export default function ChannelDetailPage() {
                 {/* Existing JIDs */}
                 {editAllowedJids.map((jid) => (
                   <div key={jid} className="flex items-center gap-2 text-sm">
+                    {!jid.includes("@") && (
+                      <Badge variant="secondary" className="text-xs px-1.5 py-0 shrink-0">group</Badge>
+                    )}
                     <span className="flex-1 truncate font-mono text-xs bg-muted px-2 py-1 rounded">{jid}</span>
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeJid(jid)}>
                       <X className="h-3 w-3" />
@@ -332,8 +339,17 @@ export default function ChannelDetailPage() {
                 ))}
                 {/* Add new */}
                 <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant={isGroupEntry ? "default" : "outline"}
+                    className="h-8 text-xs shrink-0"
+                    onClick={() => setIsGroupEntry((v) => !v)}
+                    title="Toggle to add a group name instead of a phone number"
+                  >
+                    Group
+                  </Button>
                   <Input
-                    placeholder="Phone number or JID (e.g. 15551234567)"
+                    placeholder={isGroupEntry ? "Group name (e.g. Sales Team)" : "Phone number (e.g. 15551234567)"}
                     className="text-xs h-8"
                     value={newJid}
                     onChange={(e) => setNewJid(e.target.value)}

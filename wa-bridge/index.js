@@ -286,6 +286,13 @@ async function startChannel(channelId, authPath) {
       // but we can't reliably convert — store as waLid so backend can match by lid
       const waLid = rawChatId?.endsWith("@lid") ? rawChatId : (rawSender?.endsWith("@lid") ? rawSender : null);
       const isGroup = rawChatId?.endsWith("@g.us") || false;
+      let waGroupName = null;
+      if (isGroup) {
+        try {
+          const meta = await sock.groupMetadata(rawChatId);
+          waGroupName = meta?.subject || null;
+        } catch (_) {}
+      }
 
       let text =
         msg.message?.conversation ||
@@ -349,7 +356,7 @@ async function startChannel(channelId, authPath) {
       } else {
         chatBuffers.set(bufKey, {
           lines: [text],
-          meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: waLid, is_group: isGroup },
+          meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: waLid, is_group: isGroup, wa_group_name: waGroupName },
           timer: setTimeout(() => flushChat(bufKey), DEBOUNCE_MS),
         });
       }

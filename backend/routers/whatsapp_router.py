@@ -47,6 +47,7 @@ class WAIncomingMessage(BaseModel):
     wa_lid: Optional[str] = None  # Raw @lid JID if sender was resolved from lid
     message_text: str
     is_group: bool = False
+    wa_group_name: Optional[str] = None  # Display name of the group (groups only)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

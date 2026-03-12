@@ -33,18 +33,19 @@ async def handle_incoming_message(payload: dict, db) -> None:
     """
     Route an incoming WhatsApp message to the correct agent session and reply.
 
-    payload keys: channel_id, wa_chat_id, wa_sender, message_text, is_group
+    payload keys: channel_id, wa_chat_id, wa_sender, message_text, is_group, wa_group_name
     """
     channel_id = payload["channel_id"]
     wa_chat_id = payload["wa_chat_id"]
     wa_sender = payload["wa_sender"]
     wa_lid = payload.get("wa_lid")
     message_text = payload["message_text"]
+    wa_group_name = payload.get("wa_group_name")
 
     if DATABASE_TYPE == "mongo":
-        await _handle_mongo(channel_id, wa_chat_id, wa_sender, message_text, wa_lid=wa_lid)
+        await _handle_mongo(channel_id, wa_chat_id, wa_sender, message_text, wa_lid=wa_lid, wa_group_name=wa_group_name)
     else:
-        await _handle_sqlite(channel_id, wa_chat_id, wa_sender, message_text, db, wa_lid=wa_lid)
+        await _handle_sqlite(channel_id, wa_chat_id, wa_sender, message_text, db, wa_lid=wa_lid, wa_group_name=wa_group_name)
 
 
 # ── SQLite ────────────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ async def _handle_sqlite(
     message_text: str,
     db,
     wa_lid: str = None,
+    wa_group_name: str = None,
 ) -> None:
     from models import WhatsAppChannel, WAContactSession, Session as ChatSession, Message
 
@@ -69,13 +71,16 @@ async def _handle_sqlite(
         return
 
     # Whitelist check — compare by phone number prefix (before @) to handle @lid vs @s.whatsapp.net
+    # Group name entries (no @ suffix) are matched against wa_group_name
     if channel.allowed_jids:
         allowed = json.loads(channel.allowed_jids)
         if allowed:
             sender_num = wa_sender.split("@")[0]
             lid_num = wa_lid.split("@")[0] if wa_lid else None
-            allowed_nums = {j.split("@")[0] for j in allowed}
-            if sender_num not in allowed_nums and lid_num not in allowed_nums:
+            allowed_nums = {j.split("@")[0] for j in allowed if "@" in j}
+            allowed_group_names = {j for j in allowed if "@" not in j}
+            group_allowed = bool(wa_group_name and wa_group_name in allowed_group_names)
+            if not group_allowed and sender_num not in allowed_nums and lid_num not in allowed_nums:
                 if channel.reject_message:
                     await send_message(channel_id, wa_chat_id, channel.reject_message)
                 return
@@ -148,6 +153,7 @@ async def _handle_mongo(
     wa_sender: str,
     message_text: str,
     wa_lid: str = None,
+    wa_group_name: str = None,
 ) -> None:
     from database_mongo import get_database
     from models_mongo import WhatsAppChannelCollection, WAContactSessionCollection, SessionCollection, MessageCollection
@@ -161,12 +167,15 @@ async def _handle_mongo(
         return
 
     # Whitelist check — compare by phone number prefix (before @) to handle @lid vs @s.whatsapp.net
+    # Group name entries (no @ suffix) are matched against wa_group_name
     allowed = channel.get("allowed_jids")
     if allowed:
         sender_num = wa_sender.split("@")[0]
         lid_num = wa_lid.split("@")[0] if wa_lid else None
-        allowed_nums = {j.split("@")[0] for j in allowed}
-        if sender_num not in allowed_nums and lid_num not in allowed_nums:
+        allowed_nums = {j.split("@")[0] for j in allowed if "@" in j}
+        allowed_group_names = {j for j in allowed if "@" not in j}
+        group_allowed = bool(wa_group_name and wa_group_name in allowed_group_names)
+        if not group_allowed and sender_num not in allowed_nums and lid_num not in allowed_nums:
             # Before rejecting: check if this LID belongs to an existing session
             # (WA multi-device switches to @lid JIDs after first reply — the sender was previously allowed)
             lid_allowed = False
