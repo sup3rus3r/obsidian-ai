@@ -579,6 +579,15 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add memory_enabled to agents if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE agents ADD COLUMN memory_enabled BOOLEAN DEFAULT 1"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
         # Add sandbox columns to agents if missing
         for col, typedef in [
             ("sandbox_enabled", "BOOLEAN DEFAULT 0"),

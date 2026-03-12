@@ -64,6 +64,7 @@ class Agent(Base):
     model_id      = Column(String, nullable=True)              # model to use, e.g. "claude-sonnet-4-6"
     hitl_confirmation_tools_json = Column(Text, nullable=True)  # JSON array of tool names requiring HITL
     allow_tool_creation = Column(Boolean, default=False, nullable=False)  # agent can propose new tools
+    memory_enabled       = Column(Boolean, default=True, nullable=False)   # long-term memory toggle
     sandbox_enabled      = Column(Boolean, default=False, nullable=False)  # Docker sandbox toggle
     sandbox_container_id = Column(String, nullable=True)                   # running container ID
     sandbox_host_port    = Column(Integer, nullable=True)                  # mapped host port

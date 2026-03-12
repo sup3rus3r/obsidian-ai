@@ -1777,18 +1777,21 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     if not provider_record:
         raise HTTPException(status_code=404, detail="Provider not found")
 
+    _memory_enabled = getattr(agent, "memory_enabled", True)
+
     # Trigger memory reflection on most recent unprocessed prior session (background)
-    _prior_session = db.query(SessionModel).filter(
-        SessionModel.entity_type == "agent",
-        SessionModel.entity_id == agent.id,
-        SessionModel.user_id == int(current_user.user_id),
-        SessionModel.memory_processed == False,
-        SessionModel.id != int(request.session_id),
-    ).order_by(SessionModel.updated_at.desc()).first()
-    if _prior_session:
-        asyncio.create_task(_reflect_and_store_sqlite(
-            agent.id, provider_record, agent.model_id, _prior_session.id, int(current_user.user_id)
-        ))
+    if _memory_enabled:
+        _prior_session = db.query(SessionModel).filter(
+            SessionModel.entity_type == "agent",
+            SessionModel.entity_id == agent.id,
+            SessionModel.user_id == int(current_user.user_id),
+            SessionModel.memory_processed == False,
+            SessionModel.id != int(request.session_id),
+        ).order_by(SessionModel.updated_at.desc()).first()
+        if _prior_session:
+            asyncio.create_task(_reflect_and_store_sqlite(
+                agent.id, provider_record, agent.model_id, _prior_session.id, int(current_user.user_id)
+            ))
 
     api_key = decrypt_api_key(provider_record.api_key) if provider_record.api_key else None
     config = json.loads(provider_record.config_json) if provider_record.config_json else None
@@ -1804,7 +1807,7 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     _agent_memories = db.query(AgentMemory).filter(
         AgentMemory.agent_id == agent.id,
         AgentMemory.user_id == int(current_user.user_id),
-    ).order_by(AgentMemory.created_at.desc()).limit(_MEMORY_CAP).all()
+    ).order_by(AgentMemory.created_at.desc()).limit(_MEMORY_CAP).all() if _memory_enabled else []
 
     _edit_target = _edit_target_early
     _sandbox_active = getattr(agent, "sandbox_enabled", False) and getattr(agent, "sandbox_container_id", None)
@@ -3608,23 +3611,25 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
 
     _agent_id_str = str(agent["_id"])
     _user_id_str = current_user.user_id
+    _memory_enabled_mongo = agent.get("memory_enabled", True)
 
     # Trigger memory reflection on most recent unprocessed prior session (background)
-    _all_prior = await SessionCollection.find_by_user(
-        mongo_db, _user_id_str, entity_type="agent", entity_id=_agent_id_str
-    )
-    _prior_unprocessed = [
-        s for s in _all_prior
-        if not s.get("memory_processed", False) and str(s["_id"]) != request.session_id
-    ]
-    if _prior_unprocessed:
-        _prior_s = sorted(_prior_unprocessed, key=lambda s: s.get("updated_at") or s["created_at"], reverse=True)[0]
-        asyncio.create_task(_reflect_and_store_mongo(
-            _agent_id_str, provider_record, agent.get("model_id"), str(_prior_s["_id"]), _user_id_str
-        ))
+    if _memory_enabled_mongo:
+        _all_prior = await SessionCollection.find_by_user(
+            mongo_db, _user_id_str, entity_type="agent", entity_id=_agent_id_str
+        )
+        _prior_unprocessed = [
+            s for s in _all_prior
+            if not s.get("memory_processed", False) and str(s["_id"]) != request.session_id
+        ]
+        if _prior_unprocessed:
+            _prior_s = sorted(_prior_unprocessed, key=lambda s: s.get("updated_at") or s["created_at"], reverse=True)[0]
+            asyncio.create_task(_reflect_and_store_mongo(
+                _agent_id_str, provider_record, agent.get("model_id"), str(_prior_s["_id"]), _user_id_str
+            ))
 
     # Inject long-term memories into the system prompt
-    _agent_memories_mongo = await AgentMemoryCollection.find_by_agent_user(mongo_db, _agent_id_str, _user_id_str)
+    _agent_memories_mongo = await AgentMemoryCollection.find_by_agent_user(mongo_db, _agent_id_str, _user_id_str) if _memory_enabled_mongo else []
 
     llm = _create_llm_for_mongo_provider(provider_record, agent.get("model_id") or provider_record.get("model_id") or "gpt-4o")
     _edit_target_mongo = _edit_target_mongo_early

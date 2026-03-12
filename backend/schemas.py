@@ -150,6 +150,7 @@ class AgentCreate(BaseModel):
     knowledge_base_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: bool = False
+    memory_enabled: bool = True
     sandbox_enabled: bool = False
     config: Optional[dict] = None
 
@@ -164,6 +165,7 @@ class AgentUpdate(BaseModel):
     knowledge_base_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: Optional[bool] = None
+    memory_enabled: Optional[bool] = None
     sandbox_enabled: Optional[bool] = None
     config: Optional[dict] = None
 
@@ -179,6 +181,7 @@ class AgentResponse(BaseModel):
     knowledge_base_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: bool = False
+    memory_enabled: bool = True
     sandbox_enabled: bool = False
     sandbox_container_id: Optional[str] = None
     sandbox_host_port: Optional[int] = None

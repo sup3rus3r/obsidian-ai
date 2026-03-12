@@ -218,6 +218,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [selectedKBs, setSelectedKBs] = useState<string[]>([])
   const [hitlTools, setHitlTools] = useState<string[]>([])
   const [allowToolCreation, setAllowToolCreation] = useState(false)
+  const [memoryEnabled, setMemoryEnabled] = useState(true)
   const [sandboxEnabled, setSandboxEnabled] = useState(false)
   const [sandboxRunning, setSandboxRunning] = useState(false)
   const [sandboxLoading, setSandboxLoading] = useState(false)
@@ -266,6 +267,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setSelectedKBs(agent.knowledge_base_ids || [])
       setHitlTools(agent.hitl_confirmation_tools || [])
       setAllowToolCreation(agent.allow_tool_creation ?? false)
+      setMemoryEnabled(agent.memory_enabled ?? true)
       setSandboxEnabled(agent.sandbox_enabled ?? false)
       setSandboxRunning(agent.sandbox_container_id != null && agent.sandbox_enabled === true)
       apiClient.listAgentMemories(agent.id).then(setMemories).catch(() => {})
@@ -311,6 +313,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           knowledge_base_ids: selectedKBs,
           hitl_confirmation_tools: hitlTools.length > 0 ? hitlTools : undefined,
           allow_tool_creation: allowToolCreation,
+          memory_enabled: memoryEnabled,
           sandbox_enabled: sandboxEnabled,
         })
         setAgents(agents.map((a) => (a.id === updated.id ? updated : a)))
@@ -327,6 +330,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           knowledge_base_ids: selectedKBs.length > 0 ? selectedKBs : undefined,
           hitl_confirmation_tools: hitlTools.length > 0 ? hitlTools : undefined,
           allow_tool_creation: allowToolCreation,
+          memory_enabled: memoryEnabled,
           sandbox_enabled: sandboxEnabled,
         })
         setAgents([...agents, newAgent])
@@ -408,6 +412,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     setSelectedKBs([])
     setHitlTools([])
     setAllowToolCreation(false)
+    setMemoryEnabled(true)
     setError("")
     setMemories([])
     setVersions([])
@@ -1022,26 +1027,43 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                     </span>
                   )}
                 </Label>
-                {memories.length > 0 && (
+                <div className="flex items-center gap-2">
+                  {memories.length > 0 && memoryEnabled && (
+                    <button
+                      type="button"
+                      onClick={handleClearMemories}
+                      disabled={clearingMemories}
+                      className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"
+                    >
+                      {clearingMemories ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3 w-3" />
+                      )}
+                      Clear all
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={handleClearMemories}
-                    disabled={clearingMemories}
-                    className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"
+                    onClick={() => setMemoryEnabled((v) => !v)}
+                    className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                      memoryEnabled
+                        ? "bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/30 hover:bg-violet-500/20"
+                        : "bg-muted text-muted-foreground border-border hover:bg-muted/80"
+                    }`}
                   >
-                    {clearingMemories ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3 w-3" />
-                    )}
-                    Clear all
+                    {memoryEnabled ? "On" : "Off"}
                   </button>
-                )}
+                </div>
               </div>
               <p className="text-xs text-muted-foreground -mt-1">
                 Facts distilled automatically from past conversations. Injected into every session with this agent.
               </p>
-              {memories.length === 0 ? (
+              {!memoryEnabled ? (
+                <p className="text-xs text-muted-foreground italic">
+                  Memory is disabled. The agent will not retain or use facts from past conversations.
+                </p>
+              ) : memories.length === 0 ? (
                 <p className="text-xs text-muted-foreground italic">
                   No memories yet. Start a new session after finishing a conversation — the agent will reflect and distill key facts automatically.
                 </p>

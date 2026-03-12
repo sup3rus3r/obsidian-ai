@@ -96,10 +96,11 @@ async def _run_headless_sqlite(session_id: int, agent_id: int, db) -> str | None
     )
 
     # Build system prompt (memories + hints, no artifact context for channel msgs)
+    _memory_enabled = getattr(agent, "memory_enabled", True)
     _agent_memories = db.query(AgentMemory).filter(
         AgentMemory.agent_id == agent.id,
         AgentMemory.user_id == agent.user_id,
-    ).order_by(AgentMemory.created_at.desc()).limit(_MEMORY_CAP).all()
+    ).order_by(AgentMemory.created_at.desc()).limit(_MEMORY_CAP).all() if _memory_enabled else []
 
     _sandbox_active = (
         getattr(agent, "sandbox_enabled", False) and
@@ -280,9 +281,10 @@ async def _run_headless_mongo(session_id: str, agent_id: str) -> str | None:
         config=config,
     )
 
+    _memory_enabled = agent.get("memory_enabled", True)
     _agent_memories = (await AgentMemoryCollection.find_by_agent_user(
         mongo_db, agent_id, str(agent.get("user_id", ""))
-    ))[:_MEMORY_CAP]
+    ))[:_MEMORY_CAP] if _memory_enabled else []
     _sandbox_active = agent.get("sandbox_enabled") and agent.get("sandbox_container_id")
     system_prompt = (
         (agent.get("system_prompt") or "")

@@ -22,6 +22,7 @@ export interface Agent {
   knowledge_base_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
+  memory_enabled?: boolean
   sandbox_enabled?: boolean
   sandbox_container_id?: string | null
   sandbox_host_port?: number | null
@@ -157,6 +158,7 @@ export interface CreateAgentRequest {
   knowledge_base_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
+  memory_enabled?: boolean
   sandbox_enabled?: boolean
   config?: Record<string, unknown>
 }
@@ -172,6 +174,7 @@ export interface UpdateAgentRequest {
   knowledge_base_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
+  memory_enabled?: boolean
   sandbox_enabled?: boolean
   config?: Record<string, unknown>
 }

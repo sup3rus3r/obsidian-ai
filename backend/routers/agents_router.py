@@ -142,6 +142,7 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
             knowledge_base_ids=knowledge_base_ids,
             hitl_confirmation_tools=hitl_confirmation_tools,
             allow_tool_creation=bool(agent.get("allow_tool_creation", False)),
+            memory_enabled=bool(agent.get("memory_enabled", True)),
             sandbox_enabled=bool(agent.get("sandbox_enabled", False)),
             sandbox_container_id=agent.get("sandbox_container_id"),
             sandbox_host_port=agent.get("sandbox_host_port"),
@@ -170,6 +171,7 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
         knowledge_base_ids=knowledge_base_ids,
         hitl_confirmation_tools=hitl_confirmation_tools,
         allow_tool_creation=bool(agent.allow_tool_creation),
+        memory_enabled=bool(getattr(agent, "memory_enabled", True)),
         sandbox_enabled=bool(agent.sandbox_enabled),
         sandbox_container_id=agent.sandbox_container_id,
         sandbox_host_port=agent.sandbox_host_port,
@@ -206,6 +208,7 @@ async def create_agent(
             "knowledge_base_ids_json": kb_ids_str,
             "hitl_confirmation_tools_json": hitl_tools_str,
             "allow_tool_creation": data.allow_tool_creation,
+            "memory_enabled": data.memory_enabled,
             "config_json": config_str,
         }
         created = await AgentCollection.create(mongo_db, doc)
@@ -223,6 +226,7 @@ async def create_agent(
         knowledge_base_ids_json=kb_ids_str,
         hitl_confirmation_tools_json=hitl_tools_str,
         allow_tool_creation=data.allow_tool_creation,
+        memory_enabled=data.memory_enabled,
         config_json=config_str,
     )
     db.add(agent)
