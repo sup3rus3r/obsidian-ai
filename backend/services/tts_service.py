@@ -297,10 +297,10 @@ def _run_synthesis(
                 actual_ref_text = ref_text or ""
                 if not actual_ref_text:
                     try:
-                        from faster_whisper import WhisperModel
-                        _wm = WhisperModel("small", device="cpu", compute_type="int8")
+                        from routers.whatsapp_router import _get_whisper_model
+                        _wm = _get_whisper_model()
+                        import io as _io
                         with open(ref_audio, "rb") as _f:
-                            import io as _io
                             _buf = _io.BytesIO(_f.read())
                         segs, _ = _wm.transcribe(_buf, beam_size=1)
                         actual_ref_text = " ".join(s.text.strip() for s in segs).strip()
