@@ -173,7 +173,7 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Mic className="h-4 w-4 text-violet-500" />
@@ -187,12 +187,12 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
         {/* Step 1: guided script */}
         {mode === "guide" && (
           <div className="space-y-4">
-            <div className="rounded-md border bg-muted/30 p-4">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+            <div className="rounded-md border bg-muted/30 p-5">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                 Read this aloud:
                 {scriptLoading && <span className="ml-2 normal-case font-normal text-muted-foreground animate-pulse">generating…</span>}
               </p>
-              <p className="text-sm leading-relaxed italic">"{voiceScript}"</p>
+              <p className="text-base leading-relaxed italic">"{voiceScript}"</p>
             </div>
             <p className="text-xs text-muted-foreground">
               Tip: speak naturally at a normal pace in a quiet environment. The recording should be at least 5 seconds.
@@ -221,8 +221,8 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
         {mode === "record" && (
           <div className="space-y-4">
             {/* Script reminder */}
-            <div className="rounded-md border bg-muted/20 p-3 max-h-28 overflow-y-auto">
-              <p className="text-xs text-muted-foreground italic leading-relaxed">"{voiceScript}"</p>
+            <div className="rounded-md border bg-muted/20 p-4 max-h-40 overflow-y-auto">
+              <p className="text-sm text-muted-foreground italic leading-relaxed">"{voiceScript}"</p>
             </div>
 
             <div className="flex flex-col items-center gap-3 py-2">
