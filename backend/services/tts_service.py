@@ -291,10 +291,10 @@ def _run_synthesis(
     use_qwen = backend == "qwen" or (backend != "classic" and _has_cuda())
 
     if use_qwen:
-        # Voice clone path
-        if ref_audio and ref_text and os.path.isfile(ref_audio):
+        # Voice clone path — ref_text is optional; pass empty string if not provided
+        if ref_audio and os.path.isfile(ref_audio):
             try:
-                wav = _synthesize_qwen_clone(text, ref_audio, ref_text)
+                wav = _synthesize_qwen_clone(text, ref_audio, ref_text or "")
                 logger.debug("Synthesized with Qwen3-TTS voice clone")
                 return _wav_to_ogg_opus(wav, speed=1.08)
             except Exception as e:
