@@ -21,13 +21,16 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, TokenData
 from config import DATABASE_TYPE
 from database import get_db
-from models import Agent, OptimizationRun, AgentVersion
+from models import Agent, OptimizationRun, AgentVersion, PromptVault
 from schemas import (
     OptimizationRunResponse,
     OptimizationRunListResponse,
     FailurePattern,
     TriggerOptimizationRequest,
     RejectOptimizationRequest,
+    OptimizerSaveToVaultRequest,
+    OptimizerUpdateVaultRequest,
+    PromptVaultResponse,
 )
 from optimizer import start_optimization_sqlite, start_optimization_mongo
 
@@ -37,6 +40,7 @@ if DATABASE_TYPE == "mongo":
         AgentCollection,
         OptimizationRunCollection,
         AgentVersionCollection,
+        PromptVaultCollection,
     )
 
 router = APIRouter(prefix="/optimizer", tags=["optimizer"])
@@ -331,6 +335,126 @@ async def reject_optimization(
     db.commit()
     db.refresh(run)
     return _run_to_response(run)
+
+
+# ─── POST /optimizer/runs/{run_id}/save-to-vault ─────────────────────────────
+
+@router.post("/runs/{run_id}/save-to-vault", response_model=PromptVaultResponse)
+async def save_to_vault(
+    run_id: str,
+    body: OptimizerSaveToVaultRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Save the proposed prompt as a new entry in the prompt vault."""
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        run = await OptimizationRunCollection.find_by_id(mongo_db, run_id)
+        if not run or run.get("user_id") != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if not run.get("proposed_prompt"):
+            raise HTTPException(status_code=400, detail="No proposed prompt to save")
+        doc = await PromptVaultCollection.create(mongo_db, {
+            "user_id": current_user.user_id,
+            "name": body.name.strip(),
+            "description": body.description,
+            "content": run["proposed_prompt"],
+        })
+        return PromptVaultResponse(
+            id=str(doc["_id"]),
+            name=doc["name"],
+            description=doc.get("description"),
+            content=doc["content"],
+            created_at=doc["created_at"],
+            updated_at=doc.get("updated_at"),
+        )
+
+    run = db.query(OptimizationRun).filter(
+        OptimizationRun.id == int(run_id),
+        OptimizationRun.user_id == int(current_user.user_id),
+    ).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not run.proposed_prompt:
+        raise HTTPException(status_code=400, detail="No proposed prompt to save")
+
+    prompt = PromptVault(
+        user_id=int(current_user.user_id),
+        name=body.name.strip(),
+        description=body.description,
+        content=run.proposed_prompt,
+    )
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    return PromptVaultResponse(
+        id=str(prompt.id),
+        name=prompt.name,
+        description=prompt.description,
+        content=prompt.content,
+        created_at=prompt.created_at,
+        updated_at=prompt.updated_at,
+    )
+
+
+# ─── POST /optimizer/runs/{run_id}/update-vault ───────────────────────────────
+
+@router.post("/runs/{run_id}/update-vault", response_model=PromptVaultResponse)
+async def update_vault_entry(
+    run_id: str,
+    body: OptimizerUpdateVaultRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Overwrite an existing vault entry with the proposed prompt."""
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        run = await OptimizationRunCollection.find_by_id(mongo_db, run_id)
+        if not run or run.get("user_id") != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if not run.get("proposed_prompt"):
+            raise HTTPException(status_code=400, detail="No proposed prompt to save")
+        updated = await PromptVaultCollection.update(
+            mongo_db, body.vault_id, current_user.user_id, {"content": run["proposed_prompt"]}
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Vault entry not found")
+        return PromptVaultResponse(
+            id=str(updated["_id"]),
+            name=updated["name"],
+            description=updated.get("description"),
+            content=updated["content"],
+            created_at=updated["created_at"],
+            updated_at=updated.get("updated_at"),
+        )
+
+    run = db.query(OptimizationRun).filter(
+        OptimizationRun.id == int(run_id),
+        OptimizationRun.user_id == int(current_user.user_id),
+    ).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not run.proposed_prompt:
+        raise HTTPException(status_code=400, detail="No proposed prompt to save")
+
+    prompt = db.query(PromptVault).filter(
+        PromptVault.id == int(body.vault_id),
+        PromptVault.user_id == int(current_user.user_id),
+    ).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="Vault entry not found")
+
+    prompt.content = run.proposed_prompt
+    db.commit()
+    db.refresh(prompt)
+    return PromptVaultResponse(
+        id=str(prompt.id),
+        name=prompt.name,
+        description=prompt.description,
+        content=prompt.content,
+        created_at=prompt.created_at,
+        updated_at=prompt.updated_at,
+    )
 
 
 # ─── DELETE /optimizer/runs/{run_id} ─────────────────────────────────────────

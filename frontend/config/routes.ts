@@ -23,6 +23,8 @@ export const Routes = {
   OBSERVABILITY   : '/observability',
   SETTINGS        : '/settings',
   CHANNELS        : '/channels',
+  SECRETS         : '/secrets',
+  PROMPTS         : '/prompts',
 } as const;
 
 
@@ -86,6 +88,18 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Channels',
     allowedRoles: ['admin', 'user'],
     description: 'WhatsApp and messaging channel integrations',
+  },
+  {
+    path: Routes.SECRETS,
+    label: 'Secrets Vault',
+    allowedRoles: ['admin', 'user'],
+    description: 'Encrypted secrets and API keys',
+  },
+  {
+    path: Routes.PROMPTS,
+    label: 'Prompt Vault',
+    allowedRoles: ['admin', 'user'],
+    description: 'Reusable system prompt templates',
   },
 ];
 

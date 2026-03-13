@@ -74,6 +74,10 @@ class ApiClient {
     this.accessToken = token
   }
 
+  getAuthHeaders(): Record<string, string> {
+    return this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}
+  }
+
   private async request<T>(
     url: string,
     options: RequestInit = {},

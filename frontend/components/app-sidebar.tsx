@@ -15,6 +15,8 @@ import {
   FlaskConical,
   BarChart2,
   MessageCircle,
+  Key,
+  BookMarked,
 } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
@@ -28,19 +30,39 @@ import { cn } from "@/lib/utils"
 import { Routes } from "@/config/routes"
 import Logo from "./ui/logo"
 
-const navItems = [
-  { label: "Home", icon: Home, path: Routes.DASHBOARD },
-  { label: "Chat", icon: MessageSquare, path: Routes.PLAYGROUND },
-  { label: "Sessions", icon: History, path: Routes.SESSIONS },
-  { label: "Knowledge", icon: BookOpen, path: Routes.KNOWLEDGE },
-  { label: "Evals", icon: FlaskConical, path: Routes.EVALS },
-  { label: "Observability", icon: BarChart2, path: Routes.OBSERVABILITY },
-  { label: "Channels", icon: MessageCircle, path: Routes.CHANNELS },
-  { label: "Settings", icon: Settings, path: Routes.SETTINGS },
+type NavItem = { label: string; icon: React.ElementType; path: string }
+
+const mainItems: NavItem[] = [
+  { label: "Home",         icon: Home,          path: Routes.DASHBOARD },
+  { label: "Chat",         icon: MessageSquare, path: Routes.PLAYGROUND },
+  { label: "Sessions",     icon: History,       path: Routes.SESSIONS },
 ]
 
-const adminItems = [
-  { label: "Admin", icon: Shield, path: Routes.ADMIN_PANEL },
+const vaultItems: NavItem[] = [
+  { label: "Knowledge",    icon: BookOpen,      path: Routes.KNOWLEDGE },
+  { label: "Prompts",      icon: BookMarked,    path: Routes.PROMPTS },
+  { label: "Secrets",      icon: Key,           path: Routes.SECRETS },
+]
+
+const toolItems: NavItem[] = [
+  { label: "Evals",        icon: FlaskConical,  path: Routes.EVALS },
+  { label: "Observability",icon: BarChart2,     path: Routes.OBSERVABILITY },
+  { label: "Channels",     icon: MessageCircle, path: Routes.CHANNELS },
+]
+
+const systemItems: NavItem[] = [
+  { label: "Settings",     icon: Settings,      path: Routes.SETTINGS },
+]
+
+const adminItems: NavItem[] = [
+  { label: "Admin",        icon: Shield,        path: Routes.ADMIN_PANEL },
+]
+
+const groups: { label: string; items: NavItem[] }[] = [
+  { label: "",        items: mainItems },
+  { label: "Vaults",  items: vaultItems },
+  { label: "Tools",   items: toolItems },
+  { label: "System",  items: systemItems },
 ]
 
 export function AppSidebar() {
@@ -48,38 +70,49 @@ export function AppSidebar() {
   const { data: session } = useSession()
   const userRole = (session?.user as { role?: string })?.role
 
-  const allItems = userRole === "admin"
-    ? [...navItems.slice(0, 3), ...adminItems, ...navItems.slice(3)]
-    : navItems
+  const isActive = (item: NavItem) =>
+    pathname === item.path ||
+    (item.path === Routes.PLAYGROUND && pathname.startsWith("/playground"))
+
+  const renderItem = (item: NavItem) => (
+    <Link
+      key={item.path}
+      href={item.path}
+      className={cn(
+        "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+        isActive(item)
+          ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+          : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+      )}
+    >
+      <item.icon className="h-4 w-4 shrink-0" />
+      <span>{item.label}</span>
+    </Link>
+  )
 
   return (
     <div className="flex flex-col h-full w-54 bg-sidebar text-sidebar-foreground border-r border-sidebar-border shrink-0">
-      {/* Logo / Brand */}
+      {/* Logo */}
       <div className="flex items-center justify-center h-12 px-4 border-b border-sidebar-border">
-        <Logo className={'h-5'}/>
+        <Logo className="h-5" />
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-3 space-y-1">
-        {allItems.map((item) => {
-          const isActive = pathname === item.path ||
-            (item.path === Routes.PLAYGROUND && pathname.startsWith("/playground"))
-          return (
-            <Link
-              key={item.path}
-              href={item.path}
-              className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
-                isActive
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                  : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-              )}
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              <span>{item.label}</span>
-            </Link>
-          )
-        })}
+      <nav className="flex-1 px-3 py-3 overflow-y-auto">
+        {groups.map((group, gi) => (
+          <div key={gi} className={gi > 0 ? "mt-4" : ""}>
+            {group.label && (
+              <p className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
+                {group.label}
+              </p>
+            )}
+            <div className="space-y-1">
+              {group.items.map(renderItem)}
+              {/* Inject admin item after System group */}
+              {group.label === "System" && userRole === "admin" && adminItems.map(renderItem)}
+            </div>
+          </div>
+        ))}
       </nav>
 
       {/* User section */}
@@ -94,7 +127,8 @@ export function AppSidebar() {
               </Avatar>
               <div className="flex-1 min-w-0 text-left">
                 <p className="text-xs font-semibold uppercase truncate">
-                  {(session?.user?.name || session?.user?.email || "User").charAt(0).toUpperCase() + (session?.user?.name || session?.user?.email || "User").slice(1)}
+                  {(session?.user?.name || session?.user?.email || "User").charAt(0).toUpperCase() +
+                    (session?.user?.name || session?.user?.email || "User").slice(1)}
                 </p>
               </div>
               <ChevronDown className="h-3 w-3 text-muted-foreground" />

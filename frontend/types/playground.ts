@@ -15,6 +15,7 @@ export interface Agent {
   name: string
   description?: string
   system_prompt?: string
+  prompt_vault_id?: string | null
   provider_id?: string
   model_id?: string
   tools?: string[]
@@ -29,6 +30,15 @@ export interface Agent {
   config?: Record<string, unknown>
   is_active: boolean
   created_at: string
+}
+
+export interface PromptVaultEntry {
+  id: string
+  name: string
+  description?: string | null
+  content: string
+  created_at: string
+  updated_at?: string | null
 }
 
 export interface Team {

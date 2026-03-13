@@ -164,6 +164,7 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
         name=agent.name,
         description=agent.description,
         system_prompt=agent.system_prompt,
+        prompt_vault_id=str(agent.prompt_vault_id) if agent.prompt_vault_id else None,
         provider_id=str(agent.provider_id) if agent.provider_id else None,
         model_id=agent.model_id,
         tools=tools,
@@ -219,6 +220,7 @@ async def create_agent(
         name=data.name,
         description=data.description,
         system_prompt=data.system_prompt,
+        prompt_vault_id=int(data.prompt_vault_id) if data.prompt_vault_id else None,
         provider_id=int(data.provider_id) if data.provider_id else None,
         model_id=data.model_id,
         tools_json=tools_str,
@@ -326,7 +328,7 @@ async def update_agent(
 
     _snapshot_agent_sqlite(db, agent, "Manual edit")
     for key, value in updates.items():
-        if key == "provider_id" and value:
+        if key in ("provider_id", "prompt_vault_id") and value:
             value = int(value)
         setattr(agent, key, value)
     db.commit()

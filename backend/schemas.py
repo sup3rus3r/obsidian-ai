@@ -143,6 +143,7 @@ class AgentCreate(BaseModel):
     name: str
     description: Optional[str] = None
     system_prompt: Optional[str] = None
+    prompt_vault_id: Optional[str] = None
     provider_id: Optional[str] = None
     model_id: Optional[str] = None
     tools: Optional[list[str]] = None
@@ -158,6 +159,7 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     system_prompt: Optional[str] = None
+    prompt_vault_id: Optional[str] = None
     provider_id: Optional[str] = None
     model_id: Optional[str] = None
     tools: Optional[list[str]] = None
@@ -174,6 +176,7 @@ class AgentResponse(BaseModel):
     name: str
     description: Optional[str] = None
     system_prompt: Optional[str] = None
+    prompt_vault_id: Optional[str] = None
     provider_id: Optional[str] = None
     model_id: Optional[str] = None
     tools: Optional[list[str]] = None
@@ -1030,3 +1033,42 @@ class TriggerOptimizationRequest(BaseModel):
 
 class RejectOptimizationRequest(BaseModel):
     reason: Optional[str] = None
+
+
+# ============================================================================
+# Prompt Vault Schemas
+# ============================================================================
+
+class PromptVaultCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    content: str
+
+class PromptVaultUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    content: Optional[str] = None
+
+class PromptVaultResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    content: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class PromptVaultListResponse(BaseModel):
+    prompts: list[PromptVaultResponse]
+
+
+# ─── Optimizer Vault Actions ──────────────────────────────────────────────────
+
+class OptimizerSaveToVaultRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class OptimizerUpdateVaultRequest(BaseModel):
+    vault_id: str

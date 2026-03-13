@@ -45,6 +45,7 @@ from routers.settings_router import router as settings_router
 from routers.sandbox_router import router as sandbox_router
 from routers.analytics_router import router as analytics_router
 from routers.whatsapp_router import router as whatsapp_router
+from routers.prompt_vault_router import router as prompt_vault_router
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import connect_to_mongo, close_mongo_connection, get_database
@@ -657,6 +658,32 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Create prompt_vault table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS prompt_vault (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id     INTEGER NOT NULL REFERENCES users(id),
+                    name        TEXT NOT NULL,
+                    description TEXT,
+                    content     TEXT NOT NULL,
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  DATETIME
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add prompt_vault_id to agents if missing
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE agents ADD COLUMN prompt_vault_id INTEGER"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 
 # ── Module-level APScheduler job functions ────────────────────────────────────
 # Must be at module scope (not closures) so APScheduler can pickle them for the
@@ -955,6 +982,7 @@ app.include_router(settings_router)
 app.include_router(sandbox_router)
 app.include_router(analytics_router)
 app.include_router(whatsapp_router)
+app.include_router(prompt_vault_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

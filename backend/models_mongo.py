@@ -692,6 +692,51 @@ class UserSecretCollection:
         return result.deleted_count > 0
 
 
+class PromptVaultCollection:
+    collection_name = "prompt_vault"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("user_id")
+
+    @classmethod
+    async def find_by_user(cls, db, user_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"user_id": user_id}).sort("created_at", -1)
+        return await cursor.to_list(length=200)
+
+    @classmethod
+    async def find_by_id(cls, db, prompt_id: str) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        return await collection.find_one({"_id": ObjectId(prompt_id)})
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        data["updated_at"] = None
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def update(cls, db, prompt_id: str, user_id: str, updates: dict) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        updates["updated_at"] = datetime.utcnow()
+        return await collection.find_one_and_update(
+            {"_id": ObjectId(prompt_id), "user_id": user_id},
+            {"$set": updates},
+            return_document=True,
+        )
+
+    @classmethod
+    async def delete(cls, db, prompt_id: str, user_id: str) -> bool:
+        collection = db[cls.collection_name]
+        result = await collection.delete_one({"_id": ObjectId(prompt_id), "user_id": user_id})
+        return result.deleted_count > 0
+
+
 class KnowledgeBaseCollection:
     collection_name = "knowledge_bases"
 

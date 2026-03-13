@@ -196,4 +196,15 @@ export const AppRoutes = {
 
     // Global HITL (all sessions)
     HITLGlobalPending   : () => "/api/chat/hitl/pending",
+
+    // Prompt Vault
+    ListPrompts             : () => "/api/prompt-vault",
+    CreatePrompt            : () => "/api/prompt-vault",
+    GetPrompt               : (id: string) => `/api/prompt-vault/${id}`,
+    UpdatePrompt            : (id: string) => `/api/prompt-vault/${id}`,
+    DeletePrompt            : (id: string) => `/api/prompt-vault/${id}`,
+
+    // Optimizer Vault Actions
+    OptimizerSaveToVault    : (runId: string) => `/api/optimizer/runs/${runId}/save-to-vault`,
+    OptimizerUpdateVault    : (runId: string) => `/api/optimizer/runs/${runId}/update-vault`,
 }

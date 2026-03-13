@@ -23,8 +23,9 @@ import {
 import Link from "next/link"
 import { apiClient } from "@/lib/api-client"
 import { usePlaygroundStore } from "@/stores/playground-store"
-import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite } from "@/types/playground"
-import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square } from "lucide-react"
+import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite, PromptVaultEntry } from "@/types/playground"
+import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked } from "lucide-react"
+import { AppRoutes } from "@/app/api/routes"
 
 // ─── Version diff helpers ────────────────────────────────────────────────────
 
@@ -245,6 +246,20 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [optPollTimer, setOptPollTimer] = useState<ReturnType<typeof setInterval> | null>(null)
   const [evalSuites, setEvalSuites] = useState<EvalSuite[]>([])
   const [selectedEvalSuiteId, setSelectedEvalSuiteId] = useState<string>("none")
+  // Prompt vault state
+  const [promptVaultId, setPromptVaultId] = useState<string | null>(null)
+  const [vaultPickerOpen, setVaultPickerOpen] = useState(false)
+  const [vaultEntries, setVaultEntries] = useState<PromptVaultEntry[]>([])
+  const [loadingVault, setLoadingVault] = useState(false)
+  // Optimizer vault actions state
+  const [saveToVaultOpen, setSaveToVaultOpen] = useState(false)
+  const [updateVaultOpen, setUpdateVaultOpen] = useState(false)
+  const [vaultSaveName, setVaultSaveName] = useState("")
+  const [vaultSaveDesc, setVaultSaveDesc] = useState("")
+  const [savingToVault, setSavingToVault] = useState(false)
+  const [optVaultEntries, setOptVaultEntries] = useState<PromptVaultEntry[]>([])
+  const [selectedOptVaultId, setSelectedOptVaultId] = useState<string>("")
+  const [updatingVault, setUpdatingVault] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -270,6 +285,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setMemoryEnabled(agent.memory_enabled ?? true)
       setSandboxEnabled(agent.sandbox_enabled ?? false)
       setSandboxRunning(agent.sandbox_container_id != null && agent.sandbox_enabled === true)
+      setPromptVaultId(agent.prompt_vault_id ?? null)
       apiClient.listAgentMemories(agent.id).then(setMemories).catch(() => {})
       setVersions([])
       setVersionsOpen(false)
@@ -290,6 +306,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setActiveOptRun(null)
       setSandboxEnabled(false)
       setSandboxRunning(false)
+      setPromptVaultId(null)
     }
     return () => {
       if (optPollTimer) clearInterval(optPollTimer)
@@ -306,6 +323,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           name,
           description: description || undefined,
           system_prompt: systemPrompt || undefined,
+          prompt_vault_id: promptVaultId ?? undefined,
           provider_id: providerId || undefined,
           model_id: modelId || undefined,
           tools: selectedTools,
@@ -323,6 +341,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           name,
           description: description || undefined,
           system_prompt: systemPrompt || undefined,
+          prompt_vault_id: promptVaultId ?? undefined,
           provider_id: providerId || undefined,
           model_id: modelId || undefined,
           tools: selectedTools.length > 0 ? selectedTools : undefined,
@@ -588,6 +607,56 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     }
   }
 
+  const handleSaveToVault = async () => {
+    if (!activeOptRun || !vaultSaveName.trim()) return
+    setSavingToVault(true)
+    try {
+      const res = await fetch(AppRoutes.OptimizerSaveToVault(String(activeOptRun.id)), {
+        method: "POST",
+        headers: { ...apiClient.getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ name: vaultSaveName.trim(), description: vaultSaveDesc.trim() || null }),
+      })
+      if (!res.ok) throw new Error("Failed to save")
+      setSaveToVaultOpen(false)
+      setVaultSaveName("")
+      setVaultSaveDesc("")
+    } catch { /* ignore */ } finally {
+      setSavingToVault(false)
+    }
+  }
+
+  const handleUpdateVault = async () => {
+    if (!activeOptRun || !selectedOptVaultId) return
+    setUpdatingVault(true)
+    try {
+      const res = await fetch(AppRoutes.OptimizerUpdateVault(String(activeOptRun.id)), {
+        method: "POST",
+        headers: { ...apiClient.getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ vault_id: selectedOptVaultId }),
+      })
+      if (!res.ok) throw new Error("Failed to update")
+      setUpdateVaultOpen(false)
+      setSelectedOptVaultId("")
+    } catch { /* ignore */ } finally {
+      setUpdatingVault(false)
+    }
+  }
+
+  const openUpdateVaultDialog = async () => {
+    try {
+      const res = await fetch(AppRoutes.ListPrompts(), {
+        headers: apiClient.getAuthHeaders(),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setOptVaultEntries(data.prompts || [])
+        // pre-select if agent has a vault source
+        if (promptVaultId) setSelectedOptVaultId(promptVaultId)
+      }
+    } catch {}
+    setUpdateVaultOpen(true)
+  }
+
   const handleDeleteOptRun = async (runId: string) => {
     setOptimizationRuns((prev) => prev.filter((r) => String(r.id) !== runId))
     if (activeOptRun && String(activeOptRun.id) === runId) setActiveOptRun(null)
@@ -679,7 +748,45 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="system-prompt">System Prompt</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="system-prompt">System Prompt</Label>
+              <button
+                type="button"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={async () => {
+                  setLoadingVault(true)
+                  try {
+                    const res = await fetch(AppRoutes.ListPrompts(), {
+                      headers: apiClient.getAuthHeaders(),
+                    })
+                    if (res.ok) {
+                      const data = await res.json()
+                      setVaultEntries(data.prompts || [])
+                    }
+                  } catch {}
+                  setLoadingVault(false)
+                  setVaultPickerOpen(true)
+                }}
+              >
+                {loadingVault
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <BookMarked className="h-3 w-3" />}
+                Load from vault
+              </button>
+            </div>
+            {promptVaultId && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <BookMarked className="h-3 w-3" />
+                Loaded from vault
+                <button
+                  type="button"
+                  className="ml-1 underline hover:no-underline"
+                  onClick={() => setPromptVaultId(null)}
+                >
+                  detach
+                </button>
+              </p>
+            )}
             <Textarea
               id="system-prompt"
               value={systemPrompt}
@@ -689,6 +796,49 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               className="resize-none"
             />
           </div>
+
+          {/* Vault Picker Dialog */}
+          <Dialog open={vaultPickerOpen} onOpenChange={setVaultPickerOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Load from Prompt Vault</DialogTitle>
+                <DialogDescription>
+                  Select a prompt to load into the system prompt field.
+                </DialogDescription>
+              </DialogHeader>
+              {vaultEntries.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No prompts in your vault yet.
+                </p>
+              ) : (
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {vaultEntries.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className="w-full text-left p-3 border rounded-md hover:border-primary/50 hover:bg-muted/30 transition-colors"
+                      onClick={() => {
+                        setSystemPrompt(entry.content)
+                        setPromptVaultId(entry.id)
+                        setVaultPickerOpen(false)
+                      }}
+                    >
+                      <p className="text-sm font-medium">{entry.name}</p>
+                      {entry.description && (
+                        <p className="text-xs text-muted-foreground mt-0.5">{entry.description}</p>
+                      )}
+                      <p className="text-xs text-muted-foreground/60 mt-1 line-clamp-2 font-mono">
+                        {entry.content}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setVaultPickerOpen(false)}>Cancel</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {/* Tools Section */}
           <div className="grid gap-2">
@@ -1264,9 +1414,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                         </div>
                       )}
 
-                      {/* Accept / Reject */}
+                      {/* Accept / Reject / Vault */}
                       {activeOptRun.status === "awaiting_review" && (
-                        <div className="flex items-center gap-2 pt-1">
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
                           <Button
                             type="button"
                             size="sm"
@@ -1285,6 +1435,30 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                             type="button"
                             size="sm"
                             variant="outline"
+                            onClick={() => { setVaultSaveName(""); setVaultSaveDesc(""); setSaveToVaultOpen(true) }}
+                            disabled={acceptingOpt || rejectingOpt}
+                            className="h-7 text-xs gap-1.5"
+                          >
+                            <BookMarked className="h-3 w-3" />
+                            Save to vault
+                          </Button>
+                          {promptVaultId && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={openUpdateVaultDialog}
+                              disabled={acceptingOpt || rejectingOpt}
+                              className="h-7 text-xs gap-1.5"
+                            >
+                              <BookMarked className="h-3 w-3" />
+                              Update vault
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
                             onClick={handleRejectOptimization}
                             disabled={acceptingOpt || rejectingOpt}
                             className="h-7 text-xs gap-1.5 border-rose-500/30 text-rose-600 hover:bg-rose-500/10"
@@ -1298,6 +1472,91 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                           </Button>
                         </div>
                       )}
+
+                      {/* Save to vault dialog */}
+                      <Dialog open={saveToVaultOpen} onOpenChange={setSaveToVaultOpen}>
+                        <DialogContent className="max-w-sm">
+                          <DialogHeader>
+                            <DialogTitle>Save to Prompt Vault</DialogTitle>
+                            <DialogDescription>
+                              Save the proposed prompt as a new vault entry.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-3">
+                            <div className="space-y-1.5">
+                              <Label htmlFor="vault-save-name">Name</Label>
+                              <Input
+                                id="vault-save-name"
+                                value={vaultSaveName}
+                                onChange={(e) => setVaultSaveName(e.target.value)}
+                                placeholder="e.g., Customer Support v2"
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label htmlFor="vault-save-desc">Description (Optional)</Label>
+                              <Input
+                                id="vault-save-desc"
+                                value={vaultSaveDesc}
+                                onChange={(e) => setVaultSaveDesc(e.target.value)}
+                                placeholder="Brief description"
+                              />
+                            </div>
+                          </div>
+                          <DialogFooter>
+                            <Button variant="outline" onClick={() => setSaveToVaultOpen(false)}>Cancel</Button>
+                            <Button
+                              onClick={handleSaveToVault}
+                              disabled={!vaultSaveName.trim() || savingToVault}
+                            >
+                              {savingToVault && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                              Save
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+
+                      {/* Update vault dialog */}
+                      <Dialog open={updateVaultOpen} onOpenChange={setUpdateVaultOpen}>
+                        <DialogContent className="max-w-sm">
+                          <DialogHeader>
+                            <DialogTitle>Update Vault Entry</DialogTitle>
+                            <DialogDescription>
+                              Overwrite an existing vault entry with the proposed prompt.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-2 max-h-64 overflow-y-auto">
+                            {optVaultEntries.length === 0 ? (
+                              <p className="text-sm text-muted-foreground text-center py-4">No vault entries found.</p>
+                            ) : optVaultEntries.map((entry) => (
+                              <button
+                                key={entry.id}
+                                type="button"
+                                className={`w-full text-left p-3 border rounded-md transition-colors ${
+                                  selectedOptVaultId === entry.id
+                                    ? "border-primary bg-primary/5"
+                                    : "hover:border-primary/50 hover:bg-muted/30"
+                                }`}
+                                onClick={() => setSelectedOptVaultId(entry.id)}
+                              >
+                                <p className="text-sm font-medium">{entry.name}</p>
+                                {entry.description && (
+                                  <p className="text-xs text-muted-foreground mt-0.5">{entry.description}</p>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                          <DialogFooter>
+                            <Button variant="outline" onClick={() => setUpdateVaultOpen(false)}>Cancel</Button>
+                            <Button
+                              onClick={handleUpdateVault}
+                              disabled={!selectedOptVaultId || updatingVault}
+                            >
+                              {updatingVault && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                              Update
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
 
                       {/* Error message */}
                       {activeOptRun.status === "failed" && activeOptRun.error_message && (
