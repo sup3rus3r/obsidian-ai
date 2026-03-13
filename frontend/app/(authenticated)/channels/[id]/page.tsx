@@ -460,16 +460,30 @@ export default function ChannelDetailPage() {
     }
   }
 
+  const normaliseJid = (raw: string, group: boolean) =>
+    group || raw.includes("@") ? raw : `${raw.replace(/\D/g, "")}@s.whatsapp.net`
+
   const handleSave = async () => {
     setSaving(true)
+    // Flush any un-added JID from the input fields
+    const pendingJid = newJid.trim()
+    const pendingVoiceJid = newVoiceJid.trim()
+    const finalAllowedJids = pendingJid && !allowAll
+      ? [...new Set([...editAllowedJids, normaliseJid(pendingJid, isGroupEntry)])]
+      : editAllowedJids
+    const finalVoiceJids = pendingVoiceJid && !voiceReplyAllContacts
+      ? [...new Set([...voiceReplyJids, normaliseJid(pendingVoiceJid, false)])]
+      : voiceReplyJids
+    if (pendingJid) { setNewJid(""); setEditAllowedJids(finalAllowedJids) }
+    if (pendingVoiceJid) { setNewVoiceJid(""); setVoiceReplyJids(finalVoiceJids) }
     try {
       const updates: UpdateWAChannelRequest = {
         name: editName.trim(),
         agent_id: editAgentId,
-        allowed_jids: allowAll ? [] : editAllowedJids,
+        allowed_jids: allowAll ? [] : finalAllowedJids,
         reject_message: editRejectMessage.trim() || null,
         voice_reply_enabled: voiceReplyEnabled,
-        voice_reply_jids: voiceReplyAllContacts ? [] : voiceReplyJids,
+        voice_reply_jids: voiceReplyAllContacts ? [] : finalVoiceJids,
         voice_reply_voice: voiceReplyVoice,
         tts_backend: ttsBackend,
       }

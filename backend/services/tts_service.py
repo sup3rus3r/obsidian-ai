@@ -72,9 +72,10 @@ FFMPEG_BIN = _find_ffmpeg()
 
 # ── Globals ───────────────────────────────────────────────────────────────────
 
-_qwen_custom_model  = None
-_qwen_base_model    = None
-_qwen_available     = None   # None = untested, True/False after first attempt
+_qwen_custom_model      = None
+_qwen_base_model        = None
+_qwen_custom_available  = None   # None = untested, True/False after first attempt
+_qwen_base_available    = None
 # Cache: (audio_path_or_hash, ref_text) -> voice_clone_prompt object
 _voice_clone_prompt_cache: dict = {}
 
@@ -111,10 +112,10 @@ def _has_cuda() -> bool:
 # ── Qwen3-TTS ─────────────────────────────────────────────────────────────────
 
 def _load_qwen_model(model_name: str):
-    """Load a Qwen3TTSModel with device_map and bfloat16."""
+    """Load a Qwen3TTSModel directly onto the target device."""
     import torch
     from qwen_tts import Qwen3TTSModel
-    kwargs = dict(device_map=QWEN_TTS_DEVICE, dtype=torch.bfloat16)
+    kwargs = dict(dtype=torch.bfloat16, device_map=QWEN_TTS_DEVICE, low_cpu_mem_usage=False)
     try:
         kwargs["attn_implementation"] = "flash_attention_2"
         return Qwen3TTSModel.from_pretrained(model_name, **kwargs)
@@ -124,34 +125,34 @@ def _load_qwen_model(model_name: str):
 
 
 def _get_qwen_custom():
-    global _qwen_custom_model, _qwen_available
-    if _qwen_available is False:
+    global _qwen_custom_model, _qwen_custom_available
+    if _qwen_custom_available is False:
         raise RuntimeError("Qwen3-TTS not available")
     if _qwen_custom_model is not None:
         return _qwen_custom_model
     try:
         _qwen_custom_model = _load_qwen_model(QWEN_CUSTOM_VOICE_MODEL)
-        _qwen_available = True
+        _qwen_custom_available = True
         logger.info("Qwen3-TTS CustomVoice loaded (%s)", QWEN_CUSTOM_VOICE_MODEL)
         return _qwen_custom_model
     except Exception as e:
-        _qwen_available = False
+        _qwen_custom_available = False
         raise RuntimeError(f"Qwen3-TTS unavailable: {e}") from e
 
 
 def _get_qwen_base():
-    global _qwen_base_model, _qwen_available
-    if _qwen_available is False:
+    global _qwen_base_model, _qwen_base_available
+    if _qwen_base_available is False:
         raise RuntimeError("Qwen3-TTS not available")
     if _qwen_base_model is not None:
         return _qwen_base_model
     try:
         _qwen_base_model = _load_qwen_model(QWEN_BASE_MODEL)
-        _qwen_available = True
+        _qwen_base_available = True
         logger.info("Qwen3-TTS Base loaded (%s)", QWEN_BASE_MODEL)
         return _qwen_base_model
     except Exception as e:
-        _qwen_available = False
+        _qwen_base_available = False
         raise RuntimeError(f"Qwen3-TTS Base unavailable: {e}") from e
 
 
