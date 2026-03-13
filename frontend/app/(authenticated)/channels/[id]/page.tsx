@@ -173,159 +173,161 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Mic className="h-4 w-4 text-violet-500" />
+      <DialogContent
+        className="flex flex-col"
+        style={{ maxWidth: "90vw", width: "90vw", height: "90vh" }}
+      >
+        <DialogHeader className="shrink-0">
+          <DialogTitle className="flex items-center gap-2 text-xl">
+            <Mic className="h-5 w-5 text-violet-500" />
             Record your voice
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-sm">
             A short clip of your voice is used to clone it. Read the script below for best results.
           </DialogDescription>
         </DialogHeader>
 
-        {/* Step 1: guided script */}
-        {mode === "guide" && (
-          <div className="space-y-4">
-            <div className="rounded-md border bg-muted/30 p-5">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Read this aloud:
-                {scriptLoading && <span className="ml-2 normal-case font-normal text-muted-foreground animate-pulse">generating…</span>}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          {/* Step 1: guided script */}
+          {mode === "guide" && (
+            <div className="flex flex-col flex-1 min-h-0 gap-5">
+              <div className="rounded-md border bg-muted/30 p-6 flex-1 overflow-y-auto">
+                <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">
+                  Read this aloud:
+                  {scriptLoading && <span className="ml-2 normal-case font-normal animate-pulse">generating…</span>}
+                </p>
+                <p className="text-lg leading-loose italic">"{voiceScript}"</p>
+              </div>
+              <p className="text-sm text-muted-foreground shrink-0">
+                Tip: speak naturally at a normal pace in a quiet environment. The recording should be at least 5 seconds.
               </p>
-              <p className="text-base leading-relaxed italic">"{voiceScript}"</p>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Tip: speak naturally at a normal pace in a quiet environment. The recording should be at least 5 seconds.
-            </p>
-            <div className="flex gap-2">
-              <Button
-                className="flex-1 gap-2"
-                onClick={() => setMode("record")}
-              >
-                <Mic className="h-4 w-4" />
-                Record now
-              </Button>
-              <Button
-                variant="outline"
-                className="flex-1 gap-2"
-                onClick={() => setMode("upload")}
-              >
-                <Upload className="h-4 w-4" />
-                Upload file
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Step 2a: record */}
-        {mode === "record" && (
-          <div className="space-y-4">
-            {/* Script reminder */}
-            <div className="rounded-md border bg-muted/20 p-4 max-h-40 overflow-y-auto">
-              <p className="text-sm text-muted-foreground italic leading-relaxed">"{voiceScript}"</p>
-            </div>
-
-            <div className="flex flex-col items-center gap-3 py-2">
-              {!recorded && (
-                <Button
-                  size="lg"
-                  variant={recording ? "destructive" : "default"}
-                  className="gap-2 w-40"
-                  onClick={recording ? stopRecording : startRecording}
-                >
-                  {recording ? (
-                    <><StopCircle className="h-4 w-4" /> Stop ({recordSeconds}s)</>
-                  ) : (
-                    <><Radio className="h-4 w-4" /> Start recording</>
-                  )}
+              <div className="flex gap-3 shrink-0">
+                <Button size="lg" className="flex-1 gap-2 text-base" onClick={() => setMode("record")}>
+                  <Mic className="h-5 w-5" /> Record now
                 </Button>
-              )}
-              {recording && (
-                <p className="text-xs text-muted-foreground animate-pulse">Recording… read the script above</p>
-              )}
-              {recorded && recordedUrl && (
-                <div className="w-full space-y-2">
-                  <p className="text-xs text-emerald-600 flex items-center gap-1.5">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    Recording captured ({recordSeconds}s)
-                  </p>
-                  <audio src={recordedUrl} controls className="w-full h-8" />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-xs text-muted-foreground gap-1"
-                    onClick={() => { setRecorded(null); setRecordedUrl(null); setRecordSeconds(0) }}
-                  >
-                    <Trash2 className="h-3 w-3" /> Re-record
-                  </Button>
+                <Button size="lg" variant="outline" className="flex-1 gap-2 text-base" onClick={() => setMode("upload")}>
+                  <Upload className="h-5 w-5" /> Upload file
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2a: record — script left, controls right */}
+          {mode === "record" && (
+            <div className="flex gap-6 flex-1 min-h-0">
+              {/* Left: script */}
+              <div className="flex-1 rounded-md border bg-muted/20 p-6 overflow-y-auto">
+                <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">Script:</p>
+                <p className="text-lg leading-loose italic text-muted-foreground">"{voiceScript}"</p>
+              </div>
+              {/* Right: controls */}
+              <div className="w-72 shrink-0 flex flex-col gap-5">
+                <div className="flex flex-col items-center gap-4 pt-4">
+                  {!recorded && (
+                    <Button
+                      size="lg"
+                      variant={recording ? "destructive" : "default"}
+                      className="gap-2 w-full text-base"
+                      onClick={recording ? stopRecording : startRecording}
+                    >
+                      {recording ? (
+                        <><StopCircle className="h-5 w-5" /> Stop ({recordSeconds}s)</>
+                      ) : (
+                        <><Radio className="h-5 w-5" /> Start recording</>
+                      )}
+                    </Button>
+                  )}
+                  {recording && (
+                    <p className="text-sm text-muted-foreground animate-pulse text-center">Recording… read the script</p>
+                  )}
+                  {recorded && recordedUrl && (
+                    <div className="w-full space-y-3">
+                      <p className="text-sm text-emerald-600 flex items-center gap-1.5">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Captured ({recordSeconds}s)
+                      </p>
+                      <audio src={recordedUrl} controls className="w-full" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-sm text-muted-foreground gap-1"
+                        onClick={() => { setRecorded(null); setRecordedUrl(null); setRecordSeconds(0) }}
+                      >
+                        <Trash2 className="h-4 w-4" /> Re-record
+                      </Button>
+                    </div>
+                  )}
                 </div>
-              )}
+                <div className="space-y-2 mt-auto">
+                  <Label className="text-sm">Transcript <span className="text-muted-foreground">(optional)</span></Label>
+                  <Textarea
+                    value={refText}
+                    onChange={(e) => setRefText(e.target.value)}
+                    placeholder="Paste exactly what you said…"
+                    rows={5}
+                    className="text-sm"
+                  />
+                  <button
+                    type="button"
+                    className="text-sm text-violet-600 hover:underline"
+                    onClick={() => setRefText(VOICE_GUIDE_SCRIPT.replace(/\[your name\]/g, ""))}
+                  >
+                    Use guide script as transcript
+                  </button>
+                </div>
+              </div>
             </div>
+          )}
 
-            <div className="space-y-1.5">
-              <Label className="text-xs">Transcript <span className="text-muted-foreground">(optional — improves quality)</span></Label>
-              <Textarea
-                value={refText}
-                onChange={(e) => setRefText(e.target.value)}
-                placeholder="Paste exactly what you said in the recording…"
-                rows={3}
-                className="text-xs"
-              />
-              <button
-                type="button"
-                className="text-xs text-violet-600 hover:underline"
-                onClick={() => setRefText(VOICE_GUIDE_SCRIPT.replace(/\[your name\]/g, ""))}
+          {/* Step 2b: upload — drop zone left, transcript right */}
+          {mode === "upload" && (
+            <div className="flex gap-6 flex-1 min-h-0">
+              {/* Left: drop zone */}
+              <div
+                className="flex-1 border-2 border-dashed rounded-md cursor-pointer hover:border-primary/50 transition-colors flex flex-col items-center justify-center gap-3"
+                onClick={() => fileInputRef.current?.click()}
               >
-                Use the guide script as transcript
-              </button>
+                <Upload className="h-14 w-14 text-muted-foreground" />
+                {uploadFile ? (
+                  <p className="text-base font-medium">{uploadFile.name}</p>
+                ) : (
+                  <>
+                    <p className="text-base text-muted-foreground">Click to select an audio file</p>
+                    <p className="text-sm text-muted-foreground/60">WAV · MP3 · OGG · WebM · MP4</p>
+                  </>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                />
+              </div>
+              {/* Right: transcript */}
+              <div className="w-72 shrink-0 flex flex-col gap-2 pt-4">
+                <Label className="text-sm">Transcript <span className="text-muted-foreground">(optional — improves quality)</span></Label>
+                <Textarea
+                  value={refText}
+                  onChange={(e) => setRefText(e.target.value)}
+                  placeholder="What is said in the audio file…"
+                  className="text-sm flex-1 resize-none"
+                />
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* Step 2b: upload */}
-        {mode === "upload" && (
-          <div className="space-y-4">
-            <div
-              className="border-2 border-dashed rounded-md p-6 text-center cursor-pointer hover:border-primary/50 transition-colors"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Upload className="h-6 w-6 mx-auto mb-2 text-muted-foreground" />
-              {uploadFile ? (
-                <p className="text-sm font-medium">{uploadFile.name}</p>
-              ) : (
-                <p className="text-sm text-muted-foreground">Click to select an audio file (WAV, MP3, OGG, WebM, MP4)</p>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="audio/*"
-                className="hidden"
-                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs">Transcript <span className="text-muted-foreground">(optional — improves quality)</span></Label>
-              <Textarea
-                value={refText}
-                onChange={(e) => setRefText(e.target.value)}
-                placeholder="What is said in the audio file…"
-                rows={3}
-                className="text-xs"
-              />
-            </div>
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+        <DialogFooter className="shrink-0 pt-4 border-t">
+          <Button variant="outline" size="lg" onClick={() => onOpenChange(false)}>Cancel</Button>
           {mode !== "guide" && (
             <Button
+              size="lg"
               onClick={handleUpload}
               disabled={!hasAudio || uploading}
-              className="gap-1.5"
+              className="gap-1.5 text-base"
             >
-              {uploading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
               Save voice sample
             </Button>
           )}

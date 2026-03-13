@@ -489,21 +489,14 @@ _FFMPEG = _find_ffmpeg_bin()
 
 def _convert_to_wav(audio_bytes: bytes, src_format: str = "webm") -> bytes:
     """Convert any audio format to 16kHz mono WAV using ffmpeg."""
-    proc = subprocess.run(
-        [
-            _FFMPEG, "-y",
-            "-f", src_format, "-i", "pipe:0",
-            "-ar", "16000",
-            "-ac", "1",
-            "-f", "wav",
-            "pipe:1",
-        ],
-        input=audio_bytes,
-        capture_output=True,
-        timeout=30,
-    )
+    # Always let ffmpeg auto-detect format from the stream — forcing -f causes
+    # failures when the format hint is wrong (e.g. browser records webm but
+    # file upload is MP3/WAV/etc.)
+    cmd = [_FFMPEG, "-y", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "wav", "pipe:1"]
+    proc = subprocess.run(cmd, input=audio_bytes, capture_output=True, timeout=30)
     if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg conversion failed: {proc.stderr.decode()[:200]}")
+        err = proc.stderr.decode(errors="replace")
+        raise RuntimeError(f"ffmpeg conversion failed: {err[-1000:]}")
     return proc.stdout
 
 

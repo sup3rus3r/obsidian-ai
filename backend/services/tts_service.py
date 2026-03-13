@@ -266,21 +266,12 @@ def _synthesize_kokoro(text: str, voice: str = "am_adam") -> bytes:
 
 # ── Shared ────────────────────────────────────────────────────────────────────
 
-def _wav_to_ogg_opus(wav_bytes: bytes) -> bytes:
-    proc = subprocess.run(
-        [
-            FFMPEG_BIN, "-y",
-            "-f", "wav", "-i", "pipe:0",
-            "-c:a", "libopus",
-            "-b:a", "32k",
-            "-vbr", "on",
-            "-f", "ogg",
-            "pipe:1",
-        ],
-        input=wav_bytes,
-        capture_output=True,
-        timeout=60,
-    )
+def _wav_to_ogg_opus(wav_bytes: bytes, speed: float = 1.0) -> bytes:
+    cmd = [FFMPEG_BIN, "-y", "-f", "wav", "-i", "pipe:0"]
+    if speed != 1.0:
+        cmd += ["-af", f"atempo={speed:.3f}"]
+    cmd += ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-f", "ogg", "pipe:1"]
+    proc = subprocess.run(cmd, input=wav_bytes, capture_output=True, timeout=60)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {proc.stderr.decode()[:200]}")
     return proc.stdout
@@ -305,7 +296,7 @@ def _run_synthesis(
             try:
                 wav = _synthesize_qwen_clone(text, ref_audio, ref_text)
                 logger.debug("Synthesized with Qwen3-TTS voice clone")
-                return _wav_to_ogg_opus(wav)
+                return _wav_to_ogg_opus(wav, speed=1.08)
             except Exception as e:
                 logger.warning("Qwen3-TTS voice clone failed, trying preset: %s", e)
 
