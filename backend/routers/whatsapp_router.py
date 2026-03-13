@@ -544,8 +544,6 @@ async def get_voice_script(
     except HTTPException:
         raise
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("voice-script lookup failed")
         raise HTTPException(500, f"Failed to load channel/agent: {e}")
 
     if not provider_record:
@@ -582,8 +580,6 @@ async def get_voice_script(
         if script:
             return {"script": script}
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("voice-script generation failed")
         raise HTTPException(500, f"LLM error: {e}")
     return {"script": "Hi, I'm recording a short voice sample. The quick brown fox jumps over the lazy dog. I believe every conversation is an opportunity to connect, learn, and grow. Clear communication is at the heart of everything I do. Whether answering questions, solving problems, or sharing ideas, I aim to be helpful, accurate, and easy to understand. Today is a great day to learn something new, and I'm here to help every step of the way. Thank you for taking the time to listen."}
 
