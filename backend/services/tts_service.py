@@ -85,7 +85,6 @@ _pocket_voice_states: dict = {}
 
 _kokoro_pipeline    = None
 
-
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
 def _clean_for_tts(text: str) -> str:
@@ -104,7 +103,11 @@ def _clean_for_tts(text: str) -> str:
 def _has_cuda() -> bool:
     try:
         import torch
-        return torch.cuda.is_available()
+        if not torch.cuda.is_available():
+            return False
+        # Verify cuDNN is actually functional — a missing symbol causes a hard crash
+        torch.zeros(1, device="cuda")
+        return True
     except Exception:
         return False
 
@@ -291,28 +294,12 @@ def _run_synthesis(
     use_qwen = backend == "qwen" or (backend != "classic" and _has_cuda())
 
     if use_qwen:
-        # Voice clone path — auto-transcribe ref audio if no transcript provided
-        if ref_audio and os.path.isfile(ref_audio):
+        # Voice clone path — requires both ref_audio and ref_text
+        if ref_audio and ref_text and os.path.isfile(ref_audio):
             try:
-                actual_ref_text = ref_text or ""
-                if not actual_ref_text:
-                    try:
-                        from routers.whatsapp_router import _get_whisper_model
-                        _wm = _get_whisper_model()
-                        import io as _io
-                        with open(ref_audio, "rb") as _f:
-                            _buf = _io.BytesIO(_f.read())
-                        segs, _ = _wm.transcribe(_buf, beam_size=1)
-                        actual_ref_text = " ".join(s.text.strip() for s in segs).strip()
-                        logger.info("Auto-transcribed ref audio: %s", actual_ref_text[:80])
-                    except Exception as te:
-                        logger.warning("Auto-transcription failed: %s", te)
-                if actual_ref_text:
-                    wav = _synthesize_qwen_clone(text, ref_audio, actual_ref_text)
-                    logger.debug("Synthesized with Qwen3-TTS voice clone")
-                    return _wav_to_ogg_opus(wav, speed=1.08)
-                else:
-                    logger.warning("Skipping voice clone: ref_text required but transcription failed")
+                wav = _synthesize_qwen_clone(text, ref_audio, ref_text)
+                logger.debug("Synthesized with Qwen3-TTS voice clone")
+                return _wav_to_ogg_opus(wav, speed=1.08)
             except Exception as e:
                 logger.warning("Qwen3-TTS voice clone failed, trying preset: %s", e)
 

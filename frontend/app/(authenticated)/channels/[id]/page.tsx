@@ -170,6 +170,7 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
   }
 
   const hasAudio = !!recorded || !!uploadFile
+  const canSave = hasAudio && (mode === "record" || !!refText.trim())
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -202,7 +203,7 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
                 Tip: speak naturally at a normal pace in a quiet environment. The recording should be at least 5 seconds.
               </p>
               <div className="flex gap-3 shrink-0">
-                <Button size="lg" className="flex-1 gap-2 text-base" onClick={() => setMode("record")}>
+                <Button size="lg" className="flex-1 gap-2 text-base" onClick={() => { setMode("record"); setRefText(voiceScript) }}>
                   <Mic className="h-5 w-5" /> Record now
                 </Button>
                 <Button size="lg" variant="outline" className="flex-1 gap-2 text-base" onClick={() => setMode("upload")}>
@@ -306,13 +307,16 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
               </div>
               {/* Right: transcript */}
               <div className="w-72 shrink-0 flex flex-col gap-2 pt-4">
-                <Label className="text-sm">Transcript <span className="text-muted-foreground">(optional — improves quality)</span></Label>
+                <Label className="text-sm">Transcript <span className="text-destructive">*</span> <span className="text-muted-foreground text-xs">(required for voice cloning)</span></Label>
                 <Textarea
                   value={refText}
                   onChange={(e) => setRefText(e.target.value)}
-                  placeholder="What is said in the audio file…"
+                  placeholder="Type exactly what is said in the audio file…"
                   className="text-sm flex-1 resize-none"
                 />
+                {!refText.trim() && uploadFile && (
+                  <p className="text-xs text-destructive">Transcript is required to clone your voice.</p>
+                )}
               </div>
             </div>
           )}
@@ -324,7 +328,7 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
             <Button
               size="lg"
               onClick={handleUpload}
-              disabled={!hasAudio || uploading}
+              disabled={!canSave || uploading}
               className="gap-1.5 text-base"
             >
               {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
