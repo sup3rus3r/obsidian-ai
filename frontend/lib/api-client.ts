@@ -901,6 +901,10 @@ class ApiClient {
     return this.request<WAChannel>(AppRoutes.WAVoiceSampleDelete(id), { method: "DELETE" })
   }
 
+  async getWAVoiceScript(id: string): Promise<{ script: string }> {
+    return this.request<{ script: string }>(AppRoutes.WAVoiceScript(id))
+  }
+
   // ============= Global HITL =============
   async getGlobalPendingHITL(): Promise<HITLApprovalItem[]> {
     const result = await this.request<{ approvals: HITLApprovalItem[] }>(AppRoutes.HITLGlobalPending())

@@ -116,7 +116,12 @@ class AnthropicProvider(BaseLLMProvider):
                 json=payload,
                 headers=self._headers(),
             )
-            response.raise_for_status()
+            if not response.is_success:
+                raise httpx.HTTPStatusError(
+                    f"Anthropic {response.status_code}: {response.text}",
+                    request=response.request,
+                    response=response,
+                )
             data = response.json()
             content_parts = [b["text"] for b in data.get("content", []) if b["type"] == "text"]
 

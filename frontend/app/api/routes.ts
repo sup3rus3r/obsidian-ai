@@ -193,6 +193,7 @@ export const AppRoutes = {
     WAConnect           : (id: string) => `/api/wa/channels/${id}/connect`,
     WADisconnect        : (id: string) => `/api/wa/channels/${id}/disconnect`,
     WAChannelQR         : (id: string) => `/api/wa/channels/${id}/qr`,
+    WAVoiceScript       : (id: string) => `/api/wa/channels/${id}/voice-script`,
     WAVoiceSampleUpload : (id: string) => `/api/wa/channels/${id}/voice-sample`,
     WAVoiceSampleDelete : (id: string) => `/api/wa/channels/${id}/voice-sample`,
 

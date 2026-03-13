@@ -507,6 +507,87 @@ def _convert_to_wav(audio_bytes: bytes, src_format: str = "webm") -> bytes:
     return proc.stdout
 
 
+@router.get("/channels/{channel_id}/voice-script")
+async def get_voice_script(
+    channel_id: int | str,
+    current_user: TokenData = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Generate a ~1 min reading script in the agent's voice for voice cloning."""
+    from llm.provider_factory import create_provider, create_provider_from_config
+    from llm.base import LLMMessage
+
+    try:
+        if DATABASE_TYPE == "mongo":
+            from models_mongo import LLMProviderCollection
+            mongo_db = get_database()
+            ch = await WhatsAppChannelCollection.find_by_id(mongo_db, str(channel_id))
+            if not ch or str(ch.get("user_id")) != str(current_user.user_id):
+                raise HTTPException(404, "Channel not found")
+            agent_id = ch.get("agent_id")
+            agent = await AgentCollection.find_by_id(mongo_db, str(agent_id)) if agent_id else None
+            system_prompt = agent.get("system_prompt", "") if agent else ""
+            provider_id = str(agent.get("provider_id", "")) if agent else None
+            provider_record = await LLMProviderCollection.find_by_id(mongo_db, provider_id) if provider_id else None
+        else:
+            from models import LLMProvider
+            ch = db.query(WhatsAppChannel).filter(
+                WhatsAppChannel.id == int(channel_id),
+                WhatsAppChannel.user_id == current_user.user_id,
+                WhatsAppChannel.is_active == True,
+            ).first()
+            if not ch:
+                raise HTTPException(404, "Channel not found")
+            agent = db.query(Agent).filter(Agent.id == ch.agent_id).first() if ch.agent_id else None
+            system_prompt = agent.system_prompt or "" if agent else ""
+            provider_record = db.query(LLMProvider).filter(LLMProvider.id == agent.provider_id).first() if agent else None
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("voice-script lookup failed")
+        raise HTTPException(500, f"Failed to load channel/agent: {e}")
+
+    if not provider_record:
+        # Fallback script if no provider configured
+        return {"script": "Hi, I'm recording a short voice sample. The quick brown fox jumps over the lazy dog. I believe every conversation is an opportunity to connect, learn, and grow. Clear communication is at the heart of everything I do. Whether answering questions, solving problems, or sharing ideas, I aim to be helpful, accurate, and easy to understand. Today is a great day to learn something new, and I'm here to help every step of the way. Thank you for taking the time to listen."}
+
+    try:
+        from encryption import decrypt_api_key
+        if DATABASE_TYPE == "mongo":
+            api_key = decrypt_api_key(provider_record.get("api_key")) if provider_record.get("api_key") else None
+            config = json.loads(provider_record["config_json"]) if provider_record.get("config_json") else None
+            provider = create_provider_from_config(
+                provider_type=str(provider_record["provider_type"]),
+                api_key=api_key,
+                base_url=str(provider_record["base_url"]) if provider_record.get("base_url") else None,
+                model_id=str(agent.get("model_id") or provider_record.get("model_id") or "claude-sonnet-4-6"),
+                config=config,
+            )
+        else:
+            provider = create_provider(provider_record)
+        prompt = (
+            "You are generating a voice cloning reference script. "
+            "Based on the agent persona below, write a natural-sounding monologue of exactly 140-160 words "
+            "that this agent might realistically say. "
+            "The script should use vocabulary, tone, and sentence structure consistent with the agent's persona. "
+            "It should flow naturally when read aloud and take approximately 60 seconds to read. "
+            "Output ONLY the script text with no labels, quotes, or explanation.\n\n"
+            f"Agent persona:\n{system_prompt[:2000] if system_prompt else 'A helpful AI assistant.'}"
+        )
+        response = await provider.chat(
+            messages=[LLMMessage(role="user", content=prompt)],
+        )
+        script = response.text_content.strip().strip('"').strip("'")
+        if script:
+            return {"script": script}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("voice-script generation failed")
+        raise HTTPException(500, f"LLM error: {e}")
+    return {"script": "Hi, I'm recording a short voice sample. The quick brown fox jumps over the lazy dog. I believe every conversation is an opportunity to connect, learn, and grow. Clear communication is at the heart of everything I do. Whether answering questions, solving problems, or sharing ideas, I aim to be helpful, accurate, and easy to understand. Today is a great day to learn something new, and I'm here to help every step of the way. Thank you for taking the time to listen."}
+
+
 @router.post("/channels/{channel_id}/voice-sample")
 async def upload_voice_sample(
     channel_id: int | str,

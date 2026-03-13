@@ -70,8 +70,8 @@ const CLASSIC_VOICES = [
   { value: "azelma",  label: "Azelma (Female)" },
 ]
 
-// Guided script to capture a good voice sample
-const VOICE_GUIDE_SCRIPT = `Hi, my name is [your name] and I'm recording a short voice sample. The quick brown fox jumps over the lazy dog. I believe that every conversation is an opportunity to connect, learn, and grow. It's a beautiful day today, and I'm looking forward to what's ahead. Thank you for listening.`
+// Fallback script used while the agent-generated one loads
+const VOICE_GUIDE_SCRIPT_FALLBACK = `Hi, I'm recording a short voice sample. The quick brown fox jumps over the lazy dog. I believe every conversation is an opportunity to connect, learn, and grow. Clear communication is at the heart of everything I do. Whether answering questions, solving problems, or sharing ideas, I aim to be helpful, accurate, and easy to understand. Today is a great day to learn something new, and I'm here to help every step of the way. Thank you for taking the time to listen.`
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -99,12 +99,14 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
   const [refText, setRefText] = useState("")
   const [uploading, setUploading] = useState(false)
   const [recordSeconds, setRecordSeconds] = useState(0)
+  const [voiceScript, setVoiceScript] = useState(VOICE_GUIDE_SCRIPT_FALLBACK)
+  const [scriptLoading, setScriptLoading] = useState(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Reset when dialog opens
+  // Reset and fetch agent script when dialog opens
   useEffect(() => {
     if (open) {
       setMode("guide")
@@ -114,6 +116,12 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
       setUploadFile(null)
       setRefText("")
       setRecordSeconds(0)
+      setVoiceScript(VOICE_GUIDE_SCRIPT_FALLBACK)
+      setScriptLoading(true)
+      apiClient.getWAVoiceScript(channelId)
+        .then((res) => setVoiceScript(res.script))
+        .catch(() => {/* keep fallback */})
+        .finally(() => setScriptLoading(false))
     }
   }, [open])
 
@@ -180,8 +188,11 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
         {mode === "guide" && (
           <div className="space-y-4">
             <div className="rounded-md border bg-muted/30 p-4">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Read this aloud:</p>
-              <p className="text-sm leading-relaxed italic">"{VOICE_GUIDE_SCRIPT}"</p>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                Read this aloud:
+                {scriptLoading && <span className="ml-2 normal-case font-normal text-muted-foreground animate-pulse">generating…</span>}
+              </p>
+              <p className="text-sm leading-relaxed italic">"{voiceScript}"</p>
             </div>
             <p className="text-xs text-muted-foreground">
               Tip: speak naturally at a normal pace in a quiet environment. The recording should be at least 5 seconds.
@@ -211,7 +222,7 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
           <div className="space-y-4">
             {/* Script reminder */}
             <div className="rounded-md border bg-muted/20 p-3 max-h-28 overflow-y-auto">
-              <p className="text-xs text-muted-foreground italic leading-relaxed">"{VOICE_GUIDE_SCRIPT}"</p>
+              <p className="text-xs text-muted-foreground italic leading-relaxed">"{voiceScript}"</p>
             </div>
 
             <div className="flex flex-col items-center gap-3 py-2">
