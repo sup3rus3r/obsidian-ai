@@ -34,8 +34,9 @@ dependencies = [
     "soundfile>=0.12.0",
     "pocket-tts>=0.1.0",
     "qwen-tts>=0.1.0",
-    "torch>=2.0.0,<2.7.0",
-    "torchvision>=0.21.0,<0.22.0",
+    "torch==2.6.0+cu124",
+    "torchvision==0.21.0+cu124",
+    "torchaudio==2.6.0+cu124",
     "scipy>=1.10.0",
     "transformers>=4.57.3",
 ]
@@ -44,3 +45,13 @@ dependencies = [
 gpu = [
     "flash-attn",  # Optional: speeds up Qwen3-TTS attention on CUDA GPUs; falls back to standard PyTorch attention without it
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]
+torchvision = [{ index = "pytorch-cu124" }]
+torchaudio = [{ index = "pytorch-cu124" }]

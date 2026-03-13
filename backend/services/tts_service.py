@@ -110,6 +110,19 @@ def _has_cuda() -> bool:
 
 # ── Qwen3-TTS ─────────────────────────────────────────────────────────────────
 
+def _load_qwen_model(model_name: str):
+    """Load a Qwen3TTSModel with device_map and bfloat16."""
+    import torch
+    from qwen_tts import Qwen3TTSModel
+    kwargs = dict(device_map=QWEN_TTS_DEVICE, dtype=torch.bfloat16)
+    try:
+        kwargs["attn_implementation"] = "flash_attention_2"
+        return Qwen3TTSModel.from_pretrained(model_name, **kwargs)
+    except Exception:
+        kwargs.pop("attn_implementation", None)
+        return Qwen3TTSModel.from_pretrained(model_name, **kwargs)
+
+
 def _get_qwen_custom():
     global _qwen_custom_model, _qwen_available
     if _qwen_available is False:
@@ -117,15 +130,7 @@ def _get_qwen_custom():
     if _qwen_custom_model is not None:
         return _qwen_custom_model
     try:
-        import torch
-        from qwen_tts import Qwen3TTSModel
-        kwargs = dict(device_map=QWEN_TTS_DEVICE, dtype=torch.bfloat16)
-        try:
-            kwargs["attn_implementation"] = "flash_attention_2"
-            _qwen_custom_model = Qwen3TTSModel.from_pretrained(QWEN_CUSTOM_VOICE_MODEL, **kwargs)
-        except Exception:
-            kwargs.pop("attn_implementation", None)
-            _qwen_custom_model = Qwen3TTSModel.from_pretrained(QWEN_CUSTOM_VOICE_MODEL, **kwargs)
+        _qwen_custom_model = _load_qwen_model(QWEN_CUSTOM_VOICE_MODEL)
         _qwen_available = True
         logger.info("Qwen3-TTS CustomVoice loaded (%s)", QWEN_CUSTOM_VOICE_MODEL)
         return _qwen_custom_model
@@ -141,15 +146,7 @@ def _get_qwen_base():
     if _qwen_base_model is not None:
         return _qwen_base_model
     try:
-        import torch
-        from qwen_tts import Qwen3TTSModel
-        kwargs = dict(device_map=QWEN_TTS_DEVICE, dtype=torch.bfloat16)
-        try:
-            kwargs["attn_implementation"] = "flash_attention_2"
-            _qwen_base_model = Qwen3TTSModel.from_pretrained(QWEN_BASE_MODEL, **kwargs)
-        except Exception:
-            kwargs.pop("attn_implementation", None)
-            _qwen_base_model = Qwen3TTSModel.from_pretrained(QWEN_BASE_MODEL, **kwargs)
+        _qwen_base_model = _load_qwen_model(QWEN_BASE_MODEL)
         _qwen_available = True
         logger.info("Qwen3-TTS Base loaded (%s)", QWEN_BASE_MODEL)
         return _qwen_base_model
