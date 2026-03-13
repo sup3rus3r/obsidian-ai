@@ -291,12 +291,28 @@ def _run_synthesis(
     use_qwen = backend == "qwen" or (backend != "classic" and _has_cuda())
 
     if use_qwen:
-        # Voice clone path — ref_text is optional; pass empty string if not provided
+        # Voice clone path — auto-transcribe ref audio if no transcript provided
         if ref_audio and os.path.isfile(ref_audio):
             try:
-                wav = _synthesize_qwen_clone(text, ref_audio, ref_text or "")
-                logger.debug("Synthesized with Qwen3-TTS voice clone")
-                return _wav_to_ogg_opus(wav, speed=1.08)
+                actual_ref_text = ref_text or ""
+                if not actual_ref_text:
+                    try:
+                        from faster_whisper import WhisperModel
+                        _wm = WhisperModel("small", device="cpu", compute_type="int8")
+                        with open(ref_audio, "rb") as _f:
+                            import io as _io
+                            _buf = _io.BytesIO(_f.read())
+                        segs, _ = _wm.transcribe(_buf, beam_size=1)
+                        actual_ref_text = " ".join(s.text.strip() for s in segs).strip()
+                        logger.info("Auto-transcribed ref audio: %s", actual_ref_text[:80])
+                    except Exception as te:
+                        logger.warning("Auto-transcription failed: %s", te)
+                if actual_ref_text:
+                    wav = _synthesize_qwen_clone(text, ref_audio, actual_ref_text)
+                    logger.debug("Synthesized with Qwen3-TTS voice clone")
+                    return _wav_to_ogg_opus(wav, speed=1.08)
+                else:
+                    logger.warning("Skipping voice clone: ref_text required but transcription failed")
             except Exception as e:
                 logger.warning("Qwen3-TTS voice clone failed, trying preset: %s", e)
 
