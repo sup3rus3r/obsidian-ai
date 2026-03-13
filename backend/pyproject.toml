@@ -33,6 +33,12 @@ dependencies = [
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
     "soundfile>=0.12.0",
     "pocket-tts>=0.1.0",
+    "qwen-tts>=0.1.0",
     "torch>=2.0.0",
     "scipy>=1.10.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "flash-attn",  # Optional: speeds up Qwen3-TTS attention on CUDA GPUs; falls back to standard PyTorch attention without it
 ]

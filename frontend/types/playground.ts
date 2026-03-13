@@ -841,6 +841,10 @@ export interface WAChannel {
   voice_reply_enabled: boolean
   voice_reply_jids: string[]
   voice_reply_voice: string
+  tts_backend: "auto" | "qwen" | "classic"
+  voice_clone_audio_path: string | null
+  voice_clone_ref_text: string | null
+  has_voice_clone: boolean
   is_active: boolean
   created_at: string | null
   updated_at: string | null
@@ -859,6 +863,8 @@ export interface UpdateWAChannelRequest {
   voice_reply_enabled?: boolean
   voice_reply_jids?: string[]
   voice_reply_voice?: string
+  tts_backend?: "auto" | "qwen" | "classic"
+  voice_clone_ref_text?: string | null
 }
 
 export interface HITLApprovalItem {

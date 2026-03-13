@@ -873,6 +873,34 @@ class ApiClient {
     return this.request(AppRoutes.WADisconnect(id), { method: "POST" })
   }
 
+  async uploadWAVoiceSample(id: string, audioBlob: Blob, refText: string): Promise<WAChannel> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const formData = new FormData()
+    formData.append("file", audioBlob, "voice_sample.webm")
+    formData.append("ref_text", refText)
+    const response = await fetch(AppRoutes.WAVoiceSampleUpload(id), {
+      method: "POST",
+      headers,
+      body: formData,
+    })
+    if (!response.ok) {
+      if (response.status === 401) {
+        signOut({ callbackUrl: "/login" })
+        throw new Error("Session expired. Redirecting to login...")
+      }
+      const error = await response.json().catch(() => ({ detail: "Upload failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    return response.json()
+  }
+
+  async deleteWAVoiceSample(id: string): Promise<WAChannel> {
+    return this.request<WAChannel>(AppRoutes.WAVoiceSampleDelete(id), { method: "DELETE" })
+  }
+
   // ============= Global HITL =============
   async getGlobalPendingHITL(): Promise<HITLApprovalItem[]> {
     const result = await this.request<{ approvals: HITLApprovalItem[] }>(AppRoutes.HITLGlobalPending())

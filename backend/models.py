@@ -471,6 +471,13 @@ class WhatsAppChannel(Base):
     allowed_jids     = Column(Text, nullable=True)                            # JSON array of allowed WA JIDs, NULL = allow all
     reject_message   = Column(Text, nullable=True)                            # auto-reply to blocked senders, NULL = silent
     auth_state_path  = Column(String, nullable=True)                          # path to Baileys auth dir
+    # Voice reply settings
+    voice_reply_enabled    = Column(Boolean, default=False, nullable=False)
+    voice_reply_jids       = Column(Text, nullable=True)                      # JSON array of JIDs; NULL = all contacts
+    voice_reply_voice      = Column(String, nullable=True)                    # Qwen preset or pocket voice name
+    tts_backend            = Column(String, nullable=True)                    # "auto" | "qwen" | "classic"
+    voice_clone_audio_path = Column(String, nullable=True)                    # path to stored reference .wav
+    voice_clone_ref_text   = Column(Text, nullable=True)                      # transcript of reference audio
     is_active        = Column(Boolean, default=True, nullable=False)
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
     updated_at       = Column(DateTime(timezone=True), onupdate=func.now())

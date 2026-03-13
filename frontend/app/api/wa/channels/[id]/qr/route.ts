@@ -3,6 +3,8 @@ import type { NextRequest } from "next/server"
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001"
 
+export const dynamic = "force-dynamic"
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -18,7 +20,7 @@ export async function GET(
 
   const backendResp = await fetch(backendUrl, {
     headers: { Accept: "text/event-stream" },
-    // @ts-ignore — Node 18 fetch supports this
+    // @ts-ignore
     cache: "no-store",
   })
 
@@ -26,10 +28,14 @@ export async function GET(
     return new Response("Failed to connect to backend", { status: 502 })
   }
 
-  return new Response(backendResp.body, {
+  // Pipe through a TransformStream so chunks are flushed immediately
+  const { readable, writable } = new TransformStream()
+  backendResp.body.pipeTo(writable).catch(() => {})
+
+  return new Response(readable, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
       Connection: "keep-alive",
     },

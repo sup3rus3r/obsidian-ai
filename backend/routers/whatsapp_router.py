@@ -1,11 +1,12 @@
 import json
 import os
 import asyncio
+import subprocess
 from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -40,7 +41,9 @@ class WAChannelUpdate(BaseModel):
     reject_message: Optional[str] = None
     voice_reply_enabled: Optional[bool] = None
     voice_reply_jids: Optional[list[str]] = None  # None = no change; [] = all contacts
-    voice_reply_voice: Optional[str] = None  # Kokoro voice id, e.g. "af_heart"
+    voice_reply_voice: Optional[str] = None       # Qwen preset (Ryan/Aiden/…) or pocket voice
+    tts_backend: Optional[str] = None             # "auto" | "qwen" | "classic"
+    voice_clone_ref_text: Optional[str] = None    # transcript for voice cloning
 
 
 class WAIncomingMessage(BaseModel):
@@ -68,7 +71,11 @@ def _channel_dict(ch) -> dict:
         "reject_message": ch.reject_message,
         "voice_reply_enabled": getattr(ch, "voice_reply_enabled", False) or False,
         "voice_reply_jids": json.loads(ch.voice_reply_jids) if getattr(ch, "voice_reply_jids", None) else [],
-        "voice_reply_voice": getattr(ch, "voice_reply_voice", None) or "default",
+        "voice_reply_voice": getattr(ch, "voice_reply_voice", None) or "Ryan",
+        "tts_backend": getattr(ch, "tts_backend", None) or "auto",
+        "voice_clone_audio_path": getattr(ch, "voice_clone_audio_path", None),
+        "voice_clone_ref_text": getattr(ch, "voice_clone_ref_text", None),
+        "has_voice_clone": bool(getattr(ch, "voice_clone_audio_path", None)),
         "is_active": ch.is_active,
         "created_at": ch.created_at.isoformat() if ch.created_at else None,
         "updated_at": ch.updated_at.isoformat() if ch.updated_at else None,
@@ -88,7 +95,11 @@ def _serialize_mongo_channel(ch: dict) -> dict:
         "reject_message": ch.get("reject_message"),
         "voice_reply_enabled": ch.get("voice_reply_enabled", False),
         "voice_reply_jids": ch.get("voice_reply_jids") or [],
-        "voice_reply_voice": ch.get("voice_reply_voice") or "default",
+        "voice_reply_voice": ch.get("voice_reply_voice") or "Ryan",
+        "tts_backend": ch.get("tts_backend") or "auto",
+        "voice_clone_audio_path": ch.get("voice_clone_audio_path"),
+        "voice_clone_ref_text": ch.get("voice_clone_ref_text"),
+        "has_voice_clone": bool(ch.get("voice_clone_audio_path")),
         "is_active": ch.get("is_active", True),
         "created_at": ch["created_at"].isoformat() if ch.get("created_at") else None,
         "updated_at": ch["updated_at"].isoformat() if ch.get("updated_at") else None,
@@ -232,6 +243,10 @@ async def update_channel(
             updates["voice_reply_jids"] = body.voice_reply_jids
         if body.voice_reply_voice is not None:
             updates["voice_reply_voice"] = body.voice_reply_voice
+        if body.tts_backend is not None:
+            updates["tts_backend"] = body.tts_backend
+        if body.voice_clone_ref_text is not None:
+            updates["voice_clone_ref_text"] = body.voice_clone_ref_text or None
         ch = await WhatsAppChannelCollection.update(mongo_db, str(channel_id), str(current_user.user_id), updates)
         if not ch:
             raise HTTPException(404, "Channel not found")
@@ -258,7 +273,11 @@ async def update_channel(
     if body.voice_reply_jids is not None:
         ch.voice_reply_jids = json.dumps(body.voice_reply_jids) if body.voice_reply_jids else None
     if body.voice_reply_voice is not None:
-        ch.voice_reply_voice = body.voice_reply_voice or "af_heart"
+        ch.voice_reply_voice = body.voice_reply_voice or "Ryan"
+    if body.tts_backend is not None:
+        ch.tts_backend = body.tts_backend or "auto"
+    if body.voice_clone_ref_text is not None:
+        ch.voice_clone_ref_text = body.voice_clone_ref_text or None
     db.commit()
     db.refresh(ch)
     return _channel_dict(ch)
@@ -441,6 +460,172 @@ async def update_channel_status(
     if wa_phone:
         ch.wa_phone = wa_phone
     db.commit()
+    return {"ok": True}
+
+
+VOICE_SAMPLES_DIR = os.environ.get("VOICE_SAMPLES_DIR", "voice_samples")
+
+# Re-use the same ffmpeg resolver as tts_service
+def _find_ffmpeg_bin() -> str:
+    import shutil, glob
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    candidates = [
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+    ]
+    winget_base = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages")
+    if os.path.isdir(winget_base):
+        candidates = glob.glob(os.path.join(winget_base, "**", "ffmpeg.exe"), recursive=True) + candidates
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return "ffmpeg"
+
+_FFMPEG = _find_ffmpeg_bin()
+
+
+def _convert_to_wav(audio_bytes: bytes, src_format: str = "webm") -> bytes:
+    """Convert any audio format to 16kHz mono WAV using ffmpeg."""
+    proc = subprocess.run(
+        [
+            _FFMPEG, "-y",
+            "-f", src_format, "-i", "pipe:0",
+            "-ar", "16000",
+            "-ac", "1",
+            "-f", "wav",
+            "pipe:1",
+        ],
+        input=audio_bytes,
+        capture_output=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg conversion failed: {proc.stderr.decode()[:200]}")
+    return proc.stdout
+
+
+@router.post("/channels/{channel_id}/voice-sample")
+async def upload_voice_sample(
+    channel_id: int | str,
+    file: UploadFile = File(...),
+    ref_text: Optional[str] = Form(None),
+    current_user: TokenData = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Upload a voice reference clip for voice cloning.
+    Accepts any audio format (webm, ogg, mp4, wav, …).
+    Converts to 16kHz mono WAV and stores it.
+    Optionally saves the transcript (ref_text) to the channel.
+    """
+    # Verify channel ownership
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        ch = await WhatsAppChannelCollection.find_by_id(mongo_db, str(channel_id))
+        if not ch or ch.get("user_id") != str(current_user.user_id):
+            raise HTTPException(404, "Channel not found")
+    else:
+        ch = db.query(WhatsAppChannel).filter(
+            WhatsAppChannel.id == int(channel_id),
+            WhatsAppChannel.user_id == current_user.user_id,
+            WhatsAppChannel.is_active == True,
+        ).first()
+        if not ch:
+            raise HTTPException(404, "Channel not found")
+
+    audio_bytes = await file.read()
+    await file.close()
+
+    # Detect format from content-type or filename
+    content_type = (file.content_type or "").lower()
+    filename = (file.filename or "").lower()
+    if "webm" in content_type or filename.endswith(".webm"):
+        src_fmt = "webm"
+    elif "ogg" in content_type or filename.endswith(".ogg"):
+        src_fmt = "ogg"
+    elif "mp4" in content_type or filename.endswith(".mp4") or filename.endswith(".m4a"):
+        src_fmt = "mp4"
+    elif "wav" in content_type or filename.endswith(".wav"):
+        src_fmt = "wav"
+    else:
+        src_fmt = "webm"  # safe default for browser recordings
+
+    try:
+        wav_bytes = _convert_to_wav(audio_bytes, src_fmt)
+    except Exception as e:
+        raise HTTPException(400, f"Audio conversion failed: {e}")
+
+    # Store the WAV file
+    os.makedirs(VOICE_SAMPLES_DIR, exist_ok=True)
+    save_path = os.path.join(VOICE_SAMPLES_DIR, f"channel_{channel_id}.wav")
+    with open(save_path, "wb") as f:
+        f.write(wav_bytes)
+
+    # Invalidate any cached clone prompts for this channel
+    from services.tts_service import invalidate_voice_clone_cache
+    invalidate_voice_clone_cache(save_path)
+
+    # Persist path (and optional ref_text) to DB
+    if DATABASE_TYPE == "mongo":
+        updates: dict = {"voice_clone_audio_path": save_path}
+        if ref_text is not None:
+            updates["voice_clone_ref_text"] = ref_text or None
+        await WhatsAppChannelCollection.update(mongo_db, str(channel_id), str(current_user.user_id), updates)
+    else:
+        ch.voice_clone_audio_path = save_path
+        if ref_text is not None:
+            ch.voice_clone_ref_text = ref_text or None
+        db.commit()
+        db.refresh(ch)
+
+    return {
+        "ok": True,
+        "audio_path": save_path,
+        "ref_text": ref_text,
+        "size_bytes": len(wav_bytes),
+    }
+
+
+@router.delete("/channels/{channel_id}/voice-sample")
+async def delete_voice_sample(
+    channel_id: int | str,
+    current_user: TokenData = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove the stored voice clone sample for a channel."""
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        ch = await WhatsAppChannelCollection.find_by_id(mongo_db, str(channel_id))
+        if not ch or ch.get("user_id") != str(current_user.user_id):
+            raise HTTPException(404, "Channel not found")
+        audio_path = ch.get("voice_clone_audio_path")
+        updates = {"voice_clone_audio_path": None, "voice_clone_ref_text": None}
+        await WhatsAppChannelCollection.update(mongo_db, str(channel_id), str(current_user.user_id), updates)
+    else:
+        ch = db.query(WhatsAppChannel).filter(
+            WhatsAppChannel.id == int(channel_id),
+            WhatsAppChannel.user_id == current_user.user_id,
+            WhatsAppChannel.is_active == True,
+        ).first()
+        if not ch:
+            raise HTTPException(404, "Channel not found")
+        audio_path = getattr(ch, "voice_clone_audio_path", None)
+        ch.voice_clone_audio_path = None
+        ch.voice_clone_ref_text = None
+        db.commit()
+
+    # Delete file and invalidate cache
+    if audio_path and os.path.isfile(audio_path):
+        try:
+            os.remove(audio_path)
+        except Exception:
+            pass
+        from services.tts_service import invalidate_voice_clone_cache
+        invalidate_voice_clone_cache(audio_path)
+
     return {"ok": True}
 
 

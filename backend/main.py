@@ -684,6 +684,21 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add voice reply + TTS columns to whatsapp_channels if missing
+        for col_sql in [
+            "ALTER TABLE whatsapp_channels ADD COLUMN voice_reply_enabled BOOLEAN NOT NULL DEFAULT 0",
+            "ALTER TABLE whatsapp_channels ADD COLUMN voice_reply_jids TEXT",
+            "ALTER TABLE whatsapp_channels ADD COLUMN voice_reply_voice TEXT",
+            "ALTER TABLE whatsapp_channels ADD COLUMN tts_backend TEXT",
+            "ALTER TABLE whatsapp_channels ADD COLUMN voice_clone_audio_path TEXT",
+            "ALTER TABLE whatsapp_channels ADD COLUMN voice_clone_ref_text TEXT",
+        ]:
+            try:
+                conn.execute(sqlalchemy.text(col_sql))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
 
 # ── Module-level APScheduler job functions ────────────────────────────────────
 # Must be at module scope (not closures) so APScheduler can pickle them for the

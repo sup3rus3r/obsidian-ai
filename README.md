@@ -48,6 +48,8 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
   - [Agent Versioning & Rollback](#agent-versioning--rollback)
   - [Eval Harness & Regression Testing](#eval-harness--regression-testing)
   - [Prompt Auto-Optimizer](#prompt-auto-optimizer)
+  - [Prompt Vault](#prompt-vault)
+  - [WhatsApp Channel Integration](#whatsapp-channel-integration)
   - [Automatic Context Management](#automatic-context-management)
   - [Session History & Execution Traces](#session-history--execution-traces)
   - [Scheduled Workflows](#scheduled-workflows)
@@ -69,7 +71,6 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Updates](#updates)
-- [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -344,6 +345,37 @@ Automatically analyzes an agent's recent conversation history, identifies recurr
 
 ---
 
+### Prompt Vault
+
+A library for storing and reusing system prompts across agents. Save prompts manually, or push proposed prompts directly from the Prompt Auto-Optimizer without leaving the review flow.
+
+- **Vault page** — Browse, create, edit, and delete saved prompts from a dedicated settings page
+- **Optimizer integration** — Accept an optimizer-proposed prompt directly into the vault (as a new entry or as an update to an existing one) alongside or instead of applying it to the agent
+- **Full CRUD** — Each entry has a name, description, and prompt body
+- **Both databases** — Works identically with SQLite and MongoDB
+
+---
+
+### WhatsApp Channel Integration
+
+Connect any agent to a WhatsApp account via QR code scan. No Meta Business account, no API fees, no webhooks required.
+
+- **QR pairing** — Click Connect, scan the QR code with WhatsApp → Linked Devices, and the channel goes live
+- **Per-channel agent** — Route all messages on a channel to a specific agent; change the agent at any time without re-scanning
+- **Contact whitelist** — Restrict which contacts the agent responds to; others receive a custom rejection message or are silently ignored
+- **Session continuity** — Each `(channel, contact)` pair maps to a persistent session; the agent remembers conversation history and applies long-term memory
+- **Voice note transcription** — Incoming voice notes are transcribed locally using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CPU, no cloud STT)
+- **Voice note replies** — Reply with synthesised audio using the multi-backend TTS pipeline (see [Voice Reply Setup](#voice-reply-setup-optional)):
+  - **Qwen3-TTS** (GPU): 9 preset voices across English, Chinese, Japanese, Korean; or reply in the user's own cloned voice
+  - **Pocket TTS** (CPU fallback): 8 voices, CPU-native
+  - **Kokoro** (last resort): lightweight CPU fallback
+- **Voice cloning** — Record or upload a voice sample in the channel settings page; the agent replies in the user's voice. Includes a guided in-browser recorder with a phonetically rich script
+- **Per-channel TTS engine** — Choose `auto`, `qwen`, or `classic` per channel
+- **HITL in channels** — Pending approvals surface in the global notification badge in the top bar
+- **Auto-reconnect** — The sidecar reconnects all authenticated channels automatically on startup
+
+---
+
 ### Automatic Context Management
 
 When a conversation approaches a model's context limit, the platform automatically compresses older history so sessions can continue indefinitely without hitting token limits or requiring manual intervention.
@@ -593,11 +625,11 @@ The WhatsApp bridge will be available at `http://localhost:3200`.
 
 ### Voice Reply Setup (Optional)
 
-WhatsApp channels support AI-generated voice note replies powered by [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (Kyutai, CPU-native, ~471MB). This is **optional** — text replies work without it.
+WhatsApp channels support AI-generated voice note replies. This is **optional** — text replies work without it.
 
 **System requirement: ffmpeg**
 
-ffmpeg is required to convert synthesised audio to OGG Opus format for WhatsApp. Install it and ensure it is on your system PATH:
+ffmpeg is required to convert synthesised audio to OGG Opus (the native WhatsApp voice note format). Install it and ensure it is on your system PATH:
 
 ```bash
 # Windows
@@ -618,13 +650,85 @@ sudo pacman -S ffmpeg
 
 > Restart the backend after installing ffmpeg so the new PATH is picked up.
 
-**Model download**
+**TTS engine selection**
 
-The Pocket TTS model (~471MB) is downloaded automatically from HuggingFace on the first synthesis request and cached locally. The first voice reply will be slow while it downloads; all subsequent replies are fast (~3x faster than real-time on CPU).
+The platform supports three TTS backends selected per channel or globally via the `tts_backend` setting:
 
-**Fallback**
+| Setting | Engine | Requirement | Quality |
+|---------|--------|-------------|---------|
+| `auto` (default) | Qwen3-TTS on GPU, Pocket TTS on CPU | CUDA GPU for Qwen3 | High (GPU) / Good (CPU) |
+| `qwen` | Qwen3-TTS forced | CUDA GPU + `pip install qwen-tts` | High |
+| `classic` | Pocket TTS → Kokoro | CPU only | Good |
 
-If Pocket TTS fails for any reason, the system automatically falls back to [Kokoro](https://github.com/hexgrad/kokoro) TTS. If both fail, the reply is sent as text.
+**Qwen3-TTS (GPU, high quality)**
+
+[Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS) is a high-quality neural TTS model from Alibaba. It requires a CUDA GPU and is auto-selected when one is available.
+
+```bash
+pip install qwen-tts
+```
+
+> **Important:** PyPI only ships the CPU build of PyTorch. Qwen3-TTS requires a CUDA-enabled build. After `uv sync`, install the CUDA PyTorch wheel manually:
+>
+> ```bash
+> # Check your CUDA version first: nvidia-smi
+> # Then install the matching wheel (replace cu121 with cu118 or cu124 as needed):
+> uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+> ```
+>
+> Verify CUDA is available: `python -c "import torch; print(torch.cuda.is_available())"`
+
+Preset voices available: `Ryan`, `Aiden` (English), `Vivian`, `Serena`, `Uncle_Fu`, `Dylan`, `Eric` (Chinese), `Ono_Anna` (Japanese), `Sohee` (Korean).
+
+Configure model size and device via environment variables:
+
+```env
+QWEN_TTS_SIZE=0.6B     # or 1.7B for higher quality (uses more VRAM)
+QWEN_TTS_DEVICE=cuda:0
+```
+
+**Voice cloning**
+
+When Qwen3-TTS is active, users can record or upload a short voice sample (3 seconds minimum) directly in the channel settings page. The agent will reply in the user's own voice. A guided recording script is provided in the UI for best results. Voice clone prompts are cached in memory — the reference audio is only processed once per session.
+
+```env
+VOICE_SAMPLES_DIR=voice_samples   # Directory where uploaded voice samples are stored
+```
+
+**Pocket TTS / Kokoro (CPU fallback)**
+
+If Qwen3-TTS is unavailable (no GPU or `qwen-tts` not installed), the system falls back to [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (~471MB, CPU-native, ~3× faster than real-time), then to [Kokoro](https://github.com/hexgrad/kokoro) if Pocket TTS also fails. Models are downloaded automatically from HuggingFace on first use. If all TTS backends fail, the reply is sent as text.
+
+**SoX (Optional)**
+
+[SoX](https://sox.sourceforge.net/) is used internally by Pocket TTS for audio processing. It is only needed when running in `classic` mode — if you have a CUDA GPU and Qwen3-TTS is active, SoX is not required.
+
+```bash
+# Windows
+winget install sox
+
+# macOS
+brew install sox
+
+# Ubuntu / Debian
+sudo apt install sox
+
+# Fedora / RHEL
+sudo dnf install sox
+
+# Arch Linux
+sudo pacman -S sox
+```
+
+**Flash Attention (Optional)**
+
+[Flash Attention 2](https://github.com/Dao-AILab/flash-attention) speeds up transformer attention computation for Qwen3-TTS on CUDA GPUs. Without it, the system falls back to standard PyTorch attention — output is identical, just slower.
+
+```bash
+uv pip install flash-attn
+```
+
+> Requires a compatible CUDA GPU and takes a while to compile.
 
 ### Docker Sandbox Base Image
 
@@ -681,6 +785,14 @@ DATABASE_TYPE=sqlite
 # Tavily Search API key — required for the web_search agent tool
 # Get a free key (1000 searches/month) at https://app.tavily.com
 TAVILY_API_KEY=tvly-...
+
+# WhatsApp bridge URL (default: http://localhost:3200)
+WA_BRIDGE_URL=http://localhost:3200
+
+# TTS — Qwen3-TTS settings (GPU only; ignored if qwen-tts not installed)
+QWEN_TTS_SIZE=0.6B          # or 1.7B for higher quality
+QWEN_TTS_DEVICE=cuda:0
+VOICE_SAMPLES_DIR=voice_samples
 ```
 
 #### Frontend (`frontend/.env.local`)
@@ -804,6 +916,14 @@ The backend exposes a RESTful API with interactive documentation:
 | **User** | `/user/2fa/setup` | POST | Set up TOTP two-factor auth |
 | **User** | `/user/2fa/verify` | POST | Verify 2FA setup |
 | **User** | `/user/api-clients` | POST | Generate API client credentials |
+| **WhatsApp** | `/wa/channels` | GET / POST | List or create WhatsApp channels |
+| **WhatsApp** | `/wa/channels/{id}` | GET / PATCH / DELETE | Get, update, or delete a channel |
+| **WhatsApp** | `/wa/channels/{id}/connect` | POST | Initiate QR pairing |
+| **WhatsApp** | `/wa/channels/{id}/disconnect` | POST | Disconnect session |
+| **WhatsApp** | `/wa/channels/{id}/qr` | GET (SSE) | Stream QR code and connected event |
+| **WhatsApp** | `/wa/channels/{id}/voice-sample` | POST / DELETE | Upload or remove voice clone sample |
+| **Prompt Vault** | `/prompt-vault` | GET / POST | List or create saved prompts |
+| **Prompt Vault** | `/prompt-vault/{id}` | GET / PUT / DELETE | Get, update, or delete a prompt |
 | **Health** | `/health` | GET | Health check |
 
 ### Programmatic Access
@@ -894,6 +1014,10 @@ obsidian-ai/
 │   │   ├── google_provider.py      # Google Gemini provider
 │   │   └── ollama_provider.py      # Local Ollama provider
 │   │
+│   ├── services/                   # Background services
+│   │   ├── whatsapp_service.py     # Incoming message handling + TTS dispatch
+│   │   └── tts_service.py          # Qwen3-TTS / Pocket TTS / Kokoro pipeline
+│   │
 │   └── routers/                    # API route handlers
 │       ├── auth_router.py          # Login, register, 2FA/TOTP
 │       ├── agents_router.py        # Agent CRUD + import/export
@@ -911,7 +1035,9 @@ obsidian-ai/
 │       ├── memory_router.py        # Agent long-term memory
 │       ├── versions_router.py      # Agent version snapshots + rollback
 │       ├── eval_router.py          # Eval suite CRUD + run management
-│       ├── optimizer_router.py     # Prompt optimizer trigger + accept/reject
+│       ├── optimizer_router.py     # Prompt optimizer trigger + accept/reject + vault actions
+│       ├── prompt_vault_router.py  # Prompt Vault CRUD
+│       ├── whatsapp_router.py      # WhatsApp channel management + voice sample endpoints
 │       ├── schedule_router.py      # Workflow schedule CRUD + APScheduler sync
 │       ├── traces_router.py        # Execution trace read endpoints
 │       ├── dashboard_router.py     # Dashboard statistics
@@ -938,6 +1064,9 @@ obsidian-ai/
     │       ├── knowledge/page.tsx  # Knowledge base list
     │       ├── knowledge/[id]/page.tsx  # KB detail — add text/file documents
     │       ├── evals/page.tsx      # Eval suite builder + run results
+    │       ├── prompt-vault/page.tsx  # Prompt Vault — save & reuse prompts
+    │       ├── channels/page.tsx   # WhatsApp channel list
+    │       ├── channels/[id]/page.tsx  # Channel settings — agent, voice, clone
     │       └── admin/page.tsx      # Admin panel
     │
     ├── components/                 # React components
@@ -990,7 +1119,8 @@ A lightweight Node.js sidecar (`wa-bridge/`) runs alongside the backend. It mana
 - **Persistent sessions** — Each `(channel, WhatsApp contact)` pair maps to a persistent Obsidian AI session; the agent remembers the full conversation history and applies long-term memory across interactions
 - **HITL in channels** — When a channel-triggered agent hits a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the top bar and unblocks automatically once actioned
 - **Voice note transcription** — Incoming WhatsApp voice notes are automatically transcribed using a local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) `small` model (244 MB, runs entirely on CPU, no external API). The transcript is passed to the agent as text — no audio files written to disk, no cloud services involved
-- **Voice note replies** — Optionally reply with a generated voice note instead of text. Powered by [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (Kyutai, ~471MB, CPU-native, ~3x faster than real-time) with automatic fallback to [Kokoro](https://github.com/hexgrad/kokoro). Enable per channel, choose from 8 voices, and optionally restrict voice replies to specific contacts. Requires `ffmpeg` on your system PATH (see [Voice Reply Setup](#voice-reply-setup-optional))
+- **Voice note replies** — Optionally reply with a generated voice note instead of text. The TTS pipeline auto-selects the best available engine: [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS) (high quality, CUDA GPU required, 9 preset voices across English/Chinese/Japanese/Korean) → [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (CPU-native, ~471MB) → [Kokoro](https://github.com/hexgrad/kokoro) (CPU last resort). The engine can be forced per channel (`auto` / `qwen` / `classic`). Enable per channel, choose a voice, and optionally restrict voice replies to specific contacts. Requires `ffmpeg` (see [Voice Reply Setup](#voice-reply-setup-optional))
+- **Voice cloning** — When using Qwen3-TTS, users can record or upload a voice sample directly from the channel settings page (guided recording script included). The agent replies in the user's own voice. Clone prompts are cached — the reference audio is processed once and reused for all subsequent replies
 - **Global HITL badge** — A new bell icon in the app header polls all sessions for pending approvals and lets you approve or reject tool calls from anywhere in the UI
 - **Auto-reconnect** — The sidecar reconnects all previously authenticated channels automatically on startup; no manual re-scanning after a restart
 
@@ -1043,53 +1173,75 @@ Agents and teams can now be assigned an isolated Docker container for safe, pers
 
 ---
 
-## Roadmap
+### 🟢 Prompt Vault
 
-> Planned features, not in any particular order of priority.
+A dedicated prompt library for storing, organizing, and reusing system prompts across agents.
 
-### Agent Orchestration
+- **Vault page** — Browse and manage all saved prompts from a dedicated settings page
+- **Save from optimizer** — When the Prompt Auto-Optimizer proposes an improved prompt, accept it directly into the vault instead of (or in addition to) applying it to the agent
+- **Apply to agents** — Select any saved prompt from the vault when configuring an agent's system prompt
+- **Full CRUD** — Create, edit, and delete vault entries; each entry has a name, description, and prompt body
+- **MongoDB + SQLite support** — Works with both database backends
 
-- [ ] **Agent-as-tool** — Allow agents to call other agents as tools (hierarchical delegation)
-- [ ] **Agent Supervision Trees** — Supervisor agents watch over worker agents in real-time; if a worker's output falls outside defined quality bounds, the supervisor automatically intervenes, corrects, retries, or escalates to HITL
-- [ ] **Meta-Agent** — Describe a workflow or agent in plain English and have the platform auto-generate the full configuration: system prompt, tools, MCP servers, and workflow steps
+**New API endpoints:**
 
-### Intelligence & Learning
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/prompt-vault` | GET | List all prompts in the vault |
+| `/prompt-vault` | POST | Create a new vault entry |
+| `/prompt-vault/{id}` | GET / PUT / DELETE | Get, update, or delete a vault entry |
+| `/optimizer/runs/{id}/save-to-vault` | POST | Save an optimizer-proposed prompt to the vault |
+| `/optimizer/runs/{id}/update-vault` | POST | Update an existing vault entry with a proposed prompt |
 
-- [ ] **Memory Graph** — Upgrade agent memory from flat key-value facts to a typed relational graph; memories have explicit relationships (e.g. *"User works at [Company]"*, *"[Company] uses [Tool]"*) that agents can traverse for richer, multi-hop context
+---
 
-### Observability & Debugging
+### 🟢 Qwen3-TTS & Voice Cloning for WhatsApp
 
-- [ ] **Cost tracking dashboard** — Token usage and estimated cost per agent, session, user, and time period
-- [ ] **Prompt diffing** — Side-by-side comparison of how system prompt changes affect outputs
+The WhatsApp voice reply engine has been upgraded from Pocket TTS to a full multi-backend TTS pipeline with support for high-quality neural synthesis and per-user voice cloning.
 
-### Deployment & Scheduling
+**Qwen3-TTS (GPU)**
 
-- [ ] **Webhook triggers** — Fire agent runs from external events (GitHub push, form submission, etc.)
-- [ ] **Async job queue** — Long-running agent tasks run in the background with status polling
+When a CUDA GPU is available, voice replies are synthesised using [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS) — Alibaba's state-of-the-art text-to-speech model. It produces natural, expressive audio at 12.5 FPS codec frame rate and supports 9 preset voices across four languages:
 
-### Evaluation & Testing
+| Voice | Language | Character |
+|-------|----------|-----------|
+| Ryan | English | Dynamic male |
+| Aiden | English | Sunny American male |
+| Vivian | Chinese | Bright young female |
+| Serena | Chinese | Warm gentle female |
+| Uncle_Fu | Chinese | Low mellow male |
+| Dylan | Chinese | Natural male |
+| Eric | Chinese | Husky male |
+| Ono_Anna | Japanese | Playful female |
+| Sohee | Korean | Warm female |
 
-- [ ] **Replay & Simulation Mode** — Re-run any past session through a different agent configuration side-by-side to see exactly how responses would have changed; makes prompt iteration grounded in real historical conversations
+**Voice cloning**
 
-### Security & Governance
+Users can record a short voice sample (or upload an audio file) directly from the channel settings page. Once saved, the agent replies in the user's own cloned voice using the Qwen3-TTS Base model. The UI includes:
 
-- [ ] **Adversarial / Red Team Mode** — A dedicated red-team agent automatically probes your agents for prompt injection, jailbreaks, persona drift, and instruction-following failures, then generates a security report with specific vulnerabilities found
-- [ ] **Audit logs** — Immutable record of all agent actions, tool calls, and data accessed
+- **Guided recording** — An in-browser recorder with a phonetically rich script designed to capture enough phoneme coverage for a good clone
+- **Upload fallback** — Alternatively upload any audio file (WAV, MP3, WebM, etc.); the backend normalises it to 16kHz mono WAV via ffmpeg automatically
+- **Clone cache** — Voice clone prompts are computed once from the reference audio and cached in memory; subsequent replies reuse the cached prompt with zero extra latency
+- **Replace / delete** — Replace the sample at any time or remove it to revert to a preset voice
 
-### UX & Productivity
+**Backend selection per channel**
 
-- [ ] **Agent templates** — Curated starter configs for common use cases (customer support, code review, research)
-- [ ] **Collaborative sessions** — Multiple users in the same agent chat simultaneously
+Each channel has an independent `tts_backend` setting:
 
-### Messaging Channels
+| Value | Behaviour |
+|-------|-----------|
+| `auto` | Qwen3-TTS if CUDA GPU available, otherwise Pocket TTS → Kokoro |
+| `qwen` | Force Qwen3-TTS (error if GPU not available) |
+| `classic` | Force Pocket TTS → Kokoro (CPU only) |
 
-- [ ] **Telegram** — Connect any agent to a Telegram bot (via `@BotFather` token); the agent responds to direct messages and group mentions, with full tool execution, RAG, HITL approval, and session history working natively
-- [x] **WhatsApp** — Connect any agent to a WhatsApp account via QR code scan; the agent handles direct messages using the WhatsApp Web multi-device protocol — no Meta Business account required *(shipped)*
-- [x] **Channel session continuity** — Each WhatsApp contact maps to a persistent Obsidian AI session; the agent remembers previous conversations and applies long-term memory across channel interactions *(shipped)*
-- [x] **WhatsApp voice note transcription** — Incoming voice notes are transcribed locally using faster-whisper tiny (CPU, int8, ~39 MB model) and passed to the agent as text — no cloud STT, no temp files *(shipped)*
-- [x] **WhatsApp voice note replies** — Agents can reply with generated voice notes using Pocket TTS (CPU-native, ~471MB); per-channel toggle, 8 voices, per-contact targeting, automatic text fallback *(shipped)*
-- [x] **Channel HITL** — When a channel-connected agent triggers a HITL-flagged tool, execution pauses; the approval card surfaces in the global notification badge in the web UI and unblocks automatically once actioned *(shipped)*
-- [ ] **Additional channels** — Discord, Slack, Signal, and Matrix following the same channel plugin architecture once Telegram and WhatsApp are stable
+The CPU fallback chain (Pocket TTS → Kokoro → text) is fully preserved for servers without a GPU.
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/wa/channels/{id}/voice-sample` | POST | Upload or record a voice clone sample |
+| `/wa/channels/{id}/voice-sample` | DELETE | Remove the voice clone sample |
 
 ---
 

@@ -189,12 +189,21 @@ async def _handle_sqlite(
         channel_dict = {
             "voice_reply_enabled": getattr(channel, "voice_reply_enabled", False),
             "voice_reply_jids": json.loads(channel.voice_reply_jids) if getattr(channel, "voice_reply_jids", None) else [],
-            "voice_reply_voice": getattr(channel, "voice_reply_voice", None) or "marius",
+            "voice_reply_voice": getattr(channel, "voice_reply_voice", None) or "Ryan",
+            "tts_backend": getattr(channel, "tts_backend", None) or "auto",
+            "voice_clone_audio_path": getattr(channel, "voice_clone_audio_path", None),
+            "voice_clone_ref_text": getattr(channel, "voice_clone_ref_text", None),
         }
         if _should_send_voice(channel_dict, wa_chat_id):
             try:
                 from services.tts_service import synthesize
-                ogg = await synthesize(reply, voice=channel_dict["voice_reply_voice"])
+                ogg = await synthesize(
+                    reply,
+                    voice=channel_dict["voice_reply_voice"],
+                    backend=channel_dict["tts_backend"],
+                    ref_audio=channel_dict["voice_clone_audio_path"] or None,
+                    ref_text=channel_dict["voice_clone_ref_text"] or None,
+                )
                 await send_audio(channel_id, wa_chat_id, ogg)
             except Exception as e:
                 logger.warning("TTS failed, falling back to text: %s", e)
@@ -322,8 +331,13 @@ async def _handle_mongo(
         if _should_send_voice(channel, reply_chat_id):
             try:
                 from services.tts_service import synthesize
-                voice = channel.get("voice_reply_voice") or "marius"
-                ogg = await synthesize(reply, voice=voice)
+                ogg = await synthesize(
+                    reply,
+                    voice=channel.get("voice_reply_voice") or "Ryan",
+                    backend=channel.get("tts_backend") or "auto",
+                    ref_audio=channel.get("voice_clone_audio_path") or None,
+                    ref_text=channel.get("voice_clone_ref_text") or None,
+                )
                 await send_audio(channel_id, reply_chat_id, ogg)
             except Exception as e:
                 logger.warning("TTS failed, falling back to text: %s", e)
