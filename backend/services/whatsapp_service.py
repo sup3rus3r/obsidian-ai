@@ -161,18 +161,22 @@ async def _handle_sqlite(
     if not session:
         return
 
+    # Prepend sender phone number so agent knows who sent the message
+    phone_num = wa_sender.split("@")[0]
+    prefixed_text = f"[From: {phone_num}]\n{message_text}"
+
     # Save the incoming user message
     user_msg = Message(
         session_id=session.id,
         role="user",
-        content=message_text,
+        content=prefixed_text,
     )
     db.add(user_msg)
     db.commit()
 
     # Show typing indicator while agent is running
     await send_typing(channel_id, wa_chat_id, "composing")
-    reply = await _run_agent_sqlite(session.id, message_text, channel.agent_id, db)
+    reply = await _run_agent_sqlite(session.id, prefixed_text, channel.agent_id, db)
     await send_typing(channel_id, wa_chat_id, "paused")
 
     if reply:
@@ -305,16 +309,20 @@ async def _handle_mongo(
         if wa_lid and not is_group and not contact.get("wa_lid"):
             await WAContactSessionCollection.update_lid(mongo_db, str(channel_id), contact["wa_chat_id"], wa_lid)
 
+    # Prepend sender phone number so agent knows who sent the message
+    phone_num = wa_sender.split("@")[0]
+    prefixed_text = f"[From: {phone_num}]\n{message_text}"
+
     # Save user message
     await MessageCollection.create(mongo_db, {
         "session_id": session_id,
         "role": "user",
-        "content": message_text,
+        "content": prefixed_text,
     })
 
     await send_typing(channel_id, reply_chat_id, "composing")
     try:
-        reply = await _run_agent_mongo(session_id, message_text, channel["agent_id"])
+        reply = await _run_agent_mongo(session_id, prefixed_text, channel["agent_id"])
     except Exception as e:
         logger.exception("handle_incoming_message: agent run failed for session %s: %s", session_id, e)
         await send_typing(channel_id, reply_chat_id, "paused")

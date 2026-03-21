@@ -171,7 +171,7 @@ export function ToolsSelector({ onCreateTool, hideCreate }: ToolsSelectorProps) 
               )}
             </div>
           ) : (
-            <div className="space-y-1 max-h-40 overflow-y-auto">
+            <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
               {availableTools.map((tool) => {
                 const isEnabled = agentTools.includes(tool.id)
                 return (
