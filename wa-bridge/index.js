@@ -33,6 +33,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.WA_BRIDGE_PORT || "3200");
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8001";
 const AUTH_BASE_DIR = process.env.WA_AUTH_DIR || path.join(__dirname, "auth");
+const SIDECAR_SECRET = process.env.WA_SIDECAR_SECRET || "";
+const SIDECAR_HEADERS = SIDECAR_SECRET ? { "X-Sidecar-Secret": SIDECAR_SECRET } : {};
 
 const logger = pino({ level: "warn" });
 const silentLogger = pino({ level: "silent" });
@@ -65,7 +67,7 @@ function ensureDir(dir) {
 
 async function notifyBackend(channelId, payload) {
   try {
-    await axios.post(`${FASTAPI_URL}/wa/incoming`, { channel_id: channelId, ...payload });
+    await axios.post(`${FASTAPI_URL}/wa/incoming`, { channel_id: channelId, ...payload }, { headers: SIDECAR_HEADERS });
   } catch (err) {
     logger.warn({ err }, `Failed to notify backend for channel ${channelId}`);
   }
@@ -75,7 +77,7 @@ async function updateChannelStatus(channelId, status, waPhone = null) {
   try {
     const body = { status };
     if (waPhone) body.wa_phone = waPhone;
-    await axios.patch(`${FASTAPI_URL}/wa/channels/${channelId}/status`, body);
+    await axios.patch(`${FASTAPI_URL}/wa/channels/${channelId}/status`, body, { headers: SIDECAR_HEADERS });
   } catch (_) {
     // Best-effort — backend may not be ready yet
   }
@@ -119,6 +121,7 @@ async function startChannel(channelId, authPath) {
   });
 
   const lastMsgCache = new Map(); // bufKey → last raw Baileys WAMessage (never serialized)
+  const msgIdCache = new Map();   // wa_message_id → raw Baileys WAMessage (for quoting by ID)
 
   const entry = {
     socket: sock,
@@ -129,6 +132,7 @@ async function startChannel(channelId, authPath) {
     lidMap: new Map(),   // lid JID → phone JID (from lid-mapping.update)
     recentSent,
     lastMsgCache,
+    msgIdCache,
   };
   channels.set(String(channelId), entry);
   starting.delete(String(channelId));
@@ -229,9 +233,10 @@ async function startChannel(channelId, authPath) {
   // Dedup: per-socket-instance seen message IDs
   const seenMsgIds = new Set();
 
-  // Per-chat debounce buffer: key = phone prefix, value = { timer, lines, meta, lastMsg }
+  // Per-chat debounce buffer: key = phone prefix, value = { timer, msgs[], meta, lastMsg }
+  // Each entry in msgs: { text, wa_message_id, quoted_message_id, quoted_text }
   const chatBuffers = new Map();
-  const DEBOUNCE_MS = 1000;
+  const DEBOUNCE_MS = 3000;
 
   function flushChat(bufKey) {
     const buf = chatBuffers.get(bufKey);
@@ -239,12 +244,20 @@ async function startChannel(channelId, authPath) {
     // Store the last Baileys msg object in the per-entry cache before clearing the buffer
     if (buf.lastMsg) lastMsgCache.set(bufKey, buf.lastMsg);
     chatBuffers.delete(bufKey);
-    const combinedText = buf.lines.join("\n");
-    _origStdoutWrite(`[WA-BRIDGE] flushing bufKey=${bufKey} lines=${buf.lines.length} text=${JSON.stringify(combinedText)}\n`);
+
+    const msgCount = buf.msgs.length;
+    // Tag with [msg:<id>] only when multiple messages are batched (enables per-message quoting)
+    const combinedText = msgCount === 1
+      ? (buf.msgs[0].text || "")
+      : buf.msgs.map(m => `[msg:${m.wa_message_id}] ${m.text}`).join("\n");
+
+    _origStdoutWrite(`[WA-BRIDGE] flushing bufKey=${bufKey} lines=${msgCount} text=${JSON.stringify(combinedText)}\n`);
     notifyBackend(channelId, {
       ...buf.meta,
       message_text: combinedText,
-      message_count: buf.lines.length,
+      message_count: msgCount,
+      // Pass all message IDs so backend can reference them for quoting
+      wa_message_ids: buf.msgs.map(m => m.wa_message_id),
     }).catch((e) => {
       _origStdoutWrite(`[WA-BRIDGE] notifyBackend error: ${e}\n`);
     });
@@ -271,11 +284,16 @@ async function startChannel(channelId, authPath) {
       _origStdoutWrite(`[WA-BRIDGE] processing ${messages.length} recent append messages\n`);
     }
 
+    // Bot's own JID — messages from self should never be processed
+    const botNum = sock.user?.id?.split(":")[0]?.split("@")[0] || null;
+
     for (const msg of messages) {
       if (msg.key.fromMe) continue; // Ignore outgoing messages
 
       const msgId = `${channelId}:${msg.key.id}`;
       if (seenMsgIds.has(msgId)) continue;
+      // Skip messages the bot itself sent (loopback from recentSent map)
+      if (entry.recentSent?.has(msg.key.id)) { seenMsgIds.add(msgId); continue; }
 
       const rawChatId = msg.key.remoteJid;
       const rawSender = msg.key.participant || msg.key.remoteJid;
@@ -291,10 +309,21 @@ async function startChannel(channelId, authPath) {
       }
 
       const waChatId = resolveJid(rawChatId);
-      const waSender = resolveJid(rawSender);
-      // If still a @lid after resolution, extract numeric part and treat as phone number
-      // LID format on some WA versions: the numeric part IS the phone without country code prefix
-      // but we can't reliably convert — store as waLid so backend can match by lid
+      // If waSender is still a @lid after resolution, fall back to senderPn directly
+      const waSender = (() => {
+        const resolved = resolveJid(rawSender);
+        if (resolved?.endsWith("@lid") && senderPn) {
+          return senderPn.includes("@") ? senderPn : `${senderPn}@s.whatsapp.net`;
+        }
+        return resolved;
+      })();
+
+      // Drop messages where the resolved sender is the bot itself (multi-device loopback)
+      if (botNum && waSender.split("@")[0] === botNum) {
+        seenMsgIds.add(msgId);
+        continue;
+      }
+
       const waLid = rawChatId?.endsWith("@lid") ? rawChatId : (rawSender?.endsWith("@lid") ? rawSender : null);
       const isGroup = rawChatId?.endsWith("@g.us") || false;
       let waGroupName = null;
@@ -310,6 +339,34 @@ async function startChannel(channelId, authPath) {
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption ||
         null;
+
+      // Extract quoted message context
+      const contextInfo =
+        msg.message?.extendedTextMessage?.contextInfo ||
+        msg.message?.imageMessage?.contextInfo ||
+        msg.message?.videoMessage?.contextInfo ||
+        msg.message?.audioMessage?.contextInfo ||
+        msg.message?.buttonsResponseMessage?.contextInfo ||
+        null;
+      const quotedMsg = contextInfo?.quotedMessage;
+      const quotedStanzaId = contextInfo?.stanzaId || null;
+      let quotedText = null;
+      if (quotedMsg) {
+        quotedText =
+          quotedMsg.conversation ||
+          quotedMsg.extendedTextMessage?.text ||
+          quotedMsg.imageMessage?.caption ||
+          quotedMsg.videoMessage?.caption ||
+          null;
+        const quoteLabel = quotedText
+          ? `[Replying to: "${quotedText}"]`
+          : quotedMsg.imageMessage ? "[Replying to an image]"
+          : quotedMsg.audioMessage ? "[Replying to a voice note]"
+          : null;
+        if (quoteLabel) {
+          text = text ? `${quoteLabel}\n${text}` : quoteLabel;
+        }
+      }
 
       _origStdoutWrite(`[WA-BRIDGE] text=${JSON.stringify(text)} msgKeys=${Object.keys(msg.message||{}).join(",")} waChatId=${waChatId}\n`);
 
@@ -336,7 +393,7 @@ async function startChannel(channelId, authPath) {
           const resp = await axios.post(
             `${FASTAPI_URL}/wa/transcribe`,
             body,
-            { headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` }, responseType: "json", timeout: 120000 }
+            { headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, ...SIDECAR_HEADERS }, responseType: "json", timeout: 120000 }
           );
           text = resp.data?.text || null;
           _origStdoutWrite(`[WA-BRIDGE] transcribed audio: ${JSON.stringify(text)}\n`);
@@ -349,27 +406,37 @@ async function startChannel(channelId, authPath) {
       if (!text) continue;
 
       // Mark as seen only after we confirm there's processable content
-      seenMsgIds.add(msgId);
-      if (seenMsgIds.size > 500) {
-        const first = seenMsgIds.values().next().value;
-        seenMsgIds.delete(first);
+      if (!seenMsgIds.has(msgId)) {
+        seenMsgIds.add(msgId);
+        if (seenMsgIds.size > 500) {
+          const first = seenMsgIds.values().next().value;
+          seenMsgIds.delete(first);
+        }
       }
 
       // Use phone-number prefix as buffer key to handle @lid vs @s.whatsapp.net inconsistency
       const bufKey = waChatId.split("@")[0];
 
-      // Buffer messages per chat — flush after DEBOUNCE_MS of silence
+      // Cache this message by its WA ID so the bridge can quote it later
+      const waMessageId = msg.key.id;
+      entry.msgIdCache.set(waMessageId, msg);
+      if (entry.msgIdCache.size > 200) { entry.msgIdCache.delete(entry.msgIdCache.keys().next().value); }
+
+      const msgEntry = { text, wa_message_id: waMessageId, quoted_message_id: quotedStanzaId, quoted_text: quotedText };
+
+      // Buffer text messages per chat — flush after DEBOUNCE_MS of silence
       if (chatBuffers.has(bufKey)) {
         const buf = chatBuffers.get(bufKey);
         clearTimeout(buf.timer);
-        buf.lines.push(text);
+        buf.msgs.push(msgEntry);
         buf.lastMsg = msg;
         buf.timer = setTimeout(() => flushChat(bufKey), DEBOUNCE_MS);
       } else {
+        const pushName = msg.pushName || sock.contacts?.[rawSender]?.notify || sock.contacts?.[rawSender]?.name || null;
         chatBuffers.set(bufKey, {
-          lines: [text],
+          msgs: [msgEntry],
           lastMsg: msg,
-          meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: waLid, is_group: isGroup, wa_group_name: waGroupName },
+          meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: waLid, is_group: isGroup, wa_group_name: waGroupName, sender_name: pushName },
           timer: setTimeout(() => flushChat(bufKey), DEBOUNCE_MS),
         });
       }
@@ -381,6 +448,7 @@ async function startChannel(channelId, authPath) {
     for (const update of updates) {
       if (!update.update?.message) continue; // no content update
       if (update.key.fromMe) continue;
+      if (entry.recentSent?.has(update.key.id)) continue; // bot's own sent message — skip
 
       const msgId = `${channelId}:${update.key.id}`;
       if (seenMsgIds.has(msgId)) continue; // already processed
@@ -409,15 +477,21 @@ async function startChannel(channelId, authPath) {
 
       // Reconstruct a minimal WAMessage-shaped object for quoting
       const syntheticMsg = { key: update.key, message: update.update.message };
+      const waMessageId = update.key.id;
+      entry.msgIdCache.set(waMessageId, syntheticMsg);
+      if (entry.msgIdCache.size > 200) { entry.msgIdCache.delete(entry.msgIdCache.keys().next().value); }
+
+      const msgEntry = { text, wa_message_id: waMessageId, quoted_message_id: null, quoted_text: null };
+
       if (chatBuffers.has(bufKey)) {
         const buf = chatBuffers.get(bufKey);
         clearTimeout(buf.timer);
-        buf.lines.push(text);
+        buf.msgs.push(msgEntry);
         buf.lastMsg = syntheticMsg;
         buf.timer = setTimeout(() => flushChat(bufKey), DEBOUNCE_MS);
       } else {
         chatBuffers.set(bufKey, {
-          lines: [text],
+          msgs: [msgEntry],
           lastMsg: syntheticMsg,
           meta: { wa_chat_id: waChatId, wa_sender: waSender, wa_lid: null, is_group: isGroup },
           timer: setTimeout(() => flushChat(bufKey), DEBOUNCE_MS),
@@ -441,7 +515,7 @@ function stopChannel(channelId) {
 // ── Express app ───────────────────────────────────────────────────────────────
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 
 /** Start / connect a channel */
 app.post("/channels/:id/start", async (req, res) => {
@@ -516,6 +590,36 @@ app.post("/channels/:id/send", async (req, res) => {
     res.json({ status: "sent" });
   } catch (err) {
     logger.error({ err }, "Failed to send message");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Send an outgoing message quoting a specific incoming message by its WA message ID */
+app.post("/channels/:id/send-quoted", async (req, res) => {
+  const { id } = req.params;
+  const { wa_chat_id, text, quote_message_id } = req.body;
+
+  if (!wa_chat_id) return res.status(400).json({ error: "Missing wa_chat_id" });
+  if (!text) return res.status(400).json({ error: "Missing text" });
+
+  const entry = channels.get(id);
+  if (!entry || entry.status !== "connected") {
+    return res.status(503).json({ error: "Channel not connected" });
+  }
+
+  try {
+    const quotedMsg = quote_message_id
+      ? (entry.msgIdCache?.get(quote_message_id) || entry.lastMsgCache?.get(wa_chat_id.split("@")[0]))
+      : null;
+    const sendOpts = quotedMsg ? { quoted: quotedMsg } : {};
+    const sent = await entry.socket.sendMessage(wa_chat_id, { text }, sendOpts);
+    if (sent?.key?.id) {
+      entry.recentSent.set(sent.key.id, sent.message);
+      if (entry.recentSent.size > 50) entry.recentSent.delete(entry.recentSent.keys().next().value);
+    }
+    res.json({ status: "sent" });
+  } catch (err) {
+    logger.error({ err }, "Failed to send quoted message");
     res.status(500).json({ error: String(err) });
   }
 });

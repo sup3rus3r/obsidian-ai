@@ -54,6 +54,8 @@ class WAIncomingMessage(BaseModel):
     message_text: str
     is_group: bool = False
     wa_group_name: Optional[str] = None  # Display name of the group (groups only)
+    sender_name: Optional[str] = None     # WhatsApp push name of the sender
+    wa_message_ids: Optional[list[str]] = None  # WA key.id of each buffered message (for quoting)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -745,11 +747,9 @@ async def transcribe_audio(request: Request):
 async def incoming_message(body: WAIncomingMessage):
     """
     Called by the Baileys sidecar when a WhatsApp message arrives.
+    Returns immediately — message is buffered and processed asynchronously.
     No user auth — sidecar is localhost-only.
     """
-    try:
-        from services.whatsapp_service import handle_incoming_message
-        await handle_incoming_message(body.dict(), None)
-    except Exception:
-        pass
+    from services.whatsapp_service import handle_incoming_message
+    asyncio.ensure_future(handle_incoming_message(body.dict(), None))
     return {"status": "ok"}
