@@ -28,11 +28,28 @@ def _strip_think_tags(content: str) -> tuple[str, str]:
     return clean.strip(), "\n".join(reasoning_parts)
 
 
+_VERSION_SEGMENT = re.compile(r"/v\d+[a-z0-9]*$", re.IGNORECASE)
+
+
 class OpenAIProvider(BaseLLMProvider):
 
     def __init__(self, api_key=None, base_url=None, model_id="gpt-5.5", config=None):
-        super().__init__(api_key, base_url or "https://api.openai.com/", model_id, config)
+        super().__init__(api_key, base_url or "https://api.openai.com/v1", model_id, config)
         self._tool_name_map: dict[str, str] = {}  # sanitized_name -> original_name
+
+    def _url(self, path: str) -> str:
+        """Join base_url with an API path.
+
+        base_url is expected to be the full OpenAI-compatible root including
+        its version segment ("https://api.groq.com/openai/v1"). Roots that end
+        in something other than a version get "/v1" appended, so bare origins
+        and older stored records without the suffix still resolve. Matching any
+        /vN segment rather than /v1 specifically is what lets Z AI's
+        /api/paas/v4 through without a double version."""
+        base = self.base_url.rstrip("/")
+        if not _VERSION_SEGMENT.search(base):
+            base += "/v1"
+        return f"{base}{path}"
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -102,7 +119,7 @@ class OpenAIProvider(BaseLLMProvider):
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                f"{self.base_url}/v1/chat/completions",
+                self._url("/chat/completions"),
                 json=payload,
                 headers=self._headers(),
             )
@@ -116,7 +133,7 @@ class OpenAIProvider(BaseLLMProvider):
                     logger.warning(f"OpenAI API returned 400 with tools. Error: {error_msg}. Retrying without tools.")
                     payload.pop("tools", None)
                     response = await client.post(
-                        f"{self.base_url}/v1/chat/completions",
+                        self._url("/chat/completions"),
                         json=payload,
                         headers=self._headers(),
                     )
@@ -208,9 +225,13 @@ class OpenAIProvider(BaseLLMProvider):
                 _last_finish_reason = choice["finish_reason"]
             delta = choice.get("delta", {})
 
-            # Handle reasoning_content field (DeepSeek R1 via OpenRouter and similar)
-            if delta.get("reasoning_content"):
-                yield LLMStreamChunk(type="reasoning", reasoning=delta["reasoning_content"])
+            # Handle reasoning deltas. DeepSeek R1 via OpenRouter uses
+            # "reasoning_content"; OpenRouter's own field and LLM7 use plain
+            # "reasoning" — without both, reasoning models stream nothing but
+            # an empty content string.
+            reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning_delta:
+                yield LLMStreamChunk(type="reasoning", reasoning=reasoning_delta)
 
             if delta.get("content"):
                 text = delta["content"]
@@ -282,7 +303,7 @@ class OpenAIProvider(BaseLLMProvider):
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
                 "POST",
-                f"{self.base_url}/v1/chat/completions",
+                self._url("/chat/completions"),
                 json=payload,
                 headers=self._headers(),
             ) as response:
@@ -307,7 +328,7 @@ class OpenAIProvider(BaseLLMProvider):
             # Retry after removing tools or stream_options
             async with client.stream(
                 "POST",
-                f"{self.base_url}/v1/chat/completions",
+                self._url("/chat/completions"),
                 json=payload,
                 headers=self._headers(),
             ) as response:
@@ -329,7 +350,7 @@ class OpenAIProvider(BaseLLMProvider):
             # Final retry without tools
             async with client.stream(
                 "POST",
-                f"{self.base_url}/v1/chat/completions",
+                self._url("/chat/completions"),
                 json=payload,
                 headers=self._headers(),
             ) as response:
@@ -340,7 +361,7 @@ class OpenAIProvider(BaseLLMProvider):
     async def list_models(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                f"{self.base_url}/models",
+                self._url("/models"),
                 headers=self._headers(),
             )
             response.raise_for_status()

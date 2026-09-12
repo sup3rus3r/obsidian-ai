@@ -37,7 +37,7 @@ class LLMProvider(Base):
     id            = Column(Integer, primary_key=True, index=True)
     user_id       = Column(Integer, ForeignKey("users.id"), nullable=False)
     name          = Column(String, nullable=False)
-    provider_type = Column(String, nullable=False)        # openai | anthropic | google | ollama | openrouter | custom
+    provider_type = Column(String, nullable=False)        # openai | anthropic | google | ollama | custom, or a free-tier id (llm/free_providers.py)
     base_url      = Column(String, nullable=True)
     api_key       = Column(String, nullable=True)          # encrypted at rest
     secret_id     = Column(Integer, nullable=True)         # FK to user_secrets (optional)

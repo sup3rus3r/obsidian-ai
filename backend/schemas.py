@@ -101,7 +101,7 @@ class TOTPStatusResponse(BaseModel):
 
 class LLMProviderCreate(BaseModel):
     name: str
-    provider_type: str         # openai | anthropic | google | ollama | openrouter | custom
+    provider_type: str         # openai | anthropic | google | ollama | custom, or a free-tier id (llm/free_providers.py)
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     secret_id: Optional[str] = None   # Use a saved secret instead of api_key

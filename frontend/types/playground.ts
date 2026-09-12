@@ -1,7 +1,31 @@
+export type BuiltInProviderType = "openai" | "anthropic" | "google" | "ollama" | "custom"
+
+/** One entry from the permanent-free-tier catalog. */
+export interface FreeProviderCatalogEntry {
+  id: string
+  label: string
+  base_url: string
+  /** Where the user goes to get a key. */
+  key_url: string
+  country: string
+  default_model: string
+  suggested_models: string[]
+  needs_key: boolean
+  /** Works without a key, but a free key raises the limits. */
+  key_optional: boolean
+  /** Training/licensing/verification catch — show this, don't bury it. */
+  caveat: string | null
+  /** Placeholders in base_url the user must fill in (e.g. account_id). */
+  template_fields: string[]
+}
+
 export interface LLMProvider {
   id: string
   name: string
-  provider_type: "openai" | "anthropic" | "google" | "ollama" | "openrouter" | "custom"
+  // Built-in types, plus any id from the free-tier catalog
+  // (GET /api/providers/catalog/free) — kept open so the catalog can grow
+  // without a frontend release.
+  provider_type: BuiltInProviderType | (string & {})
   base_url?: string
   model_id?: string
   is_active: boolean

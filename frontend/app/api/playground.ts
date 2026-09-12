@@ -7,6 +7,7 @@ import type {
   Session,
   Message,
   Secret,
+  FreeProviderCatalogEntry,
   CreateProviderRequest,
   CreateAgentRequest,
   UpdateAgentRequest,
@@ -75,6 +76,13 @@ export async function listModels(accessToken: string, id: string): Promise<{ id:
 // ============================================================================
 // Secrets (for provider API key selection)
 // ============================================================================
+
+export async function listFreeProviderCatalog(accessToken: string): Promise<FreeProviderCatalogEntry[]> {
+  const res = await fetch(AppRoutes.ListFreeProviderCatalog(), { headers: headers(accessToken) })
+  if (!res.ok) throw new Error("Failed to list free provider catalog")
+  const data = await res.json()
+  return data.providers
+}
 
 export async function listSecrets(accessToken: string): Promise<Secret[]> {
   const res = await fetch(AppRoutes.ListSecrets(), { headers: headers(accessToken) })

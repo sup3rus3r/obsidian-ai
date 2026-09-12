@@ -16,22 +16,26 @@ def create_provider_from_config(
     from .anthropic_provider import AnthropicProvider
     from .google_provider import GoogleProvider
     from .ollama_provider import OllamaProvider
+    from .free_providers import is_free_provider, resolve_base_url
 
     PROVIDER_MAP = {
         "openai": OpenAIProvider,
         "anthropic": AnthropicProvider,
         "google": GoogleProvider,
         "ollama": OllamaProvider,
-        "openrouter": OpenAIProvider,
         "custom": OpenAIProvider,
     }
 
-    provider_cls = PROVIDER_MAP.get(provider_type)
+    # Every free-tier provider in the catalog speaks the OpenAI protocol —
+    # they differ only by base URL, which resolve_base_url fills in.
+    if is_free_provider(provider_type):
+        provider_cls = OpenAIProvider
+        base_url = resolve_base_url(provider_type, base_url, config)
+    else:
+        provider_cls = PROVIDER_MAP.get(provider_type)
+
     if not provider_cls:
         raise ValueError(f"Unknown provider type: {provider_type}")
-
-    if provider_type == "openrouter":
-        base_url = base_url or "https://openrouter.ai/api/v1"
 
     return provider_cls(
         api_key=api_key,
