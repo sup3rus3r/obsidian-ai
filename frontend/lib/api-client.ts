@@ -15,6 +15,8 @@ import type {
   CreateTeamRequest,
   CreateWorkflowRequest,
   UpdateWorkflowRequest,
+  N8nImportRequest,
+  N8nImportResponse,
   WorkflowRun,
   CreateToolRequest,
   UpdateToolRequest,
@@ -415,6 +417,13 @@ class ApiClient {
   async deleteWorkflow(id: string): Promise<void> {
     await this.request<void>(AppRoutes.DeleteWorkflow(id), {
       method: "DELETE",
+    })
+  }
+
+  async importN8nWorkflow(data: N8nImportRequest): Promise<N8nImportResponse> {
+    return this.request<N8nImportResponse>(AppRoutes.ImportN8nWorkflow(), {
+      method: "POST",
+      body: JSON.stringify(data),
     })
   }
 

@@ -151,6 +151,7 @@ Define multi-step workflows where each step is handled by a specific agent. Buil
 - **Run history** - Track past executions with status (pending, running, completed, failed)
 - **Reusable definitions** - Save workflow templates and run them on demand or on a schedule
 - **Cron scheduling** - Schedule workflows to run automatically using standard cron expressions
+- **n8n import** - "Import from n8n" on the home screen (or `POST /workflows/import/n8n`) converts an exported n8n workflow into a DAG here: triggers become the Start node, IF/Switch/Filter become Condition nodes with their branch labels, `splitInBatches` becomes a Map node, Wait becomes an Approval node, and every integration node (HTTP Request, Gmail, Set, Code, …) becomes an agent step whose task describes what it did, with the original parameters kept under `config.n8n`. n8n expressions are rewritten into `{{ nodes.<id>.output.<path> }}` where that translation is exact and left verbatim otherwise. The dialog previews the converted graph, the steps still missing an agent, and every conversion note before anything is saved (`dry_run: true` on the API)
 
 ---
 

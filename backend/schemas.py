@@ -447,6 +447,32 @@ class WorkflowListResponse(BaseModel):
 
 
 # ============================================================================
+# n8n Import Schemas
+# ============================================================================
+
+class N8nImportRequest(BaseModel):
+    workflow: dict                          # raw n8n export JSON (or a canvas copy-paste)
+    name: Optional[str] = None              # override the imported workflow's name
+    default_agent_id: Optional[str] = None  # assigned to every agent/map step the import creates
+    dry_run: bool = False                   # convert and report only; persist nothing
+
+class N8nImportWarning(BaseModel):
+    level: str                              # "info" | "warning"
+    code: str
+    message: str
+    node: Optional[str] = None              # original n8n node name
+
+class N8nImportResponse(BaseModel):
+    workflow: Optional[WorkflowResponse] = None  # None on a dry run
+    steps: list[WorkflowStep]               # the converted steps, dry run or not
+    name: str
+    description: Optional[str] = None
+    warnings: list[N8nImportWarning]
+    schedules: list[dict]                   # cron expressions found on triggers; never auto-created
+    needs_agent: list[str]                  # step ids still missing an agent
+
+
+# ============================================================================
 # Workflow Run Schemas
 # ============================================================================
 

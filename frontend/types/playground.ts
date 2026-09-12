@@ -305,6 +305,31 @@ export interface UpdateWorkflowRequest {
   config?: Record<string, unknown>
 }
 
+// n8n Import
+export interface N8nImportRequest {
+  workflow: Record<string, unknown>    // raw n8n export JSON
+  name?: string
+  default_agent_id?: string
+  dry_run?: boolean                    // convert and report only; persist nothing
+}
+
+export interface N8nImportWarning {
+  level: "info" | "warning"
+  code: string
+  message: string
+  node?: string                        // original n8n node name
+}
+
+export interface N8nImportResponse {
+  workflow?: Workflow                  // absent on a dry run
+  steps: WorkflowStep[]
+  name: string
+  description?: string
+  warnings: N8nImportWarning[]
+  schedules: { cron_expr: string; source_node: string }[]
+  needs_agent: string[]                // step ids still missing an agent
+}
+
 // Workflow Runs
 export interface WorkflowStepResult {
   node_id?: string                     // DAG node ID; undefined for legacy runs

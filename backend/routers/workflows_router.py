@@ -7,7 +7,9 @@ from database import get_db
 from models import Workflow
 from schemas import (
     WorkflowCreate, WorkflowUpdate, WorkflowResponse, WorkflowListResponse,
+    N8nImportRequest, N8nImportResponse,
 )
+from n8n_import import convert_n8n_workflow
 from routers.workflow_runs_router import _topological_validate, _is_dag_workflow
 
 
@@ -101,6 +103,58 @@ async def create_workflow(
     db.commit()
     db.refresh(workflow)
     return _workflow_to_response(workflow)
+
+
+@router.post("/import/n8n", response_model=N8nImportResponse)
+async def import_n8n_workflow(
+    data: N8nImportRequest,
+    current_user: TokenData = Depends(get_current_user),
+    _perm=Depends(require_permission("create_workflows")),
+    db: Session = Depends(get_db),
+):
+    """Convert an exported n8n workflow into a workflow here.
+
+    `dry_run` converts and returns the steps plus the import report without
+    saving, so the UI can show what will be lost before anything is persisted.
+    The conversion is lossy by nature (see n8n_import's module docstring): the
+    warnings are part of the result, not an error path.
+    """
+    try:
+        result = convert_n8n_workflow(
+            data.workflow,
+            name_override=data.name,
+            default_agent_id=data.default_agent_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    _validate_steps(result.steps)   # the converted graph must satisfy the same rules as a hand-built one
+
+    response = N8nImportResponse(
+        workflow=None,
+        steps=result.steps,
+        name=result.name,
+        description=result.description,
+        warnings=result.warning_dicts(),
+        schedules=result.schedules,
+        needs_agent=result.needs_agent,
+    )
+    if data.dry_run:
+        return response
+
+    created = await create_workflow(
+        data=WorkflowCreate(
+            name=result.name,
+            description=result.description,
+            steps=result.steps,
+            config={"imported_from": "n8n"},
+        ),
+        current_user=current_user,
+        _perm=None,
+        db=db,
+    )
+    response.workflow = created
+    return response
 
 
 @router.get("", response_model=WorkflowListResponse)
