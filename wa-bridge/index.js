@@ -31,6 +31,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.WA_BRIDGE_PORT || "3200");
+// Interface to bind, e.g. "127.0.0.1". Unset keeps the old behaviour (all interfaces), which a
+// deployment with the backend in a separate container needs. The bridge has no inbound auth,
+// so bind it to loopback whenever the backend runs on the same machine.
+const HOST = process.env.WA_BRIDGE_HOST || "";
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8001";
 const AUTH_BASE_DIR = process.env.WA_AUTH_DIR || path.join(__dirname, "auth");
 const SIDECAR_SECRET = process.env.WA_SIDECAR_SECRET || "";
@@ -720,8 +724,8 @@ app.get("/health", (_, res) => {
 // ── Internal status update endpoint (called by this sidecar back to FastAPI) ─
 // Actually called via updateChannelStatus() — no route needed here.
 
-app.listen(PORT, async () => {
-  logger.info(`WhatsApp bridge listening on port ${PORT}`);
+app.listen(PORT, ...(HOST ? [HOST] : []), async () => {
+  logger.info(`WhatsApp bridge listening on ${HOST || "all interfaces"}:${PORT}`);
   logger.info(`Forwarding to FastAPI at ${FASTAPI_URL}`);
   ensureDir(AUTH_BASE_DIR);
 
