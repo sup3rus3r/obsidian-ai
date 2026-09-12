@@ -25,14 +25,27 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 
 def _default_model_for_type(provider_type: str) -> str:
     """Return a sensible default model_id for connectivity/listing tests when none is stored."""
+    from llm.free_providers import default_model as free_default_model
+
     defaults = {
         "openai": "gpt-4o",
         "anthropic": "claude-sonnet-4-6",
         "google": "gemini-2.0-flash",
         "ollama": "llama3",
-        "openrouter": "openai/gpt-4o",
     }
-    return defaults.get(provider_type, "gpt-4o")
+    return defaults.get(provider_type) or free_default_model(provider_type) or "gpt-4o"
+
+
+@router.get("/catalog/free")
+async def list_free_provider_catalog(current_user: TokenData = Depends(get_current_user)):
+    """Providers with a permanent free tier, for the provider-picker UI.
+
+    Static catalog data — no credentials involved, nothing user-scoped. The
+    caveat on each entry (training on prompts, non-commercial-only, and so on)
+    is meant to be shown, not just stored."""
+    from llm.free_providers import catalog
+
+    return {"providers": catalog()}
 
 
 def _provider_to_response(provider, is_mongo=False) -> LLMProviderResponse:

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import {
   Dialog,
   DialogContent,
@@ -20,20 +20,40 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useSession } from "next-auth/react"
-import { createProvider, listSecrets } from "@/app/api/playground"
+import { createProvider, listSecrets, listFreeProviderCatalog } from "@/app/api/playground"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import { apiClient } from "@/lib/api-client"
-import { Loader2, CheckCircle2, XCircle, KeyRound, Lock } from "lucide-react"
-import type { LLMProvider, Secret } from "@/types/playground"
+import { Loader2, CheckCircle2, XCircle, KeyRound, Lock, Info, ExternalLink } from "lucide-react"
+import type { LLMProvider, Secret, FreeProviderCatalogEntry } from "@/types/playground"
 
-const PROVIDER_TYPES = [
+interface ProviderTypeOption {
+  value: string
+  label: string
+  defaultUrl: string
+  needsKey: boolean
+  /** Catalog entry — present only for free-tier providers. */
+  free?: FreeProviderCatalogEntry
+}
+
+const BUILT_IN_PROVIDER_TYPES: ProviderTypeOption[] = [
   { value: "ollama", label: "Ollama (Local)", defaultUrl: "http://localhost:11434", needsKey: false },
   { value: "openai", label: "OpenAI", defaultUrl: "", needsKey: true },
   { value: "anthropic", label: "Anthropic", defaultUrl: "", needsKey: true },
   { value: "google", label: "Google Gemini", defaultUrl: "", needsKey: true },
-  { value: "openrouter", label: "OpenRouter", defaultUrl: "https://openrouter.ai/api/v1", needsKey: true },
   { value: "custom", label: "Custom (OpenAI-compatible)", defaultUrl: "", needsKey: false },
 ]
+
+function freeEntryToOption(entry: FreeProviderCatalogEntry): ProviderTypeOption {
+  return {
+    value: entry.id,
+    label: entry.label,
+    defaultUrl: entry.base_url,
+    // key_optional providers still accept a key to raise their rate limits,
+    // so keep the key field available even though it isn't required.
+    needsKey: entry.needs_key || entry.key_optional,
+    free: entry,
+  }
+}
 
 interface ProviderDialogProps {
   open: boolean
@@ -64,7 +84,20 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
   const [selectedSecretId, setSelectedSecretId] = useState("")
   const [secretsLoading, setSecretsLoading] = useState(false)
 
-  const selectedType = PROVIDER_TYPES.find((p) => p.value === providerType)
+  // Free-tier provider catalog, served from the backend so it can grow
+  // without a frontend release.
+  const [freeCatalog, setFreeCatalog] = useState<FreeProviderCatalogEntry[]>([])
+
+  const freeOptions = useMemo(() => freeCatalog.map(freeEntryToOption), [freeCatalog])
+  const providerTypes = useMemo(
+    () => [...BUILT_IN_PROVIDER_TYPES, ...freeOptions],
+    [freeOptions],
+  )
+
+  const selectedType = providerTypes.find((p) => p.value === providerType)
+  const freeInfo = selectedType?.free
+  // Cloudflare and friends ship a base URL with {account_id} still in it.
+  const hasUnfilledTemplate = baseUrl.includes("{") && baseUrl.includes("}")
 
   // Pre-fill fields when editing an existing provider
   useEffect(() => {
@@ -99,14 +132,21 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
     }
   }, [open, session?.accessToken])
 
+  // Load the free-tier catalog once per open. A failure here is not fatal —
+  // the built-in provider types still work, the free ones just don't appear.
+  useEffect(() => {
+    if (open && session?.accessToken) {
+      listFreeProviderCatalog(session.accessToken)
+        .then(setFreeCatalog)
+        .catch(() => setFreeCatalog([]))
+    }
+  }, [open, session?.accessToken])
+
   const handleProviderTypeChange = (value: string) => {
     setProviderType(value)
-    const type = PROVIDER_TYPES.find((p) => p.value === value)
-    if (type?.defaultUrl) {
-      setBaseUrl(type.defaultUrl)
-    } else {
-      setBaseUrl("")
-    }
+    const type = [...BUILT_IN_PROVIDER_TYPES, ...freeCatalog.map(freeEntryToOption)]
+      .find((p) => p.value === value)
+    setBaseUrl(type?.defaultUrl || "")
     setTestStatus("idle")
   }
 
@@ -196,14 +236,55 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
                 <SelectValue placeholder="Select provider..." />
               </SelectTrigger>
               <SelectContent>
-                {PROVIDER_TYPES.map((p) => (
+                {BUILT_IN_PROVIDER_TYPES.map((p) => (
                   <SelectItem key={p.value} value={p.value}>
                     {p.label}
+                  </SelectItem>
+                ))}
+                {freeOptions.length > 0 && (
+                  <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                    Free tier
+                  </div>
+                )}
+                {freeOptions.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    <span className="flex items-center gap-2">
+                      {p.label}
+                      {!p.free?.needs_key && (
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+                          No key
+                        </span>
+                      )}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+
+          {freeInfo && (
+            <div className="rounded-md border border-muted bg-muted/40 p-3 text-xs">
+              <div className="flex gap-2">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <div className="space-y-1.5">
+                  {freeInfo.caveat && <p className="text-muted-foreground">{freeInfo.caveat}</p>}
+                  <p>
+                    <span className="text-muted-foreground">Suggested model: </span>
+                    <code className="rounded bg-background px-1 py-0.5">{freeInfo.default_model}</code>
+                  </p>
+                  <a
+                    href={freeInfo.key_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                  >
+                    {freeInfo.needs_key ? "Get an API key" : "Provider page"}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid gap-2">
             <Label htmlFor="name">Display Name</Label>
@@ -215,7 +296,7 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
             />
           </div>
 
-          {(providerType === "ollama" || providerType === "custom" || providerType === "openrouter") && (
+          {(providerType === "ollama" || providerType === "custom" || !!freeInfo) && (
             <div className="grid gap-2">
               <Label htmlFor="base-url">Base URL</Label>
               <Input
@@ -224,6 +305,12 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
                 onChange={(e) => setBaseUrl(e.target.value)}
                 placeholder="http://localhost:11434"
               />
+              {hasUnfilledTemplate && (
+                <p className="text-xs text-destructive">
+                  Replace {freeInfo?.template_fields.map((f) => `{${f}}`).join(", ") || "the placeholder"} in
+                  the URL with your own value before saving.
+                </p>
+              )}
             </div>
           )}
 
@@ -323,7 +410,7 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={loading || !name || !providerType}>
+          <Button onClick={handleSubmit} disabled={loading || !name || !providerType || hasUnfilledTemplate}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
             {isEditMode ? "Save Changes" : "Create Provider"}
           </Button>

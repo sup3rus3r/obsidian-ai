@@ -9,6 +9,7 @@ export const AppRoutes = {
 
     // Providers
     ListProviders           : () => "/api/providers",
+    ListFreeProviderCatalog : () => "/api/providers/catalog/free",
     CreateProvider          : () => "/api/providers",
     GetProvider             : (id: string) => `/api/providers/${id}`,
     UpdateProvider          : (id: string) => `/api/providers/${id}`,
