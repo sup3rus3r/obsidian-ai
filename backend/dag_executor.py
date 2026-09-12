@@ -574,12 +574,38 @@ async def execute_dag(steps: list[dict], workflow_name: str, user_input: str, ct
     def _node_ready(nid: str) -> bool:
         s = node_map[nid]
         for dep in (s.get("depends_on") or []):
+            if dep in skipped:
+                # An unchosen branch upstream. It will never complete, so waiting on
+                # it would strand this node (and, through it, the rest of the run) —
+                # it simply contributes no output. A node whose deps are *all*
+                # skipped is unreachable and gets skipped itself, in _propagate_skips.
+                continue
             if dep not in completed:
                 return False
             input_branch = s.get("input_branch")
             if input_branch and dep in condition_outputs and condition_outputs[dep] != input_branch:
                 return False
         return True
+
+    def _propagate_skips():
+        """Skip every node left unreachable by a branch that wasn't taken.
+
+        The condition node itself only skips its *direct* dependents; without
+        this, anything further downstream — commonly the End node joining both
+        arms of an if/else — would sit waiting on a node that never runs and the
+        whole run would be reported failed.
+        """
+        changed = True
+        while changed:
+            changed = False
+            for nid in all_node_ids:
+                if nid in completed or nid in in_flight or nid in failed or nid in skipped:
+                    continue
+                deps = node_map[nid].get("depends_on") or []
+                if deps and all(d in skipped for d in deps):
+                    skipped.add(nid)
+                    step_results_by_id[nid]["status"] = "skipped"
+                    changed = True
 
     async def _drain_queue():
         while not sse_queue.empty():
@@ -618,6 +644,7 @@ async def execute_dag(steps: list[dict], workflow_name: str, user_input: str, ct
     tasks: dict[str, asyncio.Task] = {}
 
     while True:
+        _propagate_skips()
         ready = [
             nid for nid in all_node_ids
             if nid not in completed and nid not in in_flight and nid not in failed
@@ -643,6 +670,7 @@ async def execute_dag(steps: list[dict], workflow_name: str, user_input: str, ct
         else:
             break
 
+        _propagate_skips()
         new_ready = [
             nid for nid in all_node_ids
             if nid not in completed and nid not in in_flight and nid not in failed
