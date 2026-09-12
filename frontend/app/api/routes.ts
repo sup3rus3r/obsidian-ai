@@ -49,6 +49,7 @@ export const AppRoutes = {
     GetWorkflow         : (id: string) => `/api/workflows/${id}`,
     UpdateWorkflow      : (id: string) => `/api/workflows/${id}`,
     DeleteWorkflow      : (id: string) => `/api/workflows/${id}`,
+    ImportN8nWorkflow   : () => "/api/workflows/import/n8n",
 
     // Workflow Runs
     RunWorkflow         : (id: string) => `/api/workflows/${id}/run`,

@@ -18,6 +18,7 @@ import { WorkflowDialog } from "@/components/dialogs/workflow-dialog"
 import { WorkflowRunDialog } from "@/components/dialogs/workflow-run-dialog"
 import { WorkflowHistoryDialog } from "@/components/dialogs/workflow-history-dialog"
 import { WorkflowScheduleDialog } from "@/components/dialogs/workflow-schedule-dialog"
+import { N8nImportDialog } from "@/components/dialogs/n8n-import-dialog"
 import { WorkflowStepsView } from "@/components/playground/workflow-steps-view"
 import { Routes } from "@/config/routes"
 import { useConfirm } from "@/hooks/use-confirm"
@@ -34,6 +35,7 @@ import {
   ChevronDown,
   ChevronRight,
   Trash2,
+  Download,
 } from "lucide-react"
 
 const exploreCards = [
@@ -83,6 +85,7 @@ export default function HomePage() {
   const [workflowRunDialogOpen, setWorkflowRunDialogOpen] = useState(false)
   const [workflowHistoryDialogOpen, setWorkflowHistoryDialogOpen] = useState(false)
   const [workflowScheduleDialogOpen, setWorkflowScheduleDialogOpen] = useState(false)
+  const [n8nImportDialogOpen, setN8nImportDialogOpen] = useState(false)
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null)
 
   const [agentsOpen, setAgentsOpen] = useState(true)
@@ -503,6 +506,19 @@ export default function HomePage() {
               </Card>
             </AnimatedListItem>
             )}
+            {permissions.create_workflows && (
+            <AnimatedListItem>
+              <Card
+                className="border-dashed flex items-center justify-center min-h-30 transition-colors cursor-pointer hover:border-primary/50"
+                onClick={() => setN8nImportDialogOpen(true)}
+              >
+                <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
+                  <Download className="h-5 w-5" />
+                  <span className="text-xs">Import from n8n</span>
+                </div>
+              </Card>
+            </AnimatedListItem>
+            )}
           </AnimatedList>
         )}
       </section>
@@ -528,6 +544,12 @@ export default function HomePage() {
         agents={agents}
         onCreated={() => fetchAll()}
         onUpdated={() => fetchAll()}
+      />
+      <N8nImportDialog
+        open={n8nImportDialogOpen}
+        onOpenChange={setN8nImportDialogOpen}
+        agents={agents}
+        onImported={() => fetchAll()}
       />
       <WorkflowRunDialog
         open={workflowRunDialogOpen}
