@@ -11,6 +11,8 @@ import os
 import time
 from datetime import datetime, timezone
 
+from python_tool_runner import run_python_tool
+
 logger = logging.getLogger(__name__)
 
 DATABASE_TYPE = os.getenv("DATABASE_TYPE", "sqlite")
@@ -464,7 +466,7 @@ def _execute_tool_sqlite(tool_name: str, arguments_str: str, db) -> str:
         return json.dumps({"error": f"Tool '{tool_name}' not found"})
     if tool_def.handler_type == "python":
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
-        return _exec_python_tool(config.get("code", ""), arguments)
+        return run_python_tool(config.get("code", ""), arguments)
     elif tool_def.handler_type == "http":
         import httpx
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
@@ -483,20 +485,6 @@ def _execute_tool_sqlite(tool_name: str, arguments_str: str, db) -> str:
         except Exception as e:
             return json.dumps({"error": str(e)})
     return json.dumps({"error": f"Unsupported handler type: {tool_def.handler_type}"})
-
-
-def _exec_python_tool(code_str: str, arguments: dict) -> str:
-    import json
-    try:
-        local_ns: dict = {}
-        exec(code_str, {"__builtins__": __builtins__}, local_ns)
-        handler_fn = local_ns.get("handler")
-        if not handler_fn:
-            return json.dumps({"error": "No 'handler' function found"})
-        result = handler_fn(arguments)
-        return json.dumps(result) if isinstance(result, (dict, list)) else str(result)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
 
 
 async def run_scheduled_workflow_mongo(schedule_id: str):
@@ -886,7 +874,7 @@ async def _execute_tool_mongo_native(tool_name: str, arguments_str: str, mongo_d
     config_raw = tool_def.get("handler_config")
     config = json.loads(config_raw) if isinstance(config_raw, str) and config_raw else (config_raw or {})
     if handler_type == "python":
-        return _exec_python_tool(config.get("code", ""), arguments)
+        return run_python_tool(config.get("code", ""), arguments)
     elif handler_type == "http":
         import httpx
         url = config.get("url", "")
@@ -948,7 +936,7 @@ async def _chat_non_streaming_mongo(llm, messages, system_prompt, tools, mcp_con
         else:
             config = {}
         if handler_type == "python":
-            return _exec_python_tool(config.get("code", ""), arguments)
+            return run_python_tool(config.get("code", ""), arguments)
         elif handler_type == "http":
             import httpx
             url = config.get("url", "")

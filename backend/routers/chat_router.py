@@ -20,6 +20,7 @@ from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
 from file_storage import FileStorageService
 from rag_service import RAGService
 from sandbox_tools import SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool
+from python_tool_runner import run_python_tool
 from async_job_tools import SCHEDULE_ASYNC_CHECK_TOOL_SCHEMA, is_async_job_tool, execute_schedule_async_check
 from builtin_tools import BUILTIN_TOOL_SCHEMAS, execute_builtin_tool, is_builtin_tool
 
@@ -1028,20 +1029,6 @@ def _scan_content_for_elements(full_content: str, prev_len: int, edit_target: tu
     return events
 
 
-def _execute_python_tool(code_str: str, arguments: dict) -> str:
-    """Execute a Python tool handler and return the result as a string."""
-    try:
-        local_ns: dict = {}
-        exec(code_str, {"__builtins__": __builtins__}, local_ns)
-        handler_fn = local_ns.get("handler")
-        if not handler_fn:
-            return json.dumps({"error": "No 'handler' function found in tool code"})
-        result = handler_fn(arguments)
-        return json.dumps(result) if isinstance(result, (dict, list)) else str(result)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
 def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
     """Look up a tool by name and execute it, returning the result string."""
     try:
@@ -1062,7 +1049,7 @@ def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         code_str = config.get("code", "")
         if not code_str:
             return json.dumps({"error": "No code configured for this tool"})
-        return _execute_python_tool(code_str, arguments)
+        return run_python_tool(code_str, arguments)
 
     elif tool_def.handler_type == "http":
         import httpx
@@ -1114,7 +1101,7 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
         code_str = config.get("code", "")
         if not code_str:
             return json.dumps({"error": "No code configured for this tool"})
-        return _execute_python_tool(code_str, arguments)
+        return run_python_tool(code_str, arguments)
 
     elif handler_type == "http":
         import httpx
