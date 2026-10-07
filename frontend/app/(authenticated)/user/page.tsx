@@ -37,12 +37,12 @@ export default function GuestPage() {
     <div className="h-full overflow-y-auto p-8 w-full flex items-center justify-center">
       <main className="flex w-full max-w-3xl flex-col items-center gap-8 py-32 px-16">
         <div className="text-center">
-          <h1 className="text-2xl font-bold tracking-tight uppercase">Guest Page</h1>
+          <h1 className="text-2xl font-medium tracking-[-0.016em]">Guest Page</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Welcome, {session?.user?.name ?? 'Guest'}!
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Role: <span className="font-semibold text-foreground">{userRole}</span>
+            Role: <span className="font-medium text-foreground">{userRole}</span>
           </p>
         </div>
 

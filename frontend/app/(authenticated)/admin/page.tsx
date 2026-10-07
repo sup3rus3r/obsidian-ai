@@ -95,7 +95,7 @@ export default function AdminPage() {
             <Shield className="h-5 w-5 text-muted-foreground" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight uppercase">Admin Panel</h1>
+            <h1 className="text-2xl font-medium tracking-[-0.016em]">Admin Panel</h1>
             <p className="text-sm text-muted-foreground">
               Manage users and permissions
             </p>

@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation"
 import { apiClient } from "@/lib/api-client"
 import type { WAChannel, Agent, UpdateWAChannelRequest } from "@/types/playground"
 import { AppRoutes } from "@/app/api/routes"
+import { useConfirm } from "@/hooks/use-confirm"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -193,7 +194,7 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
           {mode === "guide" && (
             <div className="flex flex-col flex-1 min-h-0 gap-5">
               <div className="rounded-md border bg-muted/30 p-6 flex-1 overflow-y-auto">
-                <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.06em] mb-4">
                   Read this aloud:
                   {scriptLoading && <span className="ml-2 normal-case font-normal animate-pulse">generating…</span>}
                 </p>
@@ -218,7 +219,7 @@ function VoiceCloneDialog({ open, onOpenChange, channelId, onSuccess }: VoiceClo
             <div className="flex gap-6 flex-1 min-h-0">
               {/* Left: script */}
               <div className="flex-1 rounded-md border bg-muted/20 p-6 overflow-y-auto">
-                <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">Script:</p>
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.06em] mb-4">Script:</p>
                 <p className="text-lg leading-loose italic text-muted-foreground">"{voiceScript}"</p>
               </div>
               {/* Right: controls */}
@@ -374,6 +375,12 @@ export default function ChannelDetailPage() {
   // Voice clone dialog
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false)
   const [deletingClone, setDeletingClone] = useState(false)
+  const [ConfirmRemoveCloneDialog, confirmRemoveClone] = useConfirm({
+    title: "Remove voice sample",
+    description: "This will disable voice cloning for this channel. This action cannot be undone.",
+    confirmLabel: "Remove",
+    variant: "destructive",
+  })
 
   // QR state
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
@@ -515,7 +522,8 @@ export default function ChannelDetailPage() {
   }
 
   const handleDeleteClone = async () => {
-    if (!confirm("Remove your voice sample? Voice cloning will be disabled.")) return
+    const ok = await confirmRemoveClone()
+    if (!ok) return
     setDeletingClone(true)
     try {
       await apiClient.deleteWAVoiceSample(channelId)
@@ -583,7 +591,7 @@ export default function ChannelDetailPage() {
         <div className="rounded-lg border p-4 space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-base font-semibold">Connection</p>
+              <p className="text-base font-medium">Connection</p>
               <p className="text-sm text-muted-foreground mt-0.5">
                 {channel.wa_phone ? `Linked to ${channel.wa_phone}` : "Not linked to a phone number yet"}
               </p>
@@ -629,7 +637,7 @@ export default function ChannelDetailPage() {
 
         {/* Settings */}
         <div className="space-y-5">
-          <p className="text-base font-semibold">Channel Settings</p>
+          <p className="text-base font-medium">Channel Settings</p>
 
           <div className="space-y-1.5">
             <Label>Name</Label>
@@ -654,7 +662,7 @@ export default function ChannelDetailPage() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-base font-semibold">Contact whitelist</p>
+                <p className="text-base font-medium">Contact whitelist</p>
                 <p className="text-sm text-muted-foreground mt-0.5">Restrict which contacts this channel responds to.</p>
               </div>
               <Button variant={allowAll ? "default" : "outline"} size="sm" className="text-xs h-7" onClick={() => setAllowAll(!allowAll)}>
@@ -692,7 +700,7 @@ export default function ChannelDetailPage() {
               <div className="flex items-center gap-2">
                 <Mic className="h-4 w-4 text-muted-foreground" />
                 <div>
-                  <p className="text-base font-semibold">Voice replies</p>
+                  <p className="text-base font-medium">Voice replies</p>
                   <p className="text-sm text-muted-foreground mt-0.5">Reply with a generated voice note.</p>
                 </div>
               </div>
@@ -817,6 +825,7 @@ export default function ChannelDetailPage() {
         channelId={channelId}
         onSuccess={load}
       />
+      <ConfirmRemoveCloneDialog />
     </div>
   )
 }

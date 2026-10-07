@@ -750,6 +750,59 @@ class PromptVaultCollection:
         return result.deleted_count > 0
 
 
+class VaultFileCollection:
+    """A user-managed Markdown file (Obsidian-style vault note)."""
+    collection_name = "vault_files"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("user_id")
+
+    @classmethod
+    async def find_by_user(cls, db, user_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"user_id": user_id}).sort("created_at", -1)
+        return await cursor.to_list(length=500)
+
+    @classmethod
+    async def find_by_id(cls, db, file_id: str) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        return await collection.find_one({"_id": ObjectId(file_id)})
+
+    @classmethod
+    async def find_by_ids(cls, db, file_ids: list[str], user_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        object_ids = [ObjectId(fid) for fid in file_ids]
+        cursor = collection.find({"_id": {"$in": object_ids}, "user_id": user_id})
+        return await cursor.to_list(length=len(file_ids))
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        data["updated_at"] = None
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def update(cls, db, file_id: str, user_id: str, updates: dict) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        updates["updated_at"] = datetime.utcnow()
+        return await collection.find_one_and_update(
+            {"_id": ObjectId(file_id), "user_id": user_id},
+            {"$set": updates},
+            return_document=True,
+        )
+
+    @classmethod
+    async def delete(cls, db, file_id: str, user_id: str) -> bool:
+        collection = db[cls.collection_name]
+        result = await collection.delete_one({"_id": ObjectId(file_id), "user_id": user_id})
+        return result.deleted_count > 0
+
+
 class SkillCollection:
     """A reusable Claude Skill: instruction bundle injected into an agent's
     system prompt when attached (see ToolDefinition-style pattern; not backed

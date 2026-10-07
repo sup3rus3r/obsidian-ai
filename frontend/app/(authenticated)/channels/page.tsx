@@ -114,7 +114,7 @@ export default function ChannelsPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <MessageCircle className="h-5 w-5 text-muted-foreground" />
-            <h1 className="text-2xl font-bold tracking-tight uppercase">Channels</h1>
+            <h1 className="text-2xl font-medium tracking-[-0.016em]">Channels</h1>
           </div>
           <Button onClick={() => setShowCreate(true)} className="gap-1.5">
             <Plus className="h-4 w-4" />

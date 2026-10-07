@@ -19,6 +19,7 @@ from encryption import decrypt_api_key
 from llm.base import LLMMessage
 from llm.provider_factory import create_provider_from_config
 from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
+from python_tool_runner import run_python_tool
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
@@ -68,19 +69,6 @@ def _create_llm_mongo(provider_record, agent_model_id: str | None = None):
     )
 
 
-def _execute_python_tool(code_str: str, arguments: dict) -> str:
-    try:
-        local_ns: dict = {}
-        exec(code_str, {"__builtins__": __builtins__}, local_ns)
-        handler_fn = local_ns.get("handler")
-        if not handler_fn:
-            return json.dumps({"error": "No 'handler' function found in tool code"})
-        result = handler_fn(arguments)
-        return json.dumps(result) if isinstance(result, (dict, list)) else str(result)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
 def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
     try:
         arguments = json.loads(arguments_str) if arguments_str else {}
@@ -93,7 +81,7 @@ def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         return json.dumps({"error": f"Tool '{tool_name}' not found"})
     if tool_def.handler_type == "python":
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
-        return _execute_python_tool(config.get("code", ""), arguments)
+        return run_python_tool(config.get("code", ""), arguments)
     elif tool_def.handler_type == "http":
         import httpx
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
@@ -135,7 +123,7 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
     else:
         config = {}
     if handler_type == "python":
-        return _execute_python_tool(config.get("code", ""), arguments)
+        return run_python_tool(config.get("code", ""), arguments)
     elif handler_type == "http":
         import httpx
         url = config.get("url", "")

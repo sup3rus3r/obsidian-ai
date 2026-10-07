@@ -87,7 +87,7 @@ export function EditPermissionsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent showFullscreenButton className="sm:max-w-md min-w-200">
         <DialogHeader>
-          <DialogTitle className="uppercase">Edit User: {user.username}</DialogTitle>
+          <DialogTitle>Edit user: {user.username}</DialogTitle>
           <DialogDescription>
             Manage role and resource permissions for this user.
           </DialogDescription>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import {
   Dialog,
   DialogContent,
@@ -23,8 +23,8 @@ import {
 import Link from "next/link"
 import { apiClient } from "@/lib/api-client"
 import { usePlaygroundStore } from "@/stores/playground-store"
-import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite, PromptVaultEntry, Skill } from "@/types/playground"
-import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap } from "lucide-react"
+import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite, PromptVaultEntry, Skill, VaultFile } from "@/types/playground"
+import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap, Download, Upload, Pencil, Check, FileText } from "lucide-react"
 import { AppRoutes } from "@/app/api/routes"
 
 // ─── Version diff helpers ────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ function resolveJsonIds(
   tools: ToolDefinition[],
   mcpServers: MCPServer[],
   kbs: KnowledgeBase[],
+  vaultFiles: VaultFile[] = [],
 ): string {
   if (!raw) return raw
   let ids: string[]
@@ -53,6 +54,9 @@ function resolveJsonIds(
   if (key === "knowledge_base_ids_json") {
     return ids.map((id) => kbs.find((k) => String(k.id) === String(id))?.name ?? id).join(", ") || "(none)"
   }
+  if (key === "vault_file_ids_json") {
+    return ids.map((id) => vaultFiles.find((f) => String(f.id) === String(id))?.name ?? id).join(", ") || "(none)"
+  }
   return raw
 }
 
@@ -65,6 +69,7 @@ const SNAPSHOT_LABELS: Record<keyof AgentConfigSnapshot, string> = {
   tools_json: "Tools",
   mcp_servers_json: "MCP Servers",
   knowledge_base_ids_json: "Knowledge Bases",
+  vault_file_ids_json: "Markdown Notes",
   hitl_confirmation_tools_json: "HITL Tools",
   allow_tool_creation: "Allow Tool Creation",
   config_json: "Config",
@@ -92,6 +97,7 @@ function VersionDiffModal({
   tools,
   mcpServers,
   kbs,
+  vaultFiles,
 }: {
   version: AgentVersion | null
   prevVersion: AgentVersion | null
@@ -101,20 +107,21 @@ function VersionDiffModal({
   tools: ToolDefinition[]
   mcpServers: MCPServer[]
   kbs: KnowledgeBase[]
+  vaultFiles: VaultFile[]
 }) {
   const diffs = version && prevVersion
     ? snapshotDiff(prevVersion.config_snapshot, version.config_snapshot)
     : []
 
   const humanize = (key: keyof AgentConfigSnapshot, raw: string) =>
-    resolveJsonIds(key, raw, tools, mcpServers, kbs)
+    resolveJsonIds(key, raw, tools, mcpServers, kbs, vaultFiles)
 
   return (
     <Dialog open={!!version} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent showFullscreenButton className="max-w-2xl max-h-[80vh] flex flex-col p-0 gap-0">
         <DialogHeader className="px-4 py-3 border-b border-border shrink-0">
           <DialogTitle className="flex items-center gap-2 text-sm font-medium">
-            <History className="h-4 w-4 text-blue-500" />
+            <History className="h-4 w-4 text-muted-foreground" />
             {version && <>v{version.version_number}</>}
             {version?.change_summary && (
               <span className="text-xs text-muted-foreground font-normal">— {version.change_summary}</span>
@@ -217,6 +224,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [selectedTools, setSelectedTools] = useState<string[]>([])
   const [selectedMCPServers, setSelectedMCPServers] = useState<string[]>([])
   const [selectedKBs, setSelectedKBs] = useState<string[]>([])
+  const [selectedVaultFiles, setSelectedVaultFiles] = useState<string[]>([])
   const [selectedSkills, setSelectedSkills] = useState<string[]>([])
   const [hitlTools, setHitlTools] = useState<string[]>([])
   const [allowToolCreation, setAllowToolCreation] = useState(false)
@@ -227,11 +235,16 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([])
   const [availableMCPServers, setAvailableMCPServers] = useState<MCPServer[]>([])
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([])
+  const [availableVaultFiles, setAvailableVaultFiles] = useState<VaultFile[]>([])
   const [availableSkills, setAvailableSkills] = useState<Skill[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [memories, setMemories] = useState<AgentMemory[]>([])
   const [clearingMemories, setClearingMemories] = useState(false)
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null)
+  const [editingMemoryValue, setEditingMemoryValue] = useState("")
+  const [importingMemories, setImportingMemories] = useState(false)
+  const memoryImportInputRef = useRef<HTMLInputElement>(null)
   const [versions, setVersions] = useState<AgentVersion[]>([])
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [loadingVersions, setLoadingVersions] = useState(false)
@@ -269,6 +282,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     apiClient.listTools().then(setAvailableTools).catch(() => {})
     apiClient.listMCPServers().then(setAvailableMCPServers).catch(() => {})
     apiClient.listKnowledgeBases().then(setAvailableKBs).catch(() => {})
+    apiClient.listVaultFiles().then(setAvailableVaultFiles).catch(() => {})
     apiClient.listSkills().then(setAvailableSkills).catch(() => {})
 
     // Load eval suites for optimizer selector
@@ -283,6 +297,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setSelectedTools(agent.tools || [])
       setSelectedMCPServers(agent.mcp_server_ids || [])
       setSelectedKBs(agent.knowledge_base_ids || [])
+      setSelectedVaultFiles(agent.vault_file_ids || [])
       setSelectedSkills(agent.skill_ids || [])
       setHitlTools(agent.hitl_confirmation_tools || [])
       setAllowToolCreation(agent.allow_tool_creation ?? false)
@@ -333,6 +348,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           tools: selectedTools,
           mcp_server_ids: selectedMCPServers,
           knowledge_base_ids: selectedKBs,
+          vault_file_ids: selectedVaultFiles,
           skill_ids: selectedSkills,
           hitl_confirmation_tools: hitlTools.length > 0 ? hitlTools : undefined,
           allow_tool_creation: allowToolCreation,
@@ -352,6 +368,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           tools: selectedTools.length > 0 ? selectedTools : undefined,
           mcp_server_ids: selectedMCPServers.length > 0 ? selectedMCPServers : undefined,
           knowledge_base_ids: selectedKBs.length > 0 ? selectedKBs : undefined,
+          vault_file_ids: selectedVaultFiles.length > 0 ? selectedVaultFiles : undefined,
           skill_ids: selectedSkills.length > 0 ? selectedSkills : undefined,
           hitl_confirmation_tools: hitlTools.length > 0 ? hitlTools : undefined,
           allow_tool_creation: allowToolCreation,
@@ -407,6 +424,14 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       prev.includes(serverId)
         ? prev.filter((s) => s !== serverId)
         : [...prev, serverId]
+    )
+  }
+
+  const toggleVaultFile = (fileId: string) => {
+    setSelectedVaultFiles((prev) =>
+      prev.includes(fileId)
+        ? prev.filter((f) => f !== fileId)
+        : [...prev, fileId]
     )
   }
 
@@ -520,6 +545,47 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       // ignore
     } finally {
       setClearingMemories(false)
+    }
+  }
+
+  const handleStartEditMemory = (mem: AgentMemory) => {
+    setEditingMemoryId(mem.id)
+    setEditingMemoryValue(mem.value)
+  }
+
+  const handleSaveEditMemory = async (memoryId: string) => {
+    if (!agent) return
+    const value = editingMemoryValue.trim()
+    if (!value) return
+    setEditingMemoryId(null)
+    setMemories((prev) => prev.map((m) => (m.id === memoryId ? { ...m, value } : m)))
+    try {
+      await apiClient.updateAgentMemory(agent.id, memoryId, { value })
+    } catch {
+      apiClient.listAgentMemories(agent.id).then(setMemories).catch(() => {})
+    }
+  }
+
+  const handleExportMemories = async () => {
+    if (!agent) return
+    try {
+      await apiClient.exportAgentMemories(agent.id, agent.name)
+    } catch {
+      // ignore
+    }
+  }
+
+  const handleImportMemoriesFile = async (file: File) => {
+    if (!agent) return
+    setImportingMemories(true)
+    try {
+      const markdown = await file.text()
+      await apiClient.importAgentMemories(agent.id, markdown)
+      apiClient.listAgentMemories(agent.id).then(setMemories).catch(() => {})
+    } catch {
+      // ignore
+    } finally {
+      setImportingMemories(false)
     }
   }
 
@@ -995,6 +1061,54 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
             )}
           </div>
 
+          {/* Markdown Vault Section (full-content prompt injection) */}
+          <div className="grid gap-2">
+            <Label className="flex items-center gap-1.5">
+              <FileText className="h-3.5 w-3.5" />
+              Markdown Notes
+            </Label>
+            <p className="text-xs text-muted-foreground -mt-1">
+              Full note content injected directly into the system prompt — use for small reference notes, not large documents (those belong in a Knowledge Base).
+            </p>
+            {availableVaultFiles.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No notes yet.{" "}
+                <Link href="/vault" className="underline hover:text-foreground inline-flex items-center gap-0.5">
+                  Create one
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              </p>
+            ) : (
+              <div className="space-y-1 max-h-40 overflow-y-auto rounded-md border border-border p-2">
+                {availableVaultFiles.map((file) => {
+                  const isEnabled = selectedVaultFiles.includes(file.id)
+                  return (
+                    <button
+                      key={file.id}
+                      type="button"
+                      onClick={() => toggleVaultFile(file.id)}
+                      className="w-full flex items-start gap-2 p-2 rounded text-xs hover:bg-muted/50 transition-colors text-left"
+                    >
+                      <div className="pt-0.5">
+                        {isEnabled ? (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                        ) : (
+                          <Circle className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium">{file.name}</div>
+                        {file.folder && (
+                          <div className="text-muted-foreground/60 truncate">{file.folder}</div>
+                        )}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
           {/* Skills Section */}
           <div className="grid gap-2">
             <Label className="flex items-center gap-1.5">
@@ -1176,14 +1290,14 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                 className="flex items-center gap-1.5 text-sm font-medium w-full text-left"
               >
                 {versionsOpen ? (
-                  <ChevronDown className="h-3.5 w-3.5 text-blue-500" />
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                 ) : (
-                  <ChevronRight className="h-3.5 w-3.5 text-blue-500" />
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
                 )}
-                <History className="h-3.5 w-3.5 text-blue-500" />
+                <History className="h-3.5 w-3.5 text-muted-foreground" />
                 Version History
                 {versions.length > 0 && (
-                  <span className="ml-1 text-xs bg-blue-500/10 text-blue-500 px-1.5 py-0.5 rounded-full font-normal">
+                  <span className="ml-1 text-xs bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full font-normal">
                     {versions.length}
                   </span>
                 )}
@@ -1204,7 +1318,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                           className="flex items-center gap-2 p-2 rounded text-xs hover:bg-muted/40 group cursor-pointer"
                           onClick={() => setDiffVersion(ver)}
                         >
-                          <span className="shrink-0 font-mono text-blue-500 font-semibold w-8">v{ver.version_number}</span>
+                          <span className="shrink-0 font-mono text-primary font-medium w-8">v{ver.version_number}</span>
                           <div className="flex-1 min-w-0">
                             <div className="truncate text-muted-foreground">
                               {ver.change_summary || "No summary"}
@@ -1214,7 +1328,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                             </div>
                           </div>
                           {idx === 0 && (
-                            <span className="shrink-0 text-[10px] bg-blue-500/10 text-blue-500 px-1.5 py-0.5 rounded font-medium">latest</span>
+                            <span className="shrink-0 text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">latest</span>
                           )}
                           <button
                             type="button"
@@ -1238,15 +1352,55 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
             <div className="grid gap-2">
               <div className="flex items-center justify-between">
                 <Label className="flex items-center gap-1.5">
-                  <Brain className="h-3.5 w-3.5 text-violet-500" />
+                  <Brain className="h-3.5 w-3.5 text-muted-foreground" />
                   Long-term Memory
                   {memories.length > 0 && (
-                    <span className="ml-1 text-xs bg-violet-500/10 text-violet-500 px-1.5 py-0.5 rounded-full font-normal">
+                    <span className="ml-1 text-xs bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full font-normal">
                       {memories.length}
                     </span>
                   )}
                 </Label>
                 <div className="flex items-center gap-2">
+                  {memoryEnabled && (
+                    <>
+                      <input
+                        ref={memoryImportInputRef}
+                        type="file"
+                        accept=".md,text/markdown"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) handleImportMemoriesFile(file)
+                          e.target.value = ""
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => memoryImportInputRef.current?.click()}
+                        disabled={importingMemories}
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+                        title="Import memories from Markdown"
+                      >
+                        {importingMemories ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Upload className="h-3 w-3" />
+                        )}
+                        Import
+                      </button>
+                      {memories.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleExportMemories}
+                          className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+                          title="Export memories as Markdown"
+                        >
+                          <Download className="h-3 w-3" />
+                          Export
+                        </button>
+                      )}
+                    </>
+                  )}
                   {memories.length > 0 && memoryEnabled && (
                     <button
                       type="button"
@@ -1267,7 +1421,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                     onClick={() => setMemoryEnabled((v) => !v)}
                     className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
                       memoryEnabled
-                        ? "bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/30 hover:bg-violet-500/20"
+                        ? "bg-primary/10 text-primary border-primary/30 hover:bg-primary/15"
                         : "bg-muted text-muted-foreground border-border hover:bg-muted/80"
                     }`}
                   >
@@ -1304,15 +1458,50 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                       }`}>
                         {mem.category}
                       </span>
-                      <span className="flex-1 text-foreground leading-relaxed">{mem.value}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteMemory(mem.id)}
-                        className="shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
-                        aria-label="Delete memory"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {editingMemoryId === mem.id ? (
+                        <input
+                          autoFocus
+                          value={editingMemoryValue}
+                          onChange={(e) => setEditingMemoryValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveEditMemory(mem.id)
+                            if (e.key === "Escape") setEditingMemoryId(null)
+                          }}
+                          onBlur={() => handleSaveEditMemory(mem.id)}
+                          className="flex-1 bg-background border border-border rounded px-1.5 py-0.5 text-xs text-foreground leading-relaxed outline-none focus:ring-1 focus:ring-violet-500"
+                        />
+                      ) : (
+                        <span className="flex-1 text-foreground leading-relaxed">{mem.value}</span>
+                      )}
+                      <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                        {editingMemoryId === mem.id ? (
+                          <button
+                            type="button"
+                            onClick={() => handleSaveEditMemory(mem.id)}
+                            className="text-muted-foreground hover:text-emerald-500"
+                            aria-label="Save memory"
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditMemory(mem)}
+                            className="text-muted-foreground hover:text-foreground"
+                            aria-label="Edit memory"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMemory(mem.id)}
+                          className="text-muted-foreground hover:text-destructive"
+                          aria-label="Delete memory"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1469,13 +1658,13 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                       {activeOptRun.proposed_prompt && activeOptRun.current_prompt && (
                         <div className="grid grid-cols-2 gap-2">
                           <div className="space-y-1">
-                            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Current</p>
+                            <p className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground font-medium">Current</p>
                             <pre className="text-xs whitespace-pre-wrap font-mono bg-muted/40 rounded p-2 max-h-48 overflow-y-auto leading-relaxed border border-border">
                               {activeOptRun.current_prompt}
                             </pre>
                           </div>
                           <div className="space-y-1">
-                            <p className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold">Proposed</p>
+                            <p className="text-[10px] uppercase tracking-[0.06em] text-amber-600 font-medium">Proposed</p>
                             <pre className="text-xs whitespace-pre-wrap font-mono bg-amber-500/5 rounded p-2 max-h-48 overflow-y-auto leading-relaxed border border-amber-500/20">
                               {activeOptRun.proposed_prompt}
                             </pre>
@@ -1710,6 +1899,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           tools={availableTools}
           mcpServers={availableMCPServers}
           kbs={availableKBs}
+          vaultFiles={availableVaultFiles}
         />
       )}
     </Dialog>

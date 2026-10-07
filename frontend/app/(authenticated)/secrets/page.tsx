@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { AnimatedList, AnimatedListItem } from "@/components/ui/animated-list"
 import { AppRoutes } from "@/app/api/routes"
 import { encryptPayload } from "@/lib/crypto"
+import { useConfirm } from "@/hooks/use-confirm"
 
 interface Secret {
   id: string
@@ -39,6 +40,12 @@ export default function SecretsPage() {
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [editingSecret, setEditingSecret] = useState<Secret | null>(null)
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set())
+  const [ConfirmDeleteDialog, confirmDelete] = useConfirm({
+    title: "Delete secret",
+    description: "This will permanently delete this secret. This action cannot be undone.",
+    confirmLabel: "Delete",
+    variant: "destructive",
+  })
 
   // Create form state
   const [createName, setCreateName] = useState("")
@@ -143,7 +150,8 @@ export default function SecretsPage() {
   }
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return
+    const ok = await confirmDelete()
+    if (!ok) return
     try {
       const res = await fetch(AppRoutes.DeleteSecret(id), {
         method: "DELETE",
@@ -187,7 +195,7 @@ export default function SecretsPage() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold tracking-tight uppercase">Secrets Vault</h1>
+              <h1 className="text-2xl font-medium tracking-[-0.016em]">Secrets Vault</h1>
               <Badge variant="secondary">{secrets.length}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -224,49 +232,56 @@ export default function SecretsPage() {
           </Button>
         </div>
       ) : (
-        <AnimatedList className="space-y-2">
+        <AnimatedList className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {secrets.map((secret) => (
             <AnimatedListItem key={secret.id}>
-              <Card className="group">
-                <CardContent className="flex items-center gap-4 py-3 px-4">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm">{secret.name}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <code className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
-                        {revealedSecrets.has(secret.id) ? secret.masked_value : "•••••••••••••••"}
-                      </code>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={() => toggleReveal(secret.id)}
-                      >
-                        {revealedSecrets.has(secret.id)
-                          ? <EyeOff className="h-3 w-3" />
-                          : <Eye className="h-3 w-3" />}
-                      </Button>
+              <Card className="group shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 hover:border-primary/40">
+                <CardContent className="px-4 py-4">
+                  <div className="flex items-start gap-3">
+                    <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                      <Key className="h-4 w-4 text-primary" />
                     </div>
-                    {secret.description && (
-                      <p className="text-sm text-muted-foreground mt-1">{secret.description}</p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-8 w-8"
-                      onClick={() => openEditDialog(secret)}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-8 w-8 text-destructive hover:text-destructive"
-                      onClick={() => handleDelete(secret.id, secret.name)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="font-medium text-sm truncate">{secret.name}</p>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-7 w-7"
+                            onClick={() => openEditDialog(secret)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => handleDelete(secret.id, secret.name)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      {secret.description && (
+                        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{secret.description}</p>
+                      )}
+                      <div className="flex items-center gap-2 mt-2">
+                        <code className="text-xs font-mono bg-muted px-2 py-1 rounded truncate">
+                          {revealedSecrets.has(secret.id) ? secret.masked_value : "•••••••••••••••"}
+                        </code>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="h-6 w-6 shrink-0"
+                          onClick={() => toggleReveal(secret.id)}
+                        >
+                          {revealedSecrets.has(secret.id)
+                            ? <EyeOff className="h-3 w-3" />
+                            : <Eye className="h-3 w-3" />}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -393,6 +408,7 @@ export default function SecretsPage() {
           </form>
         </DialogContent>
       </Dialog>
+      <ConfirmDeleteDialog />
     </div>
   )
 }

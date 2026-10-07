@@ -21,6 +21,7 @@ export interface Agent {
   tools?: string[]
   mcp_server_ids?: string[]
   knowledge_base_ids?: string[]
+  vault_file_ids?: string[]
   skill_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
@@ -37,6 +38,15 @@ export interface PromptVaultEntry {
   id: string
   name: string
   description?: string | null
+  content: string
+  created_at: string
+  updated_at?: string | null
+}
+
+export interface VaultFile {
+  id: string
+  name: string
+  folder?: string | null
   content: string
   created_at: string
   updated_at?: string | null
@@ -179,6 +189,7 @@ export interface CreateAgentRequest {
   tools?: string[]
   mcp_server_ids?: string[]
   knowledge_base_ids?: string[]
+  vault_file_ids?: string[]
   skill_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
@@ -197,6 +208,7 @@ export interface UpdateAgentRequest {
   tools?: string[]
   mcp_server_ids?: string[]
   knowledge_base_ids?: string[]
+  vault_file_ids?: string[]
   skill_ids?: string[]
   hitl_confirmation_tools?: string[]
   allow_tool_creation?: boolean
@@ -465,6 +477,7 @@ export interface AgentConfigSnapshot {
   tools_json?: string | null
   mcp_servers_json?: string | null
   knowledge_base_ids_json?: string | null
+  vault_file_ids_json?: string | null
   hitl_confirmation_tools_json?: string | null
   allow_tool_creation?: boolean
   config_json?: string | null

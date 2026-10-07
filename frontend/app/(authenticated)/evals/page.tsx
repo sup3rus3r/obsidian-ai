@@ -81,7 +81,7 @@ function RunResultsPanel({ run, onClose }: { run: EvalRun; onClose: () => void }
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
           <div className="flex items-center gap-3">
             <FlaskConical className="h-4 w-4 text-blue-500" />
-            <span className="font-semibold text-base">Run Results</span>
+            <span className="font-medium text-base">Run Results</span>
             <StatusBadge status={run.status} />
             {run.score !== null && (
               <ScoreBadge score={run.score} total={run.total_cases} passed={run.passed_cases} />
@@ -467,8 +467,8 @@ export default function EvalsPage() {
       <div className="w-72 shrink-0 border-r border-border flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2">
-            <FlaskConical className="h-4 w-4 text-blue-500" />
-            <span className="font-semibold text-base">Eval Suites</span>
+            <FlaskConical className="h-4 w-4 text-primary" />
+            <span className="font-medium text-base">Eval Suites</span>
           </div>
           <Button
             size="sm"
@@ -496,8 +496,8 @@ export default function EvalsPage() {
             return (
               <div
                 key={suite.id}
-                className={`rounded-lg border p-3 cursor-pointer transition-colors group ${
-                  isSelected ? "border-blue-500/40 bg-blue-500/5" : "border-border hover:border-border/80 hover:bg-muted/30"
+                className={`rounded-lg border p-3 cursor-pointer transition-all group ${
+                  isSelected ? "border-primary/40 bg-primary/5 shadow-sm" : "border-border hover:border-border/80 hover:bg-muted/30"
                 }`}
                 onClick={() => selectSuite(suite)}
               >
@@ -602,7 +602,7 @@ export default function EvalsPage() {
                   return (
                     <div
                       key={run.id}
-                      className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/30 transition-colors cursor-pointer group"
+                      className="flex items-center gap-3 p-3 rounded-lg border border-border shadow-sm hover:shadow-md hover:bg-muted/30 transition-all cursor-pointer group"
                       onClick={() => setViewRun(run)}
                     >
                       {isPolling ? (

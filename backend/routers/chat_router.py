@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from config import DATABASE_TYPE
 from database import get_db
-from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, AsyncJob
+from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, AsyncJob, VaultFile
 from schemas import ChatRequest, RateMessageRequest, HITLApprovalResponse, HITLPendingListResponse, ToolProposalResponse, ToolProposalPendingListResponse, AsyncJobResponse, AsyncJobPendingListResponse
 from auth import get_current_user, TokenData
 from encryption import decrypt_api_key
@@ -20,12 +20,13 @@ from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
 from file_storage import FileStorageService
 from rag_service import RAGService
 from sandbox_tools import SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool
+from python_tool_runner import run_python_tool
 from async_job_tools import SCHEDULE_ASYNC_CHECK_TOOL_SCHEMA, is_async_job_tool, execute_schedule_async_check
 from builtin_tools import BUILTIN_TOOL_SCHEMAS, execute_builtin_tool, is_builtin_tool
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
-    from models_mongo import SessionCollection, MessageCollection, AgentCollection, LLMProviderCollection, ToolDefinitionCollection, SkillCollection, TeamCollection, MCPServerCollection, FileAttachmentCollection, KnowledgeBaseCollection, HITLApprovalCollection, AgentMemoryCollection, ToolProposalCollection, AsyncJobCollection
+    from models_mongo import SessionCollection, MessageCollection, AgentCollection, LLMProviderCollection, ToolDefinitionCollection, SkillCollection, TeamCollection, MCPServerCollection, FileAttachmentCollection, KnowledgeBaseCollection, HITLApprovalCollection, AgentMemoryCollection, ToolProposalCollection, AsyncJobCollection, VaultFileCollection
 
 logger = logging.getLogger(__name__)
 
@@ -1028,20 +1029,6 @@ def _scan_content_for_elements(full_content: str, prev_len: int, edit_target: tu
     return events
 
 
-def _execute_python_tool(code_str: str, arguments: dict) -> str:
-    """Execute a Python tool handler and return the result as a string."""
-    try:
-        local_ns: dict = {}
-        exec(code_str, {"__builtins__": __builtins__}, local_ns)
-        handler_fn = local_ns.get("handler")
-        if not handler_fn:
-            return json.dumps({"error": "No 'handler' function found in tool code"})
-        result = handler_fn(arguments)
-        return json.dumps(result) if isinstance(result, (dict, list)) else str(result)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
 def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
     """Look up a tool by name and execute it, returning the result string."""
     try:
@@ -1062,7 +1049,7 @@ def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         code_str = config.get("code", "")
         if not code_str:
             return json.dumps({"error": "No code configured for this tool"})
-        return _execute_python_tool(code_str, arguments)
+        return run_python_tool(code_str, arguments)
 
     elif tool_def.handler_type == "http":
         import httpx
@@ -1114,7 +1101,7 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
         code_str = config.get("code", "")
         if not code_str:
             return json.dumps({"error": "No code configured for this tool"})
-        return _execute_python_tool(code_str, arguments)
+        return run_python_tool(code_str, arguments)
 
     elif handler_type == "http":
         import httpx
@@ -1634,6 +1621,24 @@ def _build_skills_injection_dicts(skills: list[dict]) -> str:
     return "\n\n## Skills available to you:\n" + "\n\n".join(sections)
 
 
+def _build_vault_injection(files: list) -> str:
+    """Return a formatted block of full vault file contents (SQLAlchemy
+    VaultFile rows) to append to the system prompt. Unlike knowledge bases,
+    these are small notes injected in full, not chunked/retrieved."""
+    if not files:
+        return ""
+    sections = [f"### {f.name}\n{f.content}" for f in files]
+    return "\n\n## Reference notes:\n" + "\n\n".join(sections)
+
+
+def _build_vault_injection_dicts(files: list[dict]) -> str:
+    """Same as above but for Mongo dicts."""
+    if not files:
+        return ""
+    sections = [f"### {f['name']}\n{f['content']}" for f in files]
+    return "\n\n## Reference notes:\n" + "\n\n".join(sections)
+
+
 async def _reflect_and_store_sqlite(agent_id: int, provider_record, agent_model_id: str | None, session_id: int, user_id: int):
     """Background task: reflect on a completed session and store memories (SQLite)."""
     from database import SessionLocal
@@ -2047,7 +2052,19 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
                 Skill.is_active == True,
             ).all()
             _skills_injection = _build_skills_injection(_skills)
-    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "") + _build_artifact_context(past_messages) + _skills_injection
+    _vault_injection = ""
+    if agent.vault_file_ids_json:
+        try:
+            _vault_ids = json.loads(agent.vault_file_ids_json)
+        except (json.JSONDecodeError, TypeError):
+            _vault_ids = []
+        if _vault_ids:
+            _vault_files = db.query(VaultFile).filter(
+                VaultFile.id.in_(_vault_ids),
+                VaultFile.user_id == int(current_user.user_id),
+            ).all()
+            _vault_injection = _build_vault_injection(_vault_files)
+    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "") + _build_artifact_context(past_messages) + _skills_injection + _vault_injection
     tools = _build_tools_for_llm(agent, db)
     # Inject sandbox tools if agent has an active sandbox container
     if _sandbox_active:
@@ -3989,7 +4006,22 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
             if _sk and _sk.get("is_active", True) and _sk.get("user_id") == _user_id_str:
                 _skills_mongo.append(_sk)
         _skills_injection_mongo = _build_skills_injection_dicts(_skills_mongo)
-    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active_mongo else "") + _build_artifact_context(past_messages) + _skills_injection_mongo
+    _vault_injection_mongo = ""
+    if agent.get("vault_file_ids_json"):
+        _vault_ids_raw = agent.get("vault_file_ids_json")
+        if isinstance(_vault_ids_raw, str):
+            try:
+                _vault_ids_mongo = json.loads(_vault_ids_raw)
+            except (json.JSONDecodeError, TypeError):
+                _vault_ids_mongo = []
+        elif isinstance(_vault_ids_raw, list):
+            _vault_ids_mongo = _vault_ids_raw
+        else:
+            _vault_ids_mongo = []
+        if _vault_ids_mongo:
+            _vault_files_mongo = await VaultFileCollection.find_by_ids(mongo_db, [str(v) for v in _vault_ids_mongo], _user_id_str)
+            _vault_injection_mongo = _build_vault_injection_dicts(_vault_files_mongo)
+    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active_mongo else "") + _build_artifact_context(past_messages) + _skills_injection_mongo + _vault_injection_mongo
     tools = await _build_tools_for_llm_mongo(agent, mongo_db)
     # Inject sandbox tools if agent has an active sandbox container
     if _sandbox_active_mongo:

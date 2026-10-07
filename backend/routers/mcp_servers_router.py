@@ -2,7 +2,7 @@ import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 
 from config import DATABASE_TYPE
 from database import get_db
@@ -133,7 +133,7 @@ async def list_mcp_servers(
         servers = await cursor.to_list(length=100)
         return MCPServerListResponse(mcp_servers=[_server_to_response(s, is_mongo=True) for s in servers])
 
-    admin_user_ids = db.query(User.id).filter(User.role == "admin").subquery()
+    admin_user_ids = select(User.id).where(User.role == "admin")
     servers = db.query(MCPServer).filter(
         MCPServer.is_active == True,
         or_(

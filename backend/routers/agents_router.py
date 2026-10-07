@@ -35,6 +35,7 @@ def _build_config_snapshot(agent) -> dict:
         "tools_json": agent.tools_json,
         "mcp_servers_json": agent.mcp_servers_json,
         "knowledge_base_ids_json": agent.knowledge_base_ids_json,
+        "vault_file_ids_json": agent.vault_file_ids_json,
         "hitl_confirmation_tools_json": agent.hitl_confirmation_tools_json,
         "allow_tool_creation": agent.allow_tool_creation,
         "config_json": agent.config_json,
@@ -52,6 +53,7 @@ def _build_config_snapshot_mongo(agent: dict) -> dict:
         "tools_json": agent.get("tools_json"),
         "mcp_servers_json": agent.get("mcp_servers_json"),
         "knowledge_base_ids_json": agent.get("knowledge_base_ids_json"),
+        "vault_file_ids_json": agent.get("vault_file_ids_json"),
         "hitl_confirmation_tools_json": agent.get("hitl_confirmation_tools_json"),
         "allow_tool_creation": agent.get("allow_tool_creation", False),
         "config_json": agent.get("config_json"),
@@ -123,6 +125,10 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
         if isinstance(kb_raw, str):
             kb_raw = json.loads(kb_raw)
         knowledge_base_ids = [str(k) for k in kb_raw] if kb_raw else None
+        vault_raw = agent.get("vault_file_ids_json")
+        if isinstance(vault_raw, str):
+            vault_raw = json.loads(vault_raw)
+        vault_file_ids = [str(v) for v in vault_raw] if vault_raw else None
         skill_raw = agent.get("skill_ids_json")
         if isinstance(skill_raw, str):
             skill_raw = json.loads(skill_raw)
@@ -144,6 +150,7 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
             tools=tools,
             mcp_server_ids=mcp_server_ids,
             knowledge_base_ids=knowledge_base_ids,
+            vault_file_ids=vault_file_ids,
             skill_ids=skill_ids,
             hitl_confirmation_tools=hitl_confirmation_tools,
             allow_tool_creation=bool(agent.get("allow_tool_creation", False)),
@@ -161,6 +168,8 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
     mcp_server_ids = [str(s) for s in mcp_raw] if mcp_raw else None
     kb_raw = json.loads(agent.knowledge_base_ids_json) if agent.knowledge_base_ids_json else None
     knowledge_base_ids = [str(k) for k in kb_raw] if kb_raw else None
+    vault_raw = json.loads(agent.vault_file_ids_json) if getattr(agent, "vault_file_ids_json", None) else None
+    vault_file_ids = [str(v) for v in vault_raw] if vault_raw else None
     skill_raw = json.loads(agent.skill_ids_json) if getattr(agent, "skill_ids_json", None) else None
     skill_ids = [str(s) for s in skill_raw] if skill_raw else None
     hitl_raw = json.loads(agent.hitl_confirmation_tools_json) if agent.hitl_confirmation_tools_json else None
@@ -177,6 +186,7 @@ def _agent_to_response(agent, is_mongo=False) -> AgentResponse:
         tools=tools,
         mcp_server_ids=mcp_server_ids,
         knowledge_base_ids=knowledge_base_ids,
+        vault_file_ids=vault_file_ids,
         skill_ids=skill_ids,
         hitl_confirmation_tools=hitl_confirmation_tools,
         allow_tool_creation=bool(agent.allow_tool_creation),
@@ -200,6 +210,7 @@ async def create_agent(
     tools_str = json.dumps(data.tools) if data.tools else None
     mcp_servers_str = json.dumps(data.mcp_server_ids) if data.mcp_server_ids else None
     kb_ids_str = json.dumps(data.knowledge_base_ids) if data.knowledge_base_ids else None
+    vault_ids_str = json.dumps(data.vault_file_ids) if data.vault_file_ids else None
     skill_ids_str = json.dumps(data.skill_ids) if data.skill_ids else None
     hitl_tools_str = json.dumps(data.hitl_confirmation_tools) if data.hitl_confirmation_tools else None
     config_str = json.dumps(data.config) if data.config else None
@@ -216,6 +227,7 @@ async def create_agent(
             "tools_json": tools_str,
             "mcp_servers_json": mcp_servers_str,
             "knowledge_base_ids_json": kb_ids_str,
+            "vault_file_ids_json": vault_ids_str,
             "skill_ids_json": skill_ids_str,
             "hitl_confirmation_tools_json": hitl_tools_str,
             "allow_tool_creation": data.allow_tool_creation,
@@ -236,6 +248,7 @@ async def create_agent(
         tools_json=tools_str,
         mcp_servers_json=mcp_servers_str,
         knowledge_base_ids_json=kb_ids_str,
+        vault_file_ids_json=vault_ids_str,
         skill_ids_json=skill_ids_str,
         hitl_confirmation_tools_json=hitl_tools_str,
         allow_tool_creation=data.allow_tool_creation,
@@ -314,6 +327,8 @@ async def update_agent(
         updates["mcp_servers_json"] = json.dumps(updates.pop("mcp_server_ids")) if updates["mcp_server_ids"] else None
     if "knowledge_base_ids" in updates:
         updates["knowledge_base_ids_json"] = json.dumps(updates.pop("knowledge_base_ids")) if updates["knowledge_base_ids"] else None
+    if "vault_file_ids" in updates:
+        updates["vault_file_ids_json"] = json.dumps(updates.pop("vault_file_ids")) if updates["vault_file_ids"] else None
     if "skill_ids" in updates:
         updates["skill_ids_json"] = json.dumps(updates.pop("skill_ids")) if updates["skill_ids"] else None
     if "hitl_confirmation_tools" in updates:

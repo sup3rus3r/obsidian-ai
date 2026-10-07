@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { AnimatePresence, motion } from "motion/react"
 import {
   Collapsible,
   CollapsibleContent,
@@ -171,32 +172,57 @@ const Tool = ({ name, state, input, output, className, defaultOpen = false }: To
   return (
     <Collapsible
       defaultOpen={defaultOpen}
-      className={cn("overflow-hidden rounded-lg border border-border", className)}
+      className={cn(
+        "overflow-hidden rounded-lg border border-border shadow-sm transition-shadow",
+        hasDetails && "hover:shadow-md",
+        className
+      )}
     >
-      <CollapsibleTrigger
-        className={cn(
-          "flex w-full items-center gap-2 bg-muted/40 px-3 py-2 text-left text-sm transition-colors",
-          hasDetails ? "cursor-pointer hover:bg-muted/60" : "cursor-default"
-        )}
-        disabled={!hasDetails}
-      >
-        {getStateIcon()}
-        <Wrench className="h-3.5 w-3.5 text-muted-foreground" />
-        <span className="font-mono text-xs font-medium flex-1">{displayName}</span>
-        {serverName && (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-            <Server className="h-2.5 w-2.5" />
-            {serverName}
-          </span>
-        )}
-        {getStateBadge()}
-        {hasDetails && (
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
-        )}
+      <CollapsibleTrigger asChild disabled={!hasDetails}>
+        <motion.button
+          type="button"
+          whileHover={hasDetails ? { backgroundColor: "var(--muted)" } : undefined}
+          whileTap={hasDetails ? { scale: 0.995 } : undefined}
+          transition={{ duration: 0.15 }}
+          className={cn(
+            "group flex w-full items-center gap-2 bg-muted/40 px-3 py-2 text-left text-sm",
+            hasDetails ? "cursor-pointer" : "cursor-default"
+          )}
+        >
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={state}
+              initial={{ opacity: 0, scale: 0.6 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.6 }}
+              transition={{ duration: 0.15 }}
+              className="inline-flex"
+            >
+              {getStateIcon()}
+            </motion.span>
+          </AnimatePresence>
+          <Wrench className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="font-mono text-xs font-medium flex-1">{displayName}</span>
+          {serverName && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+              <Server className="h-2.5 w-2.5" />
+              {serverName}
+            </span>
+          )}
+          {getStateBadge()}
+          {hasDetails && (
+            <motion.span
+              animate={{ rotate: 0 }}
+              className="inline-flex group-data-[state=open]:[&>svg]:rotate-180"
+            >
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200" />
+            </motion.span>
+          )}
+        </motion.button>
       </CollapsibleTrigger>
 
       {hasDetails && (
-        <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
+        <CollapsibleContent>
           <div className="border-t border-border bg-background p-3 space-y-2">
             {parsed && Object.keys(parsed).length > 0 && (
               <div>

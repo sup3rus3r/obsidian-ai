@@ -20,6 +20,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { AnimatedList, AnimatedListItem } from "@/components/ui/animated-list"
 import { AppRoutes } from "@/app/api/routes"
+import { useConfirm } from "@/hooks/use-confirm"
 
 interface SkillEntry {
   id: string
@@ -39,6 +40,12 @@ export default function SkillsPage() {
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [editingSkill, setEditingSkill] = useState<SkillEntry | null>(null)
   const [previewSkill, setPreviewSkill] = useState<SkillEntry | null>(null)
+  const [ConfirmDeleteDialog, confirmDelete] = useConfirm({
+    title: "Delete skill",
+    description: "This will permanently delete this skill. This action cannot be undone.",
+    confirmLabel: "Delete",
+    variant: "destructive",
+  })
 
   // Create form
   const [createName, setCreateName] = useState("")
@@ -141,7 +148,8 @@ export default function SkillsPage() {
   }
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return
+    const ok = await confirmDelete()
+    if (!ok) return
     try {
       const res = await fetch(AppRoutes.DeleteSkill(id), {
         method: "DELETE",
@@ -182,7 +190,7 @@ export default function SkillsPage() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold tracking-tight uppercase">Skills</h1>
+              <h1 className="text-2xl font-medium tracking-[-0.016em]">Skills</h1>
               <Badge variant="secondary">{skills.length}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -431,6 +439,7 @@ export default function SkillsPage() {
           </form>
         </DialogContent>
       </Dialog>
+      <ConfirmDeleteDialog />
     </div>
   )
 }

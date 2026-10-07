@@ -1,6 +1,7 @@
 "use client"
 
 import { cn } from "@/lib/utils"
+import { AnimatePresence, motion } from "motion/react"
 import { ChevronDown, Brain } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
@@ -35,46 +36,64 @@ const Reasoning = ({ children, isStreaming, className }: ReasoningProps) => {
   }, [children, isOpen, isStreaming])
 
   return (
-    <div className={cn("rounded-lg border border-border overflow-hidden", className)}>
-      <button
+    <div className={cn("rounded-lg border border-border overflow-hidden shadow-sm", className)}>
+      <motion.button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="flex w-full items-center gap-2 bg-muted/40 px-3 py-2 text-left text-sm cursor-pointer hover:bg-muted/60 transition-colors"
+        whileHover={{ backgroundColor: "var(--muted)" }}
+        whileTap={{ scale: 0.995 }}
+        transition={{ duration: 0.15 }}
+        className="flex w-full items-center gap-2 bg-muted/40 px-3 py-2 text-left text-sm cursor-pointer"
       >
         <Brain className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-xs font-medium text-muted-foreground flex-1">
           {isStreaming ? "Thinking..." : "Thought process"}
         </span>
         {isStreaming && (
-          <span className="flex gap-0.5">
-            <span className="h-1 w-1 rounded-full bg-muted-foreground animate-bounce [animation-delay:0ms]" />
-            <span className="h-1 w-1 rounded-full bg-muted-foreground animate-bounce [animation-delay:150ms]" />
-            <span className="h-1 w-1 rounded-full bg-muted-foreground animate-bounce [animation-delay:300ms]" />
+          <span className="flex items-center gap-0.5">
+            {[0, 1, 2].map((i) => (
+              <motion.span
+                key={i}
+                className="h-1 w-1 rounded-full bg-muted-foreground"
+                animate={{ opacity: [0.3, 1, 0.3], y: [0, -2, 0] }}
+                transition={{
+                  duration: 1,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                  delay: i * 0.15,
+                }}
+              />
+            ))}
           </span>
         )}
-        <ChevronDown
-          className={cn(
-            "h-3.5 w-3.5 text-muted-foreground transition-transform duration-200",
-            isOpen && "rotate-180"
-          )}
-        />
-      </button>
+        <motion.span
+          animate={{ rotate: isOpen ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="inline-flex"
+        >
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        </motion.span>
+      </motion.button>
 
-      <div
-        className={cn(
-          "grid transition-all duration-200 ease-out",
-          isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-        )}
-      >
-        <div className="overflow-hidden">
-          <div
-            ref={contentRef}
-            className="border-t border-border bg-background px-3 py-2 text-xs text-muted-foreground italic whitespace-pre-wrap max-h-48 overflow-y-auto"
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            key="reasoning-content"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="overflow-hidden"
           >
-            {children}
-          </div>
-        </div>
-      </div>
+            <div
+              ref={contentRef}
+              className="border-t border-border bg-background px-3 py-2 text-xs text-muted-foreground italic whitespace-pre-wrap max-h-48 overflow-y-auto"
+            >
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

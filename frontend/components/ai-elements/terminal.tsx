@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { AnimatePresence, motion } from "motion/react"
 import { Check, Copy, Terminal as TerminalIcon, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -33,9 +34,12 @@ export function Terminal({ output, isStreaming = false, onClear, className }: Te
   }, [output])
 
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "spring", stiffness: 300, damping: 28 }}
       className={cn(
-        "flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100",
+        "flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 shadow-sm",
         className
       )}
     >
@@ -45,28 +49,51 @@ export function Terminal({ output, isStreaming = false, onClear, className }: Te
         <span className="flex-1 font-mono text-xs text-zinc-400">Terminal</span>
 
         {isStreaming && (
-          <span className="text-[10px] text-emerald-400 font-medium animate-pulse">running</span>
+          <motion.span
+            animate={{ opacity: [0.4, 1, 0.4] }}
+            transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+            className="text-[10px] text-emerald-400 font-medium"
+          >
+            running
+          </motion.span>
         )}
 
-        <button
+        <motion.button
           onClick={handleCopy}
-          className="flex items-center justify-center h-6 w-6 rounded text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+          whileHover={{ backgroundColor: "rgb(39 39 42)" }}
+          whileTap={{ scale: 0.92 }}
+          transition={{ duration: 0.15 }}
+          className="flex items-center justify-center h-6 w-6 rounded text-zinc-500 hover:text-zinc-200"
           title="Copy output"
         >
-          {copied
-            ? <Check className="h-3 w-3 text-emerald-400" />
-            : <Copy className="h-3 w-3" />
-          }
-        </button>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={copied ? "check" : "copy"}
+              initial={{ opacity: 0, scale: 0.6 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.6 }}
+              transition={{ duration: 0.15 }}
+              className="inline-flex"
+            >
+              {copied
+                ? <Check className="h-3 w-3 text-emerald-400" />
+                : <Copy className="h-3 w-3" />
+              }
+            </motion.span>
+          </AnimatePresence>
+        </motion.button>
 
         {onClear && (
-          <button
+          <motion.button
             onClick={onClear}
-            className="flex items-center justify-center h-6 w-6 rounded text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+            whileHover={{ backgroundColor: "rgb(39 39 42)" }}
+            whileTap={{ scale: 0.92 }}
+            transition={{ duration: 0.15 }}
+            className="flex items-center justify-center h-6 w-6 rounded text-zinc-500 hover:text-zinc-200"
             title="Clear"
           >
             <Trash2 className="h-3 w-3" />
-          </button>
+          </motion.button>
         )}
       </div>
 
@@ -80,6 +107,6 @@ export function Terminal({ output, isStreaming = false, onClear, className }: Te
           <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-zinc-100 align-middle" />
         )}
       </pre>
-    </div>
+    </motion.div>
   )
 }

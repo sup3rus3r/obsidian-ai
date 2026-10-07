@@ -143,7 +143,7 @@ export default function SessionsPage() {
         </div>
         <div className="flex-1">
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight uppercase">Sessions</h1>
+            <h1 className="text-2xl font-medium tracking-[-0.016em]">Sessions</h1>
             <Badge variant="secondary" className="text-xs">
               {filteredSessions.length}
             </Badge>
@@ -202,22 +202,22 @@ export default function SessionsPage() {
           {filteredSessions.map((session) => (
             <AnimatedListItem key={session.id}>
             <Card
-              className={`group transition-colors ${session.entity_type !== "workflow" ? "cursor-pointer hover:border-primary/50" : "hover:border-border"}`}
+              className={`group hover:-translate-y-0.5 ${session.entity_type !== "workflow" ? "cursor-pointer hover:border-primary/40" : ""}`}
               onClick={() => handleOpenSession(session)}
             >
               <CardContent className="flex items-center gap-4 py-3 px-4">
                 <div className="shrink-0">
                   {session.entity_type === "agent" ? (
-                    <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
-                      <Bot className="h-4 w-4 text-orange-500" />
+                    <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                      <Bot className="h-4 w-4 text-primary" />
                     </div>
                   ) : session.entity_type === "workflow" ? (
-                    <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
-                      <GitBranch className="h-4 w-4 text-emerald-500" />
+                    <div className="h-8 w-8 rounded-lg bg-accent flex items-center justify-center">
+                      <GitBranch className="h-4 w-4 text-accent-foreground" />
                     </div>
                   ) : (
-                    <div className="h-8 w-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
-                      <Users className="h-4 w-4 text-blue-500" />
+                    <div className="h-8 w-8 rounded-lg bg-secondary flex items-center justify-center">
+                      <Users className="h-4 w-4 text-secondary-foreground" />
                     </div>
                   )}
                 </div>

@@ -105,8 +105,8 @@ export function WorkflowHistoryDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="fixed! inset-4! translate-x-0! translate-y-0! top-4! left-4! max-w-none! w-[calc(100%-2rem)]! h-[calc(100vh-2rem)]! flex! flex-col! overflow-hidden">
         <DialogHeader className="shrink-0">
-          <DialogTitle className="font-mono">
-            {workflow.name.toUpperCase()} — HISTORY
+          <DialogTitle>
+            {workflow.name} — History
           </DialogTitle>
           <DialogDescription>
             Past executions of this workflow.
@@ -187,7 +187,7 @@ export function WorkflowHistoryDialog({
                         {/* Input */}
                         {run.input_text && (
                           <div className="pt-2">
-                            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-[0.06em]">
                               Input
                             </span>
                             <div className="text-xs text-foreground mt-1 bg-muted/40 rounded p-2 max-w-none [&_p]:my-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_strong]:font-semibold">
@@ -198,7 +198,7 @@ export function WorkflowHistoryDialog({
 
                         {/* Steps */}
                         <div>
-                          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-[0.06em]">
                             Steps
                           </span>
                           <div className="mt-1 space-y-2">

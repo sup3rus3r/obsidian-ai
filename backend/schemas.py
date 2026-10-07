@@ -149,6 +149,7 @@ class AgentCreate(BaseModel):
     tools: Optional[list[str]] = None
     mcp_server_ids: Optional[list[str]] = None
     knowledge_base_ids: Optional[list[str]] = None
+    vault_file_ids: Optional[list[str]] = None
     skill_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: bool = False
@@ -166,6 +167,7 @@ class AgentUpdate(BaseModel):
     tools: Optional[list[str]] = None
     mcp_server_ids: Optional[list[str]] = None
     knowledge_base_ids: Optional[list[str]] = None
+    vault_file_ids: Optional[list[str]] = None
     skill_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: Optional[bool] = None
@@ -184,6 +186,7 @@ class AgentResponse(BaseModel):
     tools: Optional[list[str]] = None
     mcp_server_ids: Optional[list[str]] = None
     knowledge_base_ids: Optional[list[str]] = None
+    vault_file_ids: Optional[list[str]] = None
     skill_ids: Optional[list[str]] = None
     hitl_confirmation_tools: Optional[list[str]] = None
     allow_tool_creation: bool = False
@@ -825,6 +828,15 @@ class AgentMemoryResponse(BaseModel):
 class AgentMemoryListResponse(BaseModel):
     memories: list[AgentMemoryResponse]
 
+class AgentMemoryUpdate(BaseModel):
+    value: Optional[str] = None
+    category: Optional[str] = None
+    confidence: Optional[float] = None
+
+class AgentMemoryImportResponse(BaseModel):
+    created: int
+    updated: int
+
 
 # ============================================================================
 # Trace Schemas
@@ -1111,6 +1123,36 @@ class PromptVaultResponse(BaseModel):
 
 class PromptVaultListResponse(BaseModel):
     prompts: list[PromptVaultResponse]
+
+
+# ─── Markdown Vault (file manager) ──────────────────────────────────────────
+
+class VaultFileCreate(BaseModel):
+    name: str
+    folder: Optional[str] = None
+    content: str = ""
+
+class VaultFileUpdate(BaseModel):
+    name: Optional[str] = None
+    folder: Optional[str] = None
+    content: Optional[str] = None
+
+class VaultFileResponse(BaseModel):
+    id: str
+    name: str
+    folder: Optional[str] = None
+    content: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class VaultFileListResponse(BaseModel):
+    files: list[VaultFileResponse]
+
+class VaultFileUseAsKBRequest(BaseModel):
+    kb_id: str
 
 
 # ─── Skills Vault ──────────────────────────────────────────────────────────

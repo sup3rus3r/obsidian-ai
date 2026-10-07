@@ -61,6 +61,7 @@ class Agent(Base):
     tools_json    = Column(Text, nullable=True)            # JSON array of tool definition IDs
     mcp_servers_json = Column(Text, nullable=True)         # JSON array of MCP server IDs
     knowledge_base_ids_json = Column(Text, nullable=True)  # JSON array of knowledge base IDs
+    vault_file_ids_json = Column(Text, nullable=True)      # JSON array of vault file IDs (full-content prompt injection)
     skill_ids_json = Column(Text, nullable=True)            # JSON array of skill IDs (Claude agents only)
     model_id      = Column(String, nullable=True)              # model to use, e.g. "claude-sonnet-5"
     hitl_confirmation_tools_json = Column(Text, nullable=True)  # JSON array of tool names requiring HITL
@@ -298,6 +299,19 @@ class UserSecret(Base):
     description     = Column(Text, nullable=True)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class VaultFile(Base):
+    """A user-managed Markdown file (Obsidian-style vault note)."""
+    __tablename__ = "vault_files"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name        = Column(String, nullable=False)        # display name, e.g. "Project Notes"
+    folder      = Column(String, nullable=True)          # optional folder path, e.g. "research/2026"
+    content     = Column(Text, nullable=False, default="")
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class PromptVault(Base):

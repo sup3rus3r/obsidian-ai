@@ -134,6 +134,16 @@ export const AppRoutes = {
     ListAgentMemories   : (agentId: string) => `/api/memory/agents/${agentId}`,
     DeleteAgentMemory   : (agentId: string, memoryId: string) => `/api/memory/agents/${agentId}/${memoryId}`,
     ClearAgentMemories  : (agentId: string) => `/api/memory/agents/${agentId}`,
+    UpdateAgentMemory   : (agentId: string, memoryId: string) => `/api/memory/agents/${agentId}/${memoryId}`,
+    ExportAgentMemories : (agentId: string) => `/api/memory/agents/${agentId}/export`,
+    ImportAgentMemories : (agentId: string) => `/api/memory/agents/${agentId}/import`,
+
+    // Vault (Markdown files)
+    ListVaultFiles      : () => "/api/vault",
+    CreateVaultFile     : () => "/api/vault",
+    GetVaultFile        : (id: string) => `/api/vault/${id}`,
+    UpdateVaultFile     : (id: string) => `/api/vault/${id}`,
+    DeleteVaultFile     : (id: string) => `/api/vault/${id}`,
 
     // Traces
     GetSessionTrace     : (sessionId: string) => `/api/traces/sessions/${sessionId}`,

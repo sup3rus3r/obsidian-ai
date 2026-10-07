@@ -32,7 +32,7 @@ export function SidebarSection({
       <div className="flex items-center justify-between">
         <CollapsibleTrigger className="flex items-center gap-2 cursor-pointer group/section hover:text-foreground transition-colors">
           {icon}
-          <span className="text-xs font-semibold text-sidebar-foreground/60 uppercase tracking-widest group-hover/section:text-sidebar-foreground transition-colors">
+          <span className="text-[11px] font-medium text-sidebar-foreground/50 uppercase tracking-[0.06em] group-hover/section:text-sidebar-foreground transition-colors">
             {title}
           </span>
           {badge}

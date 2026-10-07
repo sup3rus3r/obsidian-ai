@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from config import DATABASE_TYPE
@@ -129,7 +129,7 @@ async def list_tools(
         tools = await cursor.to_list(length=100)
         return ToolDefinitionListResponse(tools=[_tool_to_response(t, is_mongo=True) for t in tools])
 
-    admin_user_ids = db.query(User.id).filter(User.role == "admin").subquery()
+    admin_user_ids = select(User.id).where(User.role == "admin")
     tools = db.query(ToolDefinition).filter(
         ToolDefinition.is_active == True,
         or_(

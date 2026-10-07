@@ -54,9 +54,9 @@ function StatCard({
   accent?: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 flex flex-col gap-2">
+    <div className="rounded-xl border border-border bg-card p-4 flex flex-col gap-2 shadow-sm">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-muted-foreground font-medium uppercase tracking-wide">{label}</span>
+        <span className="text-[11px] text-muted-foreground font-medium uppercase tracking-[0.06em]">{label}</span>
         <Icon className={`h-4 w-4 ${accent ?? "text-muted-foreground"}`} />
       </div>
       <p className="text-2xl font-semibold">{value}</p>
@@ -81,17 +81,17 @@ function TokenTimeline({ buckets }: { buckets: TokenBucket[] }) {
           <div key={b.date} className="flex items-center gap-3 text-sm">
             <span className="w-20 shrink-0 text-muted-foreground">{b.date.slice(5)}</span>
             <div className="flex-1 flex gap-0.5 h-4 rounded overflow-hidden bg-muted">
-              <div className="bg-violet-500/70 rounded-l" style={{ width: `${inputPct}%` }} />
-              <div className="bg-emerald-500/70 rounded-r" style={{ width: `${outputPct}%` }} />
+              <div className="bg-chart-1 rounded-l" style={{ width: `${inputPct}%` }} />
+              <div className="bg-chart-2 rounded-r" style={{ width: `${outputPct}%` }} />
             </div>
             <span className="w-14 text-right text-muted-foreground">{fmtNumber(total)}</span>
-            <span className="w-14 text-right text-amber-600">{fmtCost(b.cost_usd)}</span>
+            <span className="w-14 text-right text-warning">{fmtCost(b.cost_usd)}</span>
           </div>
         )
       })}
       <div className="flex gap-4 pt-2 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-500/70 inline-block" /> Input</span>
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-500/70 inline-block" /> Output</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-chart-1 inline-block" /> Input</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-chart-2 inline-block" /> Output</span>
       </div>
     </div>
   )
@@ -172,7 +172,7 @@ function CostByAgentTable({ agents }: { agents: CostByAgent[] }) {
           <div key={i} className="flex items-center gap-3 text-sm">
             <span className="w-32 shrink-0 truncate">{a.agent_name ?? "Unknown"}</span>
             <div className="flex-1 h-3 bg-muted rounded overflow-hidden">
-              <div className="h-full bg-amber-500/70 rounded" style={{ width: `${barPct}%` }} />
+              <div className="h-full bg-chart-3 rounded" style={{ width: `${barPct}%` }} />
             </div>
             <span className="w-20 text-right font-medium">{fmtCost(a.total_cost_usd)}</span>
             <span className="w-20 text-right text-muted-foreground">
@@ -200,7 +200,7 @@ function EmptyState({ label }: { label: string }) {
 function Section({ title, icon: Icon, children }: { title: string; icon: React.ElementType; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-border bg-card p-4">
-      <h2 className="flex items-center gap-2 text-base font-semibold mb-4">
+      <h2 className="flex items-center gap-2 text-base font-medium mb-4">
         <Icon className="h-4 w-4 text-muted-foreground" />
         {title}
       </h2>
@@ -259,7 +259,7 @@ export default function ObservabilityPage() {
     <div className="h-full overflow-y-auto p-8 w-full space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight uppercase">Observability</h1>
+          <h1 className="text-2xl font-medium tracking-[-0.016em]">Observability</h1>
           <p className="text-sm text-muted-foreground mt-1">Token usage, latency, cost, and tool analytics</p>
         </div>
         <div className="flex items-center gap-2">

@@ -200,13 +200,13 @@ export function WorkflowRunDialog({
         {/* Top bar */}
         <div className="flex items-center justify-between px-6 pr-14 pt-5 pb-4 border-b border-border shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0">
-              <GitBranch className="h-4 w-4 text-emerald-500" />
+            <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+              <GitBranch className="h-4 w-4 text-primary" />
             </div>
             <div className="min-w-0">
               <DialogHeader>
-                <DialogTitle className="font-mono text-base leading-tight">
-                  {workflow.name.toUpperCase()}
+                <DialogTitle className="text-base leading-tight">
+                  {workflow.name}
                 </DialogTitle>
               </DialogHeader>
               {workflow.description && (
@@ -219,25 +219,25 @@ export function WorkflowRunDialog({
               {currentRunLabel}
             </span>
             {status === "idle" && (
-              <Button onClick={handleRun} disabled={isRunning} className="gap-2 h-8 px-4 text-xs font-mono">
+              <Button onClick={handleRun} disabled={isRunning} className="gap-2 h-8 px-4 text-xs">
                 <Play className="h-3.5 w-3.5" />
-                RUN
+                Run
               </Button>
             )}
             {isRunning && (
-              <Button variant="destructive" onClick={handleStop} className="gap-2 h-8 px-4 text-xs font-mono">
+              <Button variant="destructive" onClick={handleStop} className="gap-2 h-8 px-4 text-xs">
                 <Square className="h-3 w-3" />
-                STOP
+                Stop
               </Button>
             )}
             {status === "completed" && (
               <Badge className="text-[10px] bg-green-500/15 text-green-400 border-green-500/30 px-2">
-                COMPLETED
+                Completed
               </Badge>
             )}
             {status === "failed" && (
               <Badge className="text-[10px] bg-red-500/15 text-red-400 border-red-500/30 px-2">
-                FAILED
+                Failed
               </Badge>
             )}
             {(status === "completed" || status === "failed") && !isRunning && (
@@ -252,7 +252,7 @@ export function WorkflowRunDialog({
         <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* Left: pipeline steps */}
           <div className="w-64 shrink-0 border-r border-border flex flex-col overflow-y-auto py-4 px-3 gap-1">
-            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-2">
+            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-[0.06em] px-2 mb-2">
               Pipeline · {sortedSteps.length} steps
             </p>
             {sortedSteps.map((step, i) => {
@@ -289,7 +289,7 @@ export function WorkflowRunDialog({
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className={cn("text-[10px] font-semibold uppercase tracking-wide", color)}>
+                      <span className={cn("text-[10px] font-medium uppercase tracking-[0.06em]", color)}>
                         {nt}
                       </span>
                     </div>
@@ -312,12 +312,12 @@ export function WorkflowRunDialog({
             {status === "idle" && (
               <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
                 <div className="h-14 w-14 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
-                  <GitBranch className="h-7 w-7 text-emerald-500" />
+                  <GitBranch className="h-7 w-7 text-primary" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-foreground">Ready to run</p>
+                  <p className="text-sm font-medium text-foreground">Ready to run</p>
                   <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-                    Click <span className="font-mono font-semibold text-foreground">RUN</span> to execute this workflow. The pipeline will stream progress in real time.
+                    Click <span className="font-mono font-medium text-foreground">Run</span> to execute this workflow. The pipeline will stream progress in real time.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 text-[11px] text-muted-foreground/60 font-mono border border-border rounded-md px-3 py-1.5 bg-muted/20">
@@ -365,7 +365,7 @@ export function WorkflowRunDialog({
                           : <CheckCircle2 className="h-3.5 w-3.5 text-green-400 shrink-0" />
                         }
                         {/* name */}
-                        <span className={cn("font-semibold shrink-0", color)}>{name}</span>
+                        <span className={cn("font-medium shrink-0", color)}>{name}</span>
                         {/* inline result */}
                         {isSkipped && <span className="text-muted-foreground/50 italic">skipped</span>}
                         {!isSkipped && isCondition && (
@@ -412,7 +412,7 @@ export function WorkflowRunDialog({
                       onClick={() => toggleOutput("final")}
                     >
                       <CheckCircle2 className="h-3.5 w-3.5 text-green-400 shrink-0" />
-                      <span className="text-xs font-semibold text-green-400 flex-1">Final Output</span>
+                      <span className="text-xs font-medium text-green-400 flex-1">Final Output</span>
                       {expandedOutputs.has("final")
                         ? <ChevronDown className="h-3.5 w-3.5 text-green-400/60" />
                         : <ChevronRight className="h-3.5 w-3.5 text-green-400/60" />

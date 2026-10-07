@@ -119,7 +119,7 @@ export default function KnowledgePage() {
       <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
         <div className="flex items-center gap-2">
           <BookOpen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-2xl font-bold tracking-tight uppercase">Knowledge Bases</h1>
+          <h1 className="text-2xl font-medium tracking-[-0.016em]">Knowledge Bases</h1>
         </div>
         {canCreateKB && (
           <Button size="sm" className="h-9" onClick={() => setShowCreateDialog(true)}>
@@ -154,7 +154,7 @@ export default function KnowledgePage() {
               >
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
-                    <CardTitle className="text-base font-semibold leading-snug">{kb.name}</CardTitle>
+                    <CardTitle className="text-base font-medium leading-snug">{kb.name}</CardTitle>
                     <div className="flex items-center gap-1 shrink-0">
                       {kb.is_shared && (
                         <Badge variant="secondary" className="text-xs gap-1">

@@ -49,7 +49,7 @@ function AnimatedListItem({
 }: AnimatedListItemProps) {
   return (
     <motion.div
-      className={cn(className)}
+      className={cn("h-full", className)}
       initial={{ opacity: 0, y: 12, filter: "blur(4px)" }}
       animate={{
         opacity: 1,

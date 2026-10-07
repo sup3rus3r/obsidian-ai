@@ -26,6 +26,7 @@ export const Routes = {
   SECRETS         : '/secrets',
   PROMPTS         : '/prompts',
   SKILLS          : '/skills',
+  VAULT           : '/vault',
 } as const;
 
 
@@ -107,6 +108,12 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Skills',
     allowedRoles: ['admin', 'user'],
     description: 'Reusable Claude Skills (Anthropic Claude agents only)',
+  },
+  {
+    path: Routes.VAULT,
+    label: 'Markdown',
+    allowedRoles: ['admin', 'user'],
+    description: 'Markdown notes you can inject into agent prompts or knowledge bases',
   },
 ];
 

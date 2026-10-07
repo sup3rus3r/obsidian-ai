@@ -171,27 +171,32 @@ export default function HomePage() {
   return (
     <div className="h-full overflow-y-auto p-8 w-full space-y-8">
       {/* Welcome */}
-      <h1 className="text-2xl font-bold tracking-tight uppercase">
-        Welcome {session?.user?.name || "back"}
-      </h1>
+      <div>
+        <h1 className="text-[28px] font-medium tracking-[-0.016em] text-foreground">
+          Welcome{session?.user?.name ? `, ${session.user.name}` : " back"}
+        </h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Here's what's running across your agents, teams, and workflows.
+        </p>
+      </div>
 
       {/* Explore */}
       <section>
-        <h2 className="text-xs font-semibold text-foreground/70 uppercase tracking-wider mb-3">
+        <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-[0.04em] mb-3">
           Explore
         </h2>
         <AnimatedList className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {exploreCards.map((card) => (
             <AnimatedListItem key={card.title}>
               <Link href={card.href}>
-                <Card className="group cursor-pointer hover:border-primary/50 transition-colors h-full">
+                <Card className="group cursor-pointer h-44 flex flex-col shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 hover:border-primary/40">
                   <CardHeader className="pb-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <card.icon className="h-5 w-5 text-muted-foreground" />
-                        <CardTitle className="text-base">{card.title}</CardTitle>
+                        <CardTitle className="text-base font-medium">{card.title}</CardTitle>
                       </div>
-                      <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                      <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200" />
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -208,7 +213,7 @@ export default function HomePage() {
       <section>
         <button
           onClick={() => setAgentsOpen(!agentsOpen)}
-          className="flex items-center gap-1 text-xs font-semibold text-foreground/70 uppercase tracking-wider mb-3 hover:text-foreground transition-colors"
+          className="flex items-center gap-1 text-xs font-medium text-muted-foreground uppercase tracking-[0.04em] mb-3 hover:text-foreground transition-colors"
         >
           {agentsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
           Agents
@@ -222,14 +227,14 @@ export default function HomePage() {
           <AnimatedList className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {agents.map((agent) => (
               <AnimatedListItem key={agent.id}>
-              <Card className="group hover:border-primary/50 transition-colors">
+              <Card className="group h-44 flex flex-col shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 hover:border-primary/40">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="h-7 w-7 rounded-lg bg-orange-500/10 flex items-center justify-center shrink-0">
                         <Bot className="h-3.5 w-3.5 text-orange-500" />
                       </div>
-                      <CardTitle className="text-sm font-mono">{agent.name.toUpperCase()}</CardTitle>
+                      <CardTitle className="text-sm font-medium">{agent.name}</CardTitle>
                     </div>
                     {permissions.create_agents && (
                       <Button
@@ -242,33 +247,31 @@ export default function HomePage() {
                       </Button>
                     )}
                   </div>
-                  {agent.description && (
-                    <CardDescription className="text-xs line-clamp-1 mt-1">
-                      {agent.description}
-                    </CardDescription>
-                  )}
+                  <CardDescription className="text-xs line-clamp-1 mt-1 min-h-[1em]">
+                    {agent.description || " "}
+                  </CardDescription>
                 </CardHeader>
-                <CardContent className="pt-0">
+                <CardContent className="pt-0 mt-auto">
                   <div className="flex items-center gap-2">
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 text-xs font-mono"
+                      className="h-7 text-xs"
                       onClick={() => navigateToChat("agent", agent.id)}
                     >
-                      CHAT
+                      Chat
                     </Button>
                     {permissions.create_agents && (
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 text-xs font-mono"
+                        className="h-7 text-xs"
                         onClick={() => {
                           setEditingAgent(agent)
                           setAgentDialogOpen(true)
                         }}
                       >
-                        CONFIG
+                        Config
                       </Button>
                     )}
                     {getProviderLabel(agent.provider_id) && (
@@ -284,7 +287,7 @@ export default function HomePage() {
             {permissions.create_agents && (
               <AnimatedListItem>
                 <Card
-                  className="border-dashed cursor-pointer hover:border-primary/50 transition-colors flex items-center justify-center min-h-30"
+                  className="border-dashed cursor-pointer hover:border-primary/50 transition-colors flex items-center justify-center h-44"
                   onClick={() => setAgentDialogOpen(true)}
                 >
                   <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
@@ -302,7 +305,7 @@ export default function HomePage() {
       <section>
         <button
           onClick={() => setTeamsOpen(!teamsOpen)}
-          className="flex items-center gap-1 text-xs font-semibold text-foreground/70 uppercase tracking-wider mb-3 hover:text-foreground transition-colors"
+          className="flex items-center gap-1 text-xs font-medium text-muted-foreground uppercase tracking-[0.04em] mb-3 hover:text-foreground transition-colors"
         >
           {teamsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
           Teams
@@ -316,14 +319,14 @@ export default function HomePage() {
           <AnimatedList className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {teams.map((team) => (
               <AnimatedListItem key={team.id}>
-              <Card className="group hover:border-primary/50 transition-colors">
+              <Card className="group h-44 flex flex-col shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 hover:border-primary/40">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="h-7 w-7 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
                         <Users className="h-3.5 w-3.5 text-blue-500" />
                       </div>
-                      <CardTitle className="text-sm font-mono">{team.name.toUpperCase()}</CardTitle>
+                      <CardTitle className="text-sm font-medium">{team.name}</CardTitle>
                     </div>
                     {permissions.create_teams && (
                       <Button
@@ -336,29 +339,27 @@ export default function HomePage() {
                       </Button>
                     )}
                   </div>
-                  {team.description && (
-                    <CardDescription className="text-xs line-clamp-1 mt-1">
-                      {team.description}
-                    </CardDescription>
-                  )}
+                  <CardDescription className="text-xs line-clamp-1 mt-1 min-h-[1em]">
+                    {team.description || " "}
+                  </CardDescription>
                 </CardHeader>
-                <CardContent className="pt-0">
+                <CardContent className="pt-0 mt-auto">
                   <div className="flex items-center gap-2">
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 text-xs font-mono"
+                      className="h-7 text-xs"
                       onClick={() => navigateToChat("team", team.id)}
                     >
-                      CHAT
+                      Chat
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 text-xs font-mono"
+                      className="h-7 text-xs"
                       onClick={() => navigateToChat("team", team.id)}
                     >
-                      CONFIG
+                      Config
                     </Button>
                     <Badge variant="secondary" className="ml-auto text-[10px] px-1.5 py-0">
                       {team.mode}
@@ -371,7 +372,7 @@ export default function HomePage() {
             {permissions.create_teams && (
             <AnimatedListItem>
               <Card
-                className="border-dashed flex items-center justify-center min-h-30 transition-colors cursor-pointer hover:border-primary/50"
+                className="border-dashed flex items-center justify-center h-44 transition-colors cursor-pointer hover:border-primary/50"
                 onClick={() => setTeamDialogOpen(true)}
               >
                 <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
@@ -389,7 +390,7 @@ export default function HomePage() {
       <section>
         <button
           onClick={() => setWorkflowsOpen(!workflowsOpen)}
-          className="flex items-center gap-1 text-xs font-semibold text-foreground/70 uppercase tracking-wider mb-3 hover:text-foreground transition-colors"
+          className="flex items-center gap-1 text-xs font-medium text-muted-foreground uppercase tracking-[0.04em] mb-3 hover:text-foreground transition-colors"
         >
           {workflowsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
           Workflows
@@ -403,14 +404,14 @@ export default function HomePage() {
           <AnimatedList className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {workflows.map((workflow) => (
               <AnimatedListItem key={workflow.id}>
-              <Card className="group hover:border-primary/50 transition-colors">
+              <Card className="group min-h-44 flex flex-col shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 hover:border-primary/40">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="h-7 w-7 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0">
                         <GitBranch className="h-3.5 w-3.5 text-emerald-500" />
                       </div>
-                      <CardTitle className="text-sm font-mono">{workflow.name.toUpperCase()}</CardTitle>
+                      <CardTitle className="text-sm font-medium">{workflow.name}</CardTitle>
                     </div>
                     {permissions.create_workflows && (
                       <Button
@@ -423,59 +424,57 @@ export default function HomePage() {
                       </Button>
                     )}
                   </div>
-                  {workflow.description && (
-                    <CardDescription className="text-xs line-clamp-1 mt-1">
-                      {workflow.description}
-                    </CardDescription>
-                  )}
+                  <CardDescription className="text-xs line-clamp-1 mt-1 min-h-[1em]">
+                    {workflow.description || " "}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="pt-0 space-y-2">
                   <div className="flex items-center gap-2 flex-wrap">
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 text-xs font-mono"
+                      className="h-7 text-xs"
                       onClick={() => {
                         setSelectedWorkflow(workflow)
                         setWorkflowRunDialogOpen(true)
                       }}
                     >
-                      RUN
+                      Run
                     </Button>
                     {permissions.create_workflows && (
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 text-xs font-mono"
+                        className="h-7 text-xs"
                         onClick={() => {
                           setEditingWorkflow(workflow)
                           setWorkflowDialogOpen(true)
                         }}
                       >
-                        EDIT
+                        Edit
                       </Button>
                     )}
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 text-xs font-mono"
+                      className="h-7 text-xs"
                       onClick={() => {
                         setSelectedWorkflow(workflow)
                         setWorkflowHistoryDialogOpen(true)
                       }}
                     >
-                      HISTORY
+                      History
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 text-xs font-mono"
+                      className="h-7 text-xs"
                       onClick={() => {
                         setSelectedWorkflow(workflow)
                         setWorkflowScheduleDialogOpen(true)
                       }}
                     >
-                      SCHEDULE
+                      Schedule
                     </Button>
                     <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
                       {workflow.steps.length} step{workflow.steps.length !== 1 ? "s" : ""}
@@ -496,7 +495,7 @@ export default function HomePage() {
             {permissions.create_workflows && (
             <AnimatedListItem>
               <Card
-                className="border-dashed flex items-center justify-center min-h-30 transition-colors cursor-pointer hover:border-primary/50"
+                className="border-dashed flex items-center justify-center min-h-44 transition-colors cursor-pointer hover:border-primary/50"
                 onClick={() => { setEditingWorkflow(null); setWorkflowDialogOpen(true) }}
               >
                 <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
@@ -509,7 +508,7 @@ export default function HomePage() {
             {permissions.create_workflows && (
             <AnimatedListItem>
               <Card
-                className="border-dashed flex items-center justify-center min-h-30 transition-colors cursor-pointer hover:border-primary/50"
+                className="border-dashed flex items-center justify-center min-h-44 transition-colors cursor-pointer hover:border-primary/50"
                 onClick={() => setN8nImportDialogOpen(true)}
               >
                 <div className="flex flex-col items-center gap-1.5 text-muted-foreground">

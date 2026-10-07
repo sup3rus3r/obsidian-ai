@@ -176,6 +176,11 @@ export function MessageBubble({
     : []
 
   return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "spring", stiffness: 300, damping: 30 }}
+    >
     <Message from={isUser ? "user" : "assistant"}>
       <MessageContent className="group-[.is-user]:rounded-2xl">
         {/* Agent name badge (team mode) */}
@@ -417,5 +422,6 @@ export function MessageBubble({
         </div>
       )}
     </Message>
+    </motion.div>
   )
 }

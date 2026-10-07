@@ -5,6 +5,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -304,7 +305,7 @@ export function N8nImportDialog({ open, onOpenChange, agents, onImported }: N8nI
                   <p className="font-medium text-foreground">This workflow ran on a timer in n8n</p>
                   <p className="text-muted-foreground mt-0.5">
                     Importing does not create a schedule. To keep it running, add one from the workflow&apos;s
-                    SCHEDULE dialog:{" "}
+                    Schedule dialog:{" "}
                     {preview.schedules.map((s) => (
                       <code key={s.cron_expr} className="font-mono text-foreground/90">
                         {s.cron_expr}
@@ -373,7 +374,7 @@ export function N8nImportDialog({ open, onOpenChange, agents, onImported }: N8nI
 
         {error && <p className="text-xs text-destructive">{error}</p>}
 
-        <div className="flex justify-end gap-2">
+        <DialogFooter>
           {preview ? (
             <>
               <Button variant="outline" onClick={() => setPreview(null)} disabled={busy}>
@@ -396,7 +397,7 @@ export function N8nImportDialog({ open, onOpenChange, agents, onImported }: N8nI
               </Button>
             </>
           )}
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

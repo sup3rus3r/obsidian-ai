@@ -59,6 +59,7 @@ import type {
   HITLApprovalItem,
   AsyncJobItem,
   Skill,
+  VaultFile,
 } from "@/types/playground"
 
 interface ApiResponse<T> {
@@ -155,8 +156,8 @@ class ApiClient {
     )
   }
 
-  async listModels(providerId: string): Promise<string[]> {
-    const result = await this.request<{ models: string[] }>(AppRoutes.ListModels(providerId))
+  async listModels(providerId: string): Promise<{ id: string; name: string }[]> {
+    const result = await this.request<{ models: { id: string; name: string }[] }>(AppRoutes.ListModels(providerId))
     return result.models || []
   }
 
@@ -560,6 +561,36 @@ class ApiClient {
     return result.knowledge_bases || []
   }
 
+  // ============= Vault (Markdown files) =============
+  async listVaultFiles(): Promise<VaultFile[]> {
+    const result = await this.request<{ files: VaultFile[] }>(AppRoutes.ListVaultFiles())
+    return result.files || []
+  }
+
+  async getVaultFile(id: string): Promise<VaultFile> {
+    return this.request<VaultFile>(AppRoutes.GetVaultFile(id))
+  }
+
+  async createVaultFile(data: { name: string; folder?: string | null; content?: string }): Promise<VaultFile> {
+    return this.request<VaultFile>(AppRoutes.CreateVaultFile(), {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateVaultFile(id: string, data: { name?: string; folder?: string | null; content?: string }): Promise<VaultFile> {
+    return this.request<VaultFile>(AppRoutes.UpdateVaultFile(id), {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteVaultFile(id: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteVaultFile(id), {
+      method: "DELETE",
+    })
+  }
+
   async getKnowledgeBase(id: string): Promise<KnowledgeBase> {
     return this.request<KnowledgeBase>(AppRoutes.GetKnowledgeBase(id))
   }
@@ -655,6 +686,51 @@ class ApiClient {
     await this.request<void>(AppRoutes.ClearAgentMemories(agentId), {
       method: "DELETE",
     })
+  }
+
+  async updateAgentMemory(
+    agentId: string,
+    memoryId: string,
+    data: { value?: string; category?: string; confidence?: number },
+  ): Promise<AgentMemory> {
+    return this.request<AgentMemory>(AppRoutes.UpdateAgentMemory(agentId, memoryId), {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async exportAgentMemories(agentId: string, agentName: string): Promise<void> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const response = await fetch(AppRoutes.ExportAgentMemories(agentId), { headers })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Export failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${agentName.replace(/[^a-z0-9\-_ ]/gi, "_")}-memories.md`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  async importAgentMemories(
+    agentId: string,
+    markdown: string,
+  ): Promise<{ created: number; updated: number }> {
+    return this.request<{ created: number; updated: number }>(
+      AppRoutes.ImportAgentMemories(agentId),
+      {
+        method: "POST",
+        body: JSON.stringify({ markdown }),
+      },
+    )
   }
 
   // ============= Agent Versions =============

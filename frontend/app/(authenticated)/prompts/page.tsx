@@ -20,6 +20,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { AnimatedList, AnimatedListItem } from "@/components/ui/animated-list"
 import { AppRoutes } from "@/app/api/routes"
+import { useConfirm } from "@/hooks/use-confirm"
 
 interface PromptEntry {
   id: string
@@ -39,6 +40,12 @@ export default function PromptsPage() {
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [editingPrompt, setEditingPrompt] = useState<PromptEntry | null>(null)
   const [previewPrompt, setPreviewPrompt] = useState<PromptEntry | null>(null)
+  const [ConfirmDeleteDialog, confirmDelete] = useConfirm({
+    title: "Delete prompt",
+    description: "This will permanently delete this prompt. This action cannot be undone.",
+    confirmLabel: "Delete",
+    variant: "destructive",
+  })
 
   // Create form
   const [createName, setCreateName] = useState("")
@@ -141,7 +148,8 @@ export default function PromptsPage() {
   }
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return
+    const ok = await confirmDelete()
+    if (!ok) return
     try {
       const res = await fetch(AppRoutes.DeletePrompt(id), {
         method: "DELETE",
@@ -182,7 +190,7 @@ export default function PromptsPage() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold tracking-tight uppercase">Prompt Vault</h1>
+              <h1 className="text-2xl font-medium tracking-[-0.016em]">Prompt Vault</h1>
               <Badge variant="secondary">{prompts.length}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -430,6 +438,7 @@ export default function PromptsPage() {
           </form>
         </DialogContent>
       </Dialog>
+      <ConfirmDeleteDialog />
     </div>
   )
 }

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { AnimatePresence, motion } from "motion/react"
 import { CheckCircle2, ChevronsUpDown, Loader2, ListTodo } from "lucide-react"
 import {
   Card,
@@ -42,7 +43,7 @@ export function Plan({ plan, isStreaming = false, className }: PlanProps) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <Card className={cn("shadow-none gap-0 py-0 overflow-hidden", className)}>
+      <Card className={cn("gap-0 py-0 overflow-hidden shadow-sm transition-shadow hover:shadow-md", className)}>
         <CardHeader className="py-3 px-4">
           <div className="flex items-start gap-2">
             <ListTodo className="h-4 w-4 text-primary mt-0.5 shrink-0" />
@@ -77,20 +78,39 @@ export function Plan({ plan, isStreaming = false, className }: PlanProps) {
           <CardContent className="pb-3 px-4 pt-0">
             {plan.steps.length > 0 ? (
               <ol className="space-y-1.5">
-                {plan.steps.map((step, i) => {
-                  const isLastStep = i === plan.steps.length - 1
-                  const isActiveStep = isStreaming && isLastStep && !plan.isComplete
-                  return (
-                    <li key={i} className="flex items-start gap-2">
-                      {isActiveStep ? (
-                        <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin shrink-0 mt-0.5" />
-                      ) : (
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-                      )}
-                      <span className="text-xs text-foreground leading-snug">{step}</span>
-                    </li>
-                  )
-                })}
+                <AnimatePresence initial={false}>
+                  {plan.steps.map((step, i) => {
+                    const isLastStep = i === plan.steps.length - 1
+                    const isActiveStep = isStreaming && isLastStep && !plan.isComplete
+                    return (
+                      <motion.li
+                        key={i}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ type: "spring", stiffness: 300, damping: 26 }}
+                        className="flex items-start gap-2"
+                      >
+                        <AnimatePresence mode="wait" initial={false}>
+                          <motion.span
+                            key={isActiveStep ? "active" : "done"}
+                            initial={{ opacity: 0, scale: 0.6 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.6 }}
+                            transition={{ duration: 0.15 }}
+                            className="inline-flex shrink-0 mt-0.5"
+                          >
+                            {isActiveStep ? (
+                              <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                            )}
+                          </motion.span>
+                        </AnimatePresence>
+                        <span className="text-xs text-foreground leading-snug">{step}</span>
+                      </motion.li>
+                    )
+                  })}
+                </AnimatePresence>
               </ol>
             ) : isStreaming ? (
               <div className="flex items-center gap-2 py-1">
