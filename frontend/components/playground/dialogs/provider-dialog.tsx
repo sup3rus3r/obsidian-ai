@@ -32,7 +32,7 @@ const PROVIDER_TYPES = [
   { value: "anthropic", label: "Anthropic", defaultUrl: "", needsKey: true },
   { value: "google", label: "Google Gemini", defaultUrl: "", needsKey: true },
   { value: "openrouter", label: "OpenRouter", defaultUrl: "https://openrouter.ai/api/v1", needsKey: true },
-  { value: "custom", label: "Custom (OpenAI-compatible)", defaultUrl: "", needsKey: false },
+  { value: "custom", label: "Custom (OpenAI-compatible)", defaultUrl: "", needsKey: true },
 ]
 
 interface ProviderDialogProps {
