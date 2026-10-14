@@ -7,9 +7,45 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from llm.base import LLMMessage
-from llm.provider_factory import create_provider
+from llm.provider_factory import create_provider_from_config
 
 logger = logging.getLogger(__name__)
+
+# Safe last-resort default per provider type when neither the agent nor the
+# provider record has a model_id set — mirrors chat_router.py's established
+# `agent.model_id or provider.model_id or "gpt-4o"` fallback pattern, which
+# this module previously skipped entirely (passing provider_record.model_id
+# straight to create_provider, which crashes downstream if it's None/unset).
+_PROVIDER_DEFAULT_MODELS = {
+    "openai": "gpt-4o",
+    "anthropic": "claude-sonnet-5-5",
+    "google": "gemini-2.0-flash",
+    "ollama": "llama3",
+    "openrouter": "openai/gpt-4o",
+}
+
+
+def _create_provider_for(provider_record, agent=None):
+    """Create a provider instance using the agent's model_id override when set,
+    falling back to the provider record's own model_id, then a safe per-type
+    default — never passing None through to the provider constructor."""
+    from encryption import decrypt_api_key
+
+    agent_model_id = getattr(agent, "model_id", None) if agent else None
+    model_id = (
+        agent_model_id
+        or provider_record.model_id
+        or _PROVIDER_DEFAULT_MODELS.get(provider_record.provider_type, "gpt-4o")
+    )
+    api_key = decrypt_api_key(provider_record.api_key) if provider_record.api_key else None
+    config = json.loads(provider_record.config_json) if provider_record.config_json else None
+    return create_provider_from_config(
+        provider_type=provider_record.provider_type,
+        api_key=api_key,
+        base_url=provider_record.base_url,
+        model_id=model_id,
+        config=config,
+    )
 
 
 # ─── Graders ────────────────────────────────────────────────────────────────
@@ -29,13 +65,14 @@ async def grade_llm_judge(
     actual: str,
     expected: str,
     judge_provider_record,
+    judge_agent=None,
 ) -> tuple[bool, float, str]:
     """
     Use an LLM to score the actual output against the expected output.
     Returns (passed, score 0.0-1.0, reasoning).
     """
     try:
-        provider = create_provider(judge_provider_record)
+        provider = _create_provider_for(judge_provider_record, judge_agent)
         prompt = (
             "You are a strict evaluator. Score how well the actual output satisfies the intent of the expected output.\n\n"
             f"Input: {input_text}\n"
@@ -117,16 +154,18 @@ async def run_eval_suite_sqlite(
             db.commit()
             return
 
-        provider = create_provider(provider_record)
+        provider = _create_provider_for(provider_record, agent)
 
         # Resolve judge provider: use suite's judge_agent_id if set, else fall back to agent's provider
         judge_provider = provider_record
+        judge_agent = agent
         if suite.judge_agent_id:
-            judge_agent = db.query(Agent).filter(Agent.id == suite.judge_agent_id).first()
-            if judge_agent and judge_agent.provider_id:
-                jp = db.query(LLMProvider).filter(LLMProvider.id == judge_agent.provider_id).first()
+            _ja = db.query(Agent).filter(Agent.id == suite.judge_agent_id).first()
+            if _ja and _ja.provider_id:
+                jp = db.query(LLMProvider).filter(LLMProvider.id == _ja.provider_id).first()
                 if jp:
                     judge_provider = jp
+                    judge_agent = _ja
 
         results = []
         passed_count = 0
@@ -147,7 +186,7 @@ async def run_eval_suite_sqlite(
                 if grading_method == "exact_match":
                     passed, score, reasoning = await grade_exact_match(actual, expected)
                 elif grading_method == "llm_judge":
-                    passed, score, reasoning = await grade_llm_judge(input_text, actual, expected, judge_provider)
+                    passed, score, reasoning = await grade_llm_judge(input_text, actual, expected, judge_provider, judge_agent)
                 else:  # contains (default)
                     passed, score, reasoning = await grade_contains(actual, expected)
 
@@ -248,36 +287,37 @@ async def run_eval_suite_mongo(
             await EvalRunCollection.update_status(mongo_db, run_id, {"status": "failed"})
             return
 
-        # Build a lightweight provider-record-like object
-        _PROVIDER_DEFAULT_MODELS = {
-            "openai": "gpt-4o",
-            "anthropic": "claude-sonnet-4-6",
-            "google": "gemini-2.0-flash",
-            "ollama": "llama3",
-            "openrouter": "openai/gpt-4o",
-        }
-
+        # Build a lightweight provider-record-like object (model_id intentionally left
+        # as whatever the document has, possibly None — the agent's own model_id, when
+        # set, takes priority in _create_provider_for, with _PROVIDER_DEFAULT_MODELS as
+        # the final fallback if neither is set).
         class _ProviderRecord:
             def __init__(self, doc):
                 self.provider_type = doc.get("provider_type")
                 self.api_key = doc.get("api_key")
                 self.base_url = doc.get("base_url")
-                self.model_id = doc.get("model_id") or _PROVIDER_DEFAULT_MODELS.get(doc.get("provider_type", ""), "gpt-4o")
+                self.model_id = doc.get("model_id")
                 self.config_json = doc.get("config_json")
 
+        class _AgentRecord:
+            def __init__(self, doc):
+                self.model_id = doc.get("model_id") if doc else None
+
         provider_record = _ProviderRecord(provider_doc)
-        provider = create_provider(provider_record)
+        provider = _create_provider_for(provider_record, _AgentRecord(agent))
 
         # Resolve judge provider: use suite's judge_agent_id if set, else fall back to agent's provider
         judge_provider_record = provider_record
+        judge_agent_record = _AgentRecord(agent)
         judge_agent_id = suite.get("judge_agent_id")
         if judge_agent_id:
             try:
-                judge_agent = await agent_col.find_one({"_id": ObjectId(str(judge_agent_id))})
-                if judge_agent and judge_agent.get("provider_id"):
-                    judge_provider_doc = await provider_col.find_one({"_id": ObjectId(str(judge_agent["provider_id"]))})
+                judge_agent_doc = await agent_col.find_one({"_id": ObjectId(str(judge_agent_id))})
+                if judge_agent_doc and judge_agent_doc.get("provider_id"):
+                    judge_provider_doc = await provider_col.find_one({"_id": ObjectId(str(judge_agent_doc["provider_id"]))})
                     if judge_provider_doc:
                         judge_provider_record = _ProviderRecord(judge_provider_doc)
+                        judge_agent_record = _AgentRecord(judge_agent_doc)
             except Exception:
                 pass  # fall back to agent's provider
 
@@ -300,7 +340,7 @@ async def run_eval_suite_mongo(
                 if grading_method == "exact_match":
                     passed, score, reasoning = await grade_exact_match(actual, expected)
                 elif grading_method == "llm_judge":
-                    passed, score, reasoning = await grade_llm_judge(input_text, actual, expected, judge_provider_record)
+                    passed, score, reasoning = await grade_llm_judge(input_text, actual, expected, judge_provider_record, judge_agent_record)
                 else:
                     passed, score, reasoning = await grade_contains(actual, expected)
 
