@@ -514,6 +514,15 @@ class MessageCollection:
             {"$set": {"metadata_json": _json.dumps(metadata)}},
         )
 
+    @classmethod
+    async def update_content_and_metadata(cls, db, message_id: str, content: str, metadata: dict) -> None:
+        collection = db[cls.collection_name]
+        import json as _json
+        await collection.update_one(
+            {"_id": ObjectId(message_id)},
+            {"$set": {"content": content, "metadata_json": _json.dumps(metadata)}},
+        )
+
 
 class ToolDefinitionCollection:
     collection_name = "tool_definitions"

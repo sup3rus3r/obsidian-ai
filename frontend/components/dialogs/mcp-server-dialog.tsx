@@ -198,7 +198,7 @@ export function MCPServerDialog({ open, onOpenChange, server, onSaved }: MCPServ
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showFullscreenButton className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+      <DialogContent showFullscreenButton className="sm:max-w-[60vw] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEditing ? "Edit MCP Server" : "Add MCP Server"}</DialogTitle>
           <DialogDescription>

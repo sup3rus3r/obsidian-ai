@@ -6,6 +6,7 @@ import { useSession } from "next-auth/react"
 import { MessageList } from "./message-list"
 import { ChatInput } from "./chat-input"
 import { ChatSuggestions } from "./chat-suggestions"
+import { TeamExecutionPanel } from "./team-execution-panel"
 import { streamChat } from "@/lib/stream"
 import { createSession } from "@/app/api/playground"
 import { AppRoutes } from "@/app/api/routes"
@@ -40,6 +41,9 @@ export function ChatArea() {
   const streamingAgentStepLog = usePlaygroundStore((s) => s.streamingAgentStepLog)
   const appendStreamingAgentStepLog = usePlaygroundStore((s) => s.appendStreamingAgentStepLog)
   const clearStreamingAgentStepLog = usePlaygroundStore((s) => s.clearStreamingAgentStepLog)
+  const streamingAgentToolStepLog = usePlaygroundStore((s) => s.streamingAgentToolStepLog)
+  const appendStreamingAgentToolStepLog = usePlaygroundStore((s) => s.appendStreamingAgentToolStepLog)
+  const clearStreamingAgentToolStepLog = usePlaygroundStore((s) => s.clearStreamingAgentToolStepLog)
   const streamingToolRound = usePlaygroundStore((s) => s.streamingToolRound)
   const setStreamingToolRound = usePlaygroundStore((s) => s.setStreamingToolRound)
   const streamingKBContext = usePlaygroundStore((s) => s.streamingKBContext)
@@ -47,6 +51,7 @@ export function ChatArea() {
   const setAbortController = usePlaygroundStore((s) => s.setAbortController)
   const abortController = usePlaygroundStore((s) => s.abortController)
   const updateSessionTokensInList = usePlaygroundStore((s) => s.updateSessionTokensInList)
+  const setContextUsage = usePlaygroundStore((s) => s.setContextUsage)
 
   // AI Elements streaming state
   const streamingTerminal = usePlaygroundStore((s) => s.streamingTerminal)
@@ -156,6 +161,7 @@ export function ChatArea() {
     setStreamingToolCalls([])
     setStreamingAgentStep(null)
     clearStreamingAgentStepLog()
+    clearStreamingAgentToolStepLog()
     setStreamingToolRound(null)
     setStreamingKBContext([])
     setStreamingTerminalComplete(false)
@@ -197,6 +203,7 @@ export function ChatArea() {
           setStreamingToolCalls([])
           setStreamingAgentStep(null)
           clearStreamingAgentStepLog()
+          clearStreamingAgentToolStepLog()
           setStreamingToolRound(null)
           setStreamingKBContext([])
           setHITLApprovalRequired(null)
@@ -301,6 +308,9 @@ export function ChatArea() {
           if (sessionId) {
             updateSessionTokensInList(sessionId, usage.session_total_input, usage.session_total_output)
           }
+          if (usage.context_limit_tokens) {
+            setContextUsage({ used: usage.context_used_tokens ?? 0, limit: usage.context_limit_tokens })
+          }
         },
         (event) => {
           addMessage({
@@ -328,6 +338,7 @@ export function ChatArea() {
             setStreamingArtifact({ id: event.id, title: event.title, type: event.type, content: event.content })
           }
         },
+        (step) => appendStreamingAgentToolStepLog(step),
       )
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
@@ -338,6 +349,7 @@ export function ChatArea() {
       setAbortController(null)
       setStreamingAgentStep(null)
       clearStreamingAgentStepLog()
+      clearStreamingAgentToolStepLog()
       setStreamingToolRound(null)
     }
   }
@@ -347,6 +359,7 @@ export function ChatArea() {
     setIsStreaming(false)
     setStreamingAgentStep(null)
     clearStreamingAgentStepLog()
+    clearStreamingAgentToolStepLog()
     // Save whatever was streamed so far
     const state = usePlaygroundStore.getState()
     const content = state.streamingContent
@@ -431,6 +444,11 @@ export function ChatArea() {
         onStop={stopStreaming}
         isStreaming={isStreaming}
         disabled={!hasEntity}
+      />
+      <TeamExecutionPanel
+        isStreaming={isStreaming}
+        agentStepLog={streamingAgentStepLog}
+        agentToolStepLog={streamingAgentToolStepLog}
       />
     </div>
   )

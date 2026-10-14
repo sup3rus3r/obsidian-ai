@@ -75,6 +75,9 @@ export default function HomePage() {
 
   const playgroundProviders = usePlaygroundStore((s) => s.providers)
   const fetchProviders = usePlaygroundStore((s) => s.fetchProviders)
+  // TeamDialog (reused from the Playground) reads agents from usePlaygroundStore,
+  // not useDashboardStore — without this, "Create Team" here always shows 0 agents.
+  const fetchPlaygroundAgents = usePlaygroundStore((s) => s.fetchAgents)
   const permissions = usePermissionsStore((s) => s.permissions)
 
   const [agentDialogOpen, setAgentDialogOpen] = useState(false)
@@ -115,16 +118,18 @@ export default function HomePage() {
     if (!session?.accessToken) return
     fetchAll()
     fetchProviders()
-  }, [session?.accessToken, fetchAll, fetchProviders])
+    fetchPlaygroundAgents()
+  }, [session?.accessToken, fetchAll, fetchProviders, fetchPlaygroundAgents])
 
   useEffect(() => {
     const handleRefresh = () => {
       fetchAll()
       fetchProviders()
+      fetchPlaygroundAgents()
     }
     window.addEventListener("app-refresh", handleRefresh)
     return () => window.removeEventListener("app-refresh", handleRefresh)
-  }, [fetchAll, fetchProviders])
+  }, [fetchAll, fetchProviders, fetchPlaygroundAgents])
 
   const navigateToChat = (entityType: "agent" | "team", entityId: string) => {
     router.push(`${Routes.PLAYGROUND}?${entityType}=${entityId}`)
@@ -530,7 +535,7 @@ export default function HomePage() {
           if (!open) setEditingAgent(null)
         }}
         agent={editingAgent}
-        onSaved={() => fetchAll()}
+        onSaved={() => { fetchAll(); fetchPlaygroundAgents() }}
       />
       <TeamDialog open={teamDialogOpen} onOpenChange={setTeamDialogOpen} />
       <WorkflowDialog

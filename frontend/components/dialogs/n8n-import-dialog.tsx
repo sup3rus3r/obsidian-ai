@@ -187,7 +187,7 @@ export function N8nImportDialog({ open, onOpenChange, agents, onImported }: N8nI
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent showFullscreenButton className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent showFullscreenButton className="sm:max-w-[60vw] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Import from n8n</DialogTitle>
           <DialogDescription>

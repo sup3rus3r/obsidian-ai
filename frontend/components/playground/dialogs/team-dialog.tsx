@@ -138,7 +138,7 @@ export function TeamDialog({ open, onOpenChange, team }: TeamDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showFullscreenButton className="sm:max-w-125">
+      <DialogContent showFullscreenButton className="sm:max-w-[60vw]">
         <DialogHeader>
           <DialogTitle>{isEditing ? "Edit Team" : "Create Team"}</DialogTitle>
           <DialogDescription>

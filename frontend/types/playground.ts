@@ -109,6 +109,18 @@ export interface AgentStep {
   error?: string
 }
 
+// Agent-attributed tool-level progress for team chat (collaborate/route modes),
+// emitted alongside (not instead of) the generic tool_call event so a live
+// per-agent execution panel can show "Agent X running tool Y" without having
+// to re-derive agent attribution from a tool_call event that has none.
+export interface AgentToolStep {
+  agent_id: string
+  agent_name: string
+  tool_name: string
+  status: "running" | "completed"
+  elapsed_seconds?: number
+}
+
 export interface ToolRound {
   round: number
   max_rounds: number

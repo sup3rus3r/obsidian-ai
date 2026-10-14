@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { apiClient } from "@/lib/api-client"
-import type { LLMProvider, Agent, Team, Session, Message, ToolCall, AgentStep, ToolRound, MCPServer, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent, Artifact, ArtifactType } from "@/types/playground"
+import type { LLMProvider, Agent, Team, Session, Message, ToolCall, AgentStep, AgentToolStep, ToolRound, MCPServer, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent, Artifact, ArtifactType } from "@/types/playground"
 
 interface PlaygroundState {
   // Sidebar
@@ -36,9 +36,11 @@ interface PlaygroundState {
   streamingToolCalls: ToolCall[]
   streamingAgentStep: AgentStep | null
   streamingAgentStepLog: AgentStep[]
+  streamingAgentToolStepLog: AgentToolStep[]
   streamingToolRound: ToolRound | null
   streamingKBContext: { id: string; name: string }[]
   abortController: AbortController | null
+  contextUsage: { used: number; limit: number } | null
 
   // AI Elements streaming state
   streamingTerminal: string
@@ -95,9 +97,12 @@ interface PlaygroundState {
   setStreamingAgentStep: (step: AgentStep | null) => void
   appendStreamingAgentStepLog: (step: AgentStep) => void
   clearStreamingAgentStepLog: () => void
+  appendStreamingAgentToolStepLog: (step: AgentToolStep) => void
+  clearStreamingAgentToolStepLog: () => void
   setStreamingToolRound: (round: ToolRound | null) => void
   setStreamingKBContext: (kbs: { id: string; name: string }[]) => void
   setAbortController: (controller: AbortController | null) => void
+  setContextUsage: (usage: { used: number; limit: number } | null) => void
 
   // AI Elements actions
   appendStreamingTerminal: (chunk: string) => void
@@ -165,9 +170,11 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   streamingToolCalls: [],
   streamingAgentStep: null,
   streamingAgentStepLog: [],
+  streamingAgentToolStepLog: [],
   streamingToolRound: null,
   streamingKBContext: [],
   abortController: null,
+  contextUsage: null,
 
   // AI Elements initial state
   streamingTerminal: "",
@@ -204,7 +211,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   setSelectedProvider: (id) => set({ selectedProviderId: id }),
   setSelectedAgent: (id) => set({ selectedAgentId: id, selectedSessionId: null, messages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null }),
   setSelectedTeam: (id) => set({ selectedTeamId: id, selectedSessionId: null, messages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null }),
-  setSelectedSession: (id) => set({ selectedSessionId: id, artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null }),
+  setSelectedSession: (id) => set({ selectedSessionId: id, artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null, contextUsage: null }),
   setProviders: (providers) => set({ providers }),
   setAgents: (agents) => set({ agents }),
   setTeams: (teams) => set({ teams }),
@@ -250,9 +257,13 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
       return { streamingAgentStep: step, streamingAgentStepLog: [...s.streamingAgentStepLog, step] }
     }),
   clearStreamingAgentStepLog: () => set({ streamingAgentStepLog: [] }),
+  appendStreamingAgentToolStepLog: (step) =>
+    set((s) => ({ streamingAgentToolStepLog: [...s.streamingAgentToolStepLog, step] })),
+  clearStreamingAgentToolStepLog: () => set({ streamingAgentToolStepLog: [] }),
   setStreamingToolRound: (round) => set({ streamingToolRound: round }),
   setStreamingKBContext: (kbs) => set({ streamingKBContext: kbs }),
   setAbortController: (controller) => set({ abortController: controller }),
+  setContextUsage: (usage) => set({ contextUsage: usage }),
 
   // AI Elements actions
   appendStreamingTerminal: (chunk) =>
@@ -329,11 +340,12 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   clearChat: () => set({
     messages: [], selectedSessionId: null,
     streamingContent: "", streamingReasoning: "", streamingToolCalls: [],
-    streamingAgentStep: null, streamingAgentStepLog: [], streamingToolRound: null, streamingKBContext: [],
+    streamingAgentStep: null, streamingAgentStepLog: [], streamingAgentToolStepLog: [], streamingToolRound: null, streamingKBContext: [],
     streamingTerminal: "", streamingTerminalComplete: false, streamingFileTree: null,
     streamingSourceUrls: [], streamingPlan: null, streamingJsx: "", streamingJsxComplete: false,
     sessionTokens: null, pendingHITLApproval: null, pendingToolProposal: null, generatingTool: null,
     artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null,
+    contextUsage: null,
   }),
   reset: () =>
     set({
@@ -360,6 +372,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
       streamingToolCalls: [],
       streamingAgentStep: null,
       streamingAgentStepLog: [],
+      streamingAgentToolStepLog: [],
       streamingToolRound: null,
       streamingKBContext: [],
       abortController: null,

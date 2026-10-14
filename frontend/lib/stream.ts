@@ -1,4 +1,4 @@
-import type { Message, ToolCall, ReasoningStep, AgentStep, ToolRound, FileAttachment, WorkflowStepResult, FileNode, HITLApprovalEvent, ToolProposalEvent, ArtifactEvent, NodeStartEvent, NodeCompleteEvent, NodeErrorEvent, NodeContentDeltaEvent } from "@/types/playground"
+import type { Message, ToolCall, ReasoningStep, AgentStep, AgentToolStep, ToolRound, FileAttachment, WorkflowStepResult, FileNode, HITLApprovalEvent, ToolProposalEvent, ArtifactEvent, NodeStartEvent, NodeCompleteEvent, NodeErrorEvent, NodeContentDeltaEvent } from "@/types/playground"
 
 // Stream directly to the backend, bypassing the Next.js rewrite proxy
 // which buffers the entire SSE response instead of streaming it through.
@@ -13,6 +13,8 @@ export interface TokenUsageEvent {
   output_tokens: number
   session_total_input: number
   session_total_output: number
+  context_used_tokens?: number
+  context_limit_tokens?: number
 }
 
 export interface ContextCompactedEvent {
@@ -49,6 +51,7 @@ export async function streamChat(
   onToolProposalRequired?: (event: ToolProposalEvent) => void,
   onToolGenerating?: (event: { name: string; handler_type: string }) => void,
   onArtifact?: (event: ArtifactEvent) => void,
+  onAgentToolStep?: (step: AgentToolStep) => void,
 ): Promise<void> {
   const body: Record<string, unknown> = {
     session_id: sessionId,
@@ -181,6 +184,9 @@ export async function streamChat(
                 break
               case "artifact":
                 onArtifact?.(data as ArtifactEvent)
+                break
+              case "agent_tool_step":
+                onAgentToolStep?.(data as AgentToolStep)
                 break
               case "error":
                 onError(data.error || "Unknown error")

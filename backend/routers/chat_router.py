@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from contextlib import AsyncExitStack
+from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DBSession
 from sse_starlette.sse import EventSourceResponse
@@ -531,6 +532,100 @@ def _artifact_tag_for_persistence(artifact_id: str, title: str, atype: str, cont
     is safe to append without changing what the user sees in the conversation.
     """
     return f'\n<artifact id="{artifact_id}" title="{title}" type="{atype}">\n{content}\n</artifact>\n'
+
+
+async def _run_sandboxed_tool_with_events(
+    tool_name: str, arguments_str: str, tool_call_id: str, sandbox_container_id: str,
+    agent_for_sandbox, scope: str, on_event: Callable[[dict], None] | None,
+) -> str:
+    """
+    Run a sandbox tool call with the exact same heartbeat/artifact-sync/preview
+    behavior single-agent streaming chat gives it (_run_sandbox_tool_with_heartbeat,
+    _match_tracked_artifact, _maybe_build_preview_artifact_event), for callers like
+    _chat_with_tools that return a plain string and can't yield SSE events directly.
+    Every event that single-agent chat would yield is instead handed to on_event (if
+    set), including a final '_persist_tag' pseudo-event carrying any <artifact> tag
+    text the caller should append to persisted message content.
+    """
+    def _emit(ev: dict) -> None:
+        if on_event:
+            on_event(ev)
+
+    _emit({
+        "event": "tool_call",
+        "data": json.dumps({"id": tool_call_id, "name": tool_name, "arguments": arguments_str, "status": "running"}),
+    })
+
+    result = None
+    async for _item in _run_sandbox_tool_with_heartbeat(tool_name, arguments_str, sandbox_container_id, tool_call_id):
+        if isinstance(_item, str):
+            result = _item
+        else:
+            _emit(_item)
+
+    _emit({
+        "event": "tool_call",
+        "data": json.dumps({"id": tool_call_id, "name": tool_name, "arguments": arguments_str, "result": result, "status": "completed"}),
+    })
+
+    _tracked = _match_tracked_artifact(tool_name, arguments_str)
+    if _tracked:
+        _artifact_id, _artifact_type = _tracked
+        if tool_name == "sandbox_delete":
+            _emit({"event": "artifact", "data": json.dumps({
+                "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                "content": "", "is_complete": True, "deleted": True,
+            })})
+        else:
+            _synced = await read_sandbox_file_direct(sandbox_container_id, artifact_workspace_path(_artifact_id, _artifact_type))
+            if _synced is not None:
+                _emit({"event": "artifact", "data": json.dumps({
+                    "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                    "content": _synced, "is_complete": True,
+                })})
+                _emit({"event": "_persist_tag", "data": _artifact_tag_for_persistence(_artifact_id, _artifact_id, _artifact_type, _synced)})
+    else:
+        _host_port = getattr(agent_for_sandbox, "sandbox_host_port", None) if agent_for_sandbox else None
+        _entity_id = str(getattr(agent_for_sandbox, "id", "")) if agent_for_sandbox else ""
+        _preview_ev = await _maybe_build_preview_artifact_event(tool_name, result, _host_port, scope, _entity_id)
+        if _preview_ev:
+            _emit(_preview_ev)
+            _pd = json.loads(_preview_ev["data"])
+            _emit({"event": "_persist_tag", "data": _artifact_tag_for_persistence(_pd["id"], _pd["title"], _pd["type"], _pd["content"])})
+
+    for ev in _yield_tool_element_events(tool_name, result):
+        _emit(ev)
+
+    return result
+
+
+def _route_event_to_sse(agent_id: str, agent_name: str, ev: dict, persisted_tags: list[str]) -> list[dict]:
+    """
+    Translate one event handed to an on_event callback by a parallel/non-final team
+    agent into the SSE event(s) to actually yield: a '_persist_tag' pseudo-event is
+    diverted into persisted_tags (not yielded as-is), a 'tool_call' event also gets a
+    sibling agent-attributed 'agent_tool_step' event for the live team execution panel,
+    and everything else (artifact, terminal_output, file_tree, source_url, ...) is
+    forwarded unchanged. agent_id/agent_name are passed as plain strings so this works
+    for both the SQLite Agent model and MongoDB's dict-shaped agent documents.
+    """
+    if ev["event"] == "_persist_tag":
+        persisted_tags.append(ev["data"])
+        return []
+    if ev["event"] != "tool_call":
+        return [ev]
+    payload = json.loads(ev["data"])
+    return [
+        {
+            "event": "agent_tool_step",
+            "data": json.dumps({
+                "agent_id": agent_id, "agent_name": agent_name,
+                "tool_name": payload.get("name"), "status": payload.get("status"),
+                "elapsed_seconds": payload.get("elapsed_seconds"),
+            }),
+        },
+        ev,
+    ]
 
 
 def _extract_edit_target(message: str) -> tuple[str, str, str] | None:
@@ -2066,6 +2161,71 @@ async def chat(
     return await _chat_sqlite(request, current_user, db, start_time)
 
 
+def _build_llm_messages_from_history(past_messages: list, db: DBSession, current_agent_id: int | None, is_team: bool, current_model_id: str | None = None) -> list:
+    """
+    Convert persisted Message rows into the LLMMessage list for a new request.
+
+    Two things history reload used to silently drop, both fixed here:
+    - Cross-agent/model identity: a prior assistant turn produced by a DIFFERENT
+      agent (team session, no single agent 'owns' the whole history) OR by the
+      SAME agent but a different model (the model/provider picker in the UI
+      reconfigures the existing Agent row's model_id/provider_id in place rather
+      than creating a new agent or session — so agent_id alone can't detect a
+      switch; the model that actually produced each turn is read from that turn's
+      saved metadata_json.model instead) is prefixed with an attribution tag so
+      the current model doesn't mistake another model's words for its own.
+      Turns produced by the current agent+model are unaffected (the common case).
+    - Tool-call amnesia: an assistant row with a non-null tool_calls_json (see the
+      _persisted_tool_calls accumulator in _stream_response et al.) is expanded back
+      into the real assistant(tool_calls=...) + tool(...) LLMMessage sequence instead
+      of being collapsed to plain text, so the model can see it already called a
+      given tool and what it returned.
+    """
+    agent_ids = {msg.agent_id for msg in past_messages if msg.agent_id is not None}
+    agent_names: dict[int, str] = {}
+    if agent_ids:
+        for ag in db.query(Agent).filter(Agent.id.in_(agent_ids)).all():
+            agent_names[ag.id] = ag.name
+
+    messages = []
+    for msg in past_messages:
+        if msg.role not in ("user", "assistant"):
+            continue
+        content = msg.content or ""
+        if msg.role == "assistant" and msg.agent_id is not None:
+            msg_model_id = None
+            if msg.metadata_json:
+                try:
+                    msg_model_id = json.loads(msg.metadata_json).get("model")
+                except (json.JSONDecodeError, TypeError):
+                    msg_model_id = None
+            cross_agent = is_team or msg.agent_id != current_agent_id
+            cross_model = (not cross_agent) and msg_model_id and current_model_id and msg_model_id != current_model_id
+            if cross_agent:
+                name = agent_names.get(msg.agent_id, "another agent")
+                content = f"[Previous response from agent '{name}']\n{content}"
+            elif cross_model:
+                content = f"[Previous response generated by a different model ('{msg_model_id}') than the one answering now]\n{content}"
+
+        tool_calls_data = None
+        if msg.role == "assistant" and msg.tool_calls_json:
+            try:
+                tool_calls_data = json.loads(msg.tool_calls_json)
+            except (json.JSONDecodeError, TypeError):
+                tool_calls_data = None
+
+        if tool_calls_data:
+            messages.append(LLMMessage(
+                role="assistant", content=content,
+                tool_calls=[LLMToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments") or "{}") for tc in tool_calls_data],
+            ))
+            for tc in tool_calls_data:
+                messages.append(LLMMessage(role="tool", content=tc.get("result") or "", tool_call_id=tc["id"]))
+        else:
+            messages.append(LLMMessage(role=msg.role, content=content))
+    return messages
+
+
 async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSession, start_time: float):
     # Load session
     session = db.query(SessionModel).filter(
@@ -2079,11 +2239,6 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     past_messages = db.query(Message).filter(
         Message.session_id == int(request.session_id),
     ).order_by(Message.created_at.asc()).all()
-
-    messages = []
-    for msg in past_messages:
-        if msg.role in ("user", "assistant"):
-            messages.append(LLMMessage(role=msg.role, content=msg.content or ""))
 
     # Process attachments if present
     image_parts = []
@@ -2109,6 +2264,7 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     # Resolve agent KB IDs + names for RAG (only for agent sessions)
     _agent_kb_ids: list[str] | None = None
     _agent_kb_names: dict[str, str] = {}
+    _agent_for_kb = None
     if session.entity_type == "agent":
         _agent_for_kb = db.query(Agent).filter(Agent.id == session.entity_id).first()
         if _agent_for_kb and _agent_for_kb.knowledge_base_ids_json:
@@ -2129,6 +2285,10 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
         if _agent_for_kb and _agent_for_kb.sandbox_enabled and session.entity_type == "agent"
         else None
     )
+
+    _current_agent_id = session.entity_id if session.entity_type == "agent" else None
+    _current_model_id = _agent_for_kb.model_id if _agent_for_kb else None
+    messages = _build_llm_messages_from_history(past_messages, db, _current_agent_id, session.entity_type == "team", current_model_id=_current_model_id)
 
     # Add user message to history (with images + RAG context)
     _user_llm_msg, _kb_meta = await _build_user_llm_message(
@@ -2349,6 +2509,30 @@ def _get_context_limit(model_id: str, provider_config: dict | None = None) -> in
     return 8_000  # conservative fallback for unrecognized/local models
 
 
+async def _resolve_context_limit(llm, provider_record=None) -> int:
+    """Resolve the usable context window for a given llm/provider: a live query
+    (llm.get_context_length(), when the provider supports it) first, then the
+    explicit/guessed static limit via _get_context_limit. Shared by compaction
+    and by the token_usage SSE event's context-usage-percentage payload."""
+    model_id = getattr(llm, "model_id", "") or ""
+    live_limit = None
+    try:
+        live_limit = await llm.get_context_length()
+    except Exception:
+        pass
+    if live_limit:
+        return live_limit
+    provider_config = None
+    if provider_record is not None:
+        raw = provider_record.get("config_json") if isinstance(provider_record, dict) else getattr(provider_record, "config_json", None)
+        if raw:
+            try:
+                provider_config = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                provider_config = None
+    return _get_context_limit(model_id, provider_config)
+
+
 async def _compact_context_if_needed(messages: list, llm, system_prompt: str | None, db, session_id: int, provider_record=None) -> dict | None:
     """Check if context is near the limit and compact if needed.
 
@@ -2363,26 +2547,7 @@ async def _compact_context_if_needed(messages: list, llm, system_prompt: str | N
         return None
 
     estimated = _estimate_tokens(messages)
-    model_id = getattr(llm, "model_id", "") or ""
-
-    live_limit = None
-    try:
-        live_limit = await llm.get_context_length()
-    except Exception:
-        pass
-
-    if live_limit:
-        limit = live_limit
-    else:
-        provider_config = None
-        if provider_record is not None:
-            raw = provider_record.get("config_json") if isinstance(provider_record, dict) else getattr(provider_record, "config_json", None)
-            if raw:
-                try:
-                    provider_config = json.loads(raw) if isinstance(raw, str) else raw
-                except (json.JSONDecodeError, TypeError):
-                    provider_config = None
-        limit = _get_context_limit(model_id, provider_config)
+    limit = await _resolve_context_limit(llm, provider_record)
 
     if estimated < int(limit * _COMPACTION_THRESHOLD):
         return None
@@ -2522,6 +2687,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
     # reset after every round's tool loop, so these can't live there until persisted
     # at the very end — otherwise they're wiped before the final answer round runs).
     _persisted_artifact_tags: list[str] = []
+    # Tool calls across ALL rounds, saved onto the final Message so the next turn's
+    # history reload can reconstruct them instead of losing all record of tool use
+    # between turns (see _build_llm_messages_from_history).
+    _persisted_tool_calls: list[dict] = []
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -2931,6 +3100,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         "status": "completed",
                     }),
                 }
+                _persisted_tool_calls.append({
+                    "id": tc.id, "name": tc.name, "arguments": tc.arguments,
+                    "result": str(result), "status": "completed",
+                })
 
                 # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
                 # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
@@ -3009,6 +3182,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
             agent_id=agent_id,
             reasoning_json=reasoning_json,
             metadata_json=json.dumps(metadata),
+            tool_calls_json=json.dumps(_persisted_tool_calls) if _persisted_tool_calls else None,
         )
         db.add(assistant_msg)
         db.commit()
@@ -3047,6 +3221,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
             "data": json.dumps(msg_response),
         }
         # Emit token usage event for frontend live update
+        _ctx_limit = await _resolve_context_limit(llm, provider_record)
         yield {
             "event": "token_usage",
             "data": json.dumps({
@@ -3054,6 +3229,8 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 "output_tokens": output_tokens,
                 "session_total_input": session_obj.total_input_tokens if session_obj else input_tokens,
                 "session_total_output": session_obj.total_output_tokens if session_obj else output_tokens,
+                "context_used_tokens": _estimate_tokens(messages),
+                "context_limit_tokens": _ctx_limit,
             }),
         }
         yield {"event": "done", "data": "{}"}
@@ -3083,6 +3260,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
     reasoning_parts = []
     token_usage = {}
     _persisted_artifact_tags: list[str] = []
+    _persisted_tool_calls: list[dict] = []
 
     # Context compaction check before streaming
     compaction_event = await _compact_context_if_needed(messages, llm, system_prompt, db, session_id, provider_record)
@@ -3417,6 +3595,10 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     )
 
                     yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": result, "status": "completed"})}
+                    _persisted_tool_calls.append({
+                        "id": tc.id, "name": tc.name, "arguments": tc.arguments,
+                        "result": str(result), "status": "completed",
+                    })
 
                     # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
                     # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
@@ -3482,6 +3664,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
             assistant_msg = Message(
                 session_id=session_id, role="assistant", content=full_content,
                 agent_id=agent_id, reasoning_json=reasoning_json, metadata_json=json.dumps(metadata),
+                tool_calls_json=json.dumps(_persisted_tool_calls) if _persisted_tool_calls else None,
             )
             db.add(assistant_msg)
             db.commit()
@@ -3512,6 +3695,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                 "metadata": metadata, "created_at": assistant_msg.created_at.isoformat() if assistant_msg.created_at else None,
             }
             yield {"event": "message_complete", "data": json.dumps(msg_response)}
+            _ctx_limit = await _resolve_context_limit(llm, provider_record)
             yield {
                 "event": "token_usage",
                 "data": json.dumps({
@@ -3519,6 +3703,8 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     "output_tokens": output_tokens,
                     "session_total_input": session_obj.total_input_tokens if session_obj else input_tokens,
                     "session_total_output": session_obj.total_output_tokens if session_obj else output_tokens,
+                    "context_used_tokens": _estimate_tokens(messages),
+                    "context_limit_tokens": _ctx_limit,
                 }),
             }
             yield {"event": "done", "data": "{}"}
@@ -3562,7 +3748,7 @@ def _norm_tool_args(args) -> str:
         return str(args)
 
 
-async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools: list | None, db, sandbox_container_id: str | None = None, team_context: tuple | None = None) -> str:
+async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools: list | None, db, sandbox_container_id: str | None = None, team_context: tuple | None = None, on_event: Callable[[dict], None] | None = None, agent_for_sandbox=None) -> str:
     """Non-streaming chat that executes tool calls in a loop until a final text response.
 
     Used by team modes (route/collaborate) where agents need to use tools
@@ -3571,6 +3757,11 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
     team_context, when set, is (agents_with_providers, current_agent_id, delegation_depth)
     and injects the call_teammate delegation tool so this agent can hand off a
     sub-question to a named teammate mid-turn (see team_delegation_tools.py).
+
+    on_event, when set, is called with the same SSE-shaped event dicts single-agent
+    chat yields directly (tool_call running/completed, artifact sync) so a caller that
+    cannot yield mid-call (this function returns a plain string) can still surface live
+    progress. See _run_sandbox_tool_with_heartbeat / _match_tracked_artifact.
     """
     from team_delegation_tools import CALL_TEAMMATE_TOOL_SCHEMA, is_call_teammate_tool, execute_call_teammate
 
@@ -3602,7 +3793,10 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
             elif is_builtin_tool(tc.name):
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
-                result = await execute_sandbox_tool(tc.name, tc.arguments, sandbox_container_id) if sandbox_container_id else json.dumps({"error": "Sandbox is not running for this agent"})
+                if sandbox_container_id:
+                    result = await _run_sandboxed_tool_with_events(tc.name, tc.arguments, tc.id, sandbox_container_id, agent_for_sandbox, "agents", on_event)
+                else:
+                    result = json.dumps({"error": "Sandbox is not running for this agent"})
             else:
                 result = await _execute_tool(tc.name, tc.arguments, db)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
@@ -3611,9 +3805,9 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
     return final.content or ""
 
 
-async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db, sandbox_container_id: str | None = None, team_context: tuple | None = None) -> str:
+async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db, sandbox_container_id: str | None = None, team_context: tuple | None = None, on_event: Callable[[dict], None] | None = None, agent_for_sandbox=None) -> str:
     """Non-streaming chat with tool execution loop (MongoDB version).
-    team_context: see _chat_with_tools's docstring."""
+    team_context, on_event: see _chat_with_tools's docstring."""
     from team_delegation_tools import CALL_TEAMMATE_TOOL_SCHEMA, is_call_teammate_tool, execute_call_teammate
 
     if team_context:
@@ -3643,7 +3837,10 @@ async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None,
             elif is_builtin_tool(tc.name):
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
-                result = await execute_sandbox_tool(tc.name, tc.arguments, sandbox_container_id) if sandbox_container_id else json.dumps({"error": "Sandbox is not running for this agent"})
+                if sandbox_container_id:
+                    result = await _run_sandboxed_tool_with_events(tc.name, tc.arguments, tc.id, sandbox_container_id, agent_for_sandbox, "teams", on_event)
+                else:
+                    result = json.dumps({"error": "Sandbox is not running for this agent"})
             else:
                 result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
@@ -3779,6 +3976,7 @@ async def _team_chat_coordinate(agents_with_providers, messages, db, session_id,
             "Only call each tool once — do not call the same tool with the same or similar arguments more than once."
         )
         coord_system_prompt = _prepend_team_context(sel_agent.system_prompt, coord_note)
+        coord_system_prompt += _ARTIFACT_SYSTEM_HINT
         coord_system_prompt += _build_teammates_memory_injection(db, sel_agent.id, agents_with_providers, sel_agent.user_id)
 
         if mcp_configs:
@@ -3801,17 +3999,122 @@ async def _team_chat_coordinate(agents_with_providers, messages, db, session_id,
 
 
 async def _team_chat_route(agents_with_providers, messages, db, session_id, start_time, user_message, team_sandbox_container_id=None):
-    """Route mode: all agents respond in parallel, then a synthesizer merges the best answer."""
+    """Route mode: a router LLM picks which agent(s) are actually relevant to this
+    message (usually one), matching coordinate mode's pattern instead of always
+    querying the full team. If exactly one agent is selected, its response IS the
+    final answer (streamed directly, zero synthesis overhead — same cost as
+    coordinate mode). Only when 2+ agents are genuinely relevant do we query them
+    in parallel and pay for a synthesizer call to merge their results."""
     try:
-        # Emit routing step
+        # Use the first agent's provider as the router LLM
+        router_agent, router_provider = agents_with_providers[0]
+        router_llm = _create_llm_for_provider(router_provider, router_agent.model_id or router_provider.model_id or "gpt-4o")
+
+        # Build the agent selection prompt — same listing pattern as coordinate mode
+        agent_descriptions = []
+        for idx, (ag, pr) in enumerate(agents_with_providers):
+            desc = ag.description or ""
+            tools_for_agent = _build_tools_for_llm(ag, db)
+            tool_names = (
+                ", ".join(t["function"]["name"] for t in tools_for_agent)
+                if tools_for_agent else "no tools"
+            )
+            sys_hint = ""
+            if ag.system_prompt:
+                sys_hint = ag.system_prompt[:200].replace("\n", " ").strip()
+            line = f"- index={idx}, name={ag.name}"
+            if desc:
+                line += f" ({desc})"
+            if sys_hint:
+                line += f" | role: {sys_hint}"
+            line += f" | tools: {tool_names}"
+            agent_descriptions.append(line)
+        agents_list = "\n".join(agent_descriptions)
+
+        router_prompt = (
+            "You are a routing assistant. Select ALL agents relevant to the user's latest request — "
+            "usually just one, but select multiple only if the request genuinely needs more than one "
+            "specialist's expertise combined.\n\n"
+            f"Available agents:\n{agents_list}\n\n"
+            "Consider the agent description, role, and available tools when choosing.\n"
+            "Reply with ONLY a comma-separated list of integer indices (e.g. \"1\" or \"0,2\"). Nothing else."
+        )
+
         yield {
             "event": "agent_step",
-            "data": json.dumps({"agent_id": "", "agent_name": "Router", "step": "routing"}),
+            "data": json.dumps({"agent_id": str(router_agent.id), "agent_name": "Router", "step": "routing"}),
         }
 
-        # Collect responses from all agents in parallel (with tool execution)
-        _route_team_names = [ag.name for ag, _ in agents_with_providers]
+        router_response = await router_llm.chat(messages, system_prompt=router_prompt)
+        router_answer = (router_response.content or "").strip()
+
+        selected_indices: list[int] = []
+        for tok in re.findall(r'\d+', router_answer):
+            try:
+                idx = int(tok)
+            except ValueError:
+                continue
+            if 0 <= idx < len(agents_with_providers) and idx not in selected_indices:
+                selected_indices.append(idx)
+        if not selected_indices:
+            selected_indices = [0]
+
+        if len(selected_indices) == 1:
+            # Single relevant agent — stream its response directly, same as coordinate
+            # mode, with zero synthesis overhead.
+            sel_agent, sel_provider = agents_with_providers[selected_indices[0]]
+            yield {
+                "event": "agent_step",
+                "data": json.dumps({
+                    "agent_id": str(sel_agent.id), "agent_name": sel_agent.name,
+                    "step": "responding", "router_decision": router_answer,
+                }),
+            }
+            sel_llm = _create_llm_for_provider(sel_provider, sel_agent.model_id or sel_provider.model_id or "gpt-4o")
+            tools = _build_tools_for_llm(sel_agent, db)
+            mcp_configs = _load_mcp_server_configs(sel_agent, db)
+            team_names = [ag.name for ag, _ in agents_with_providers]
+            route_single_note = (
+                f"You are part of a {len(team_names)}-agent team ({', '.join(team_names)}). "
+                "A router selected you as the best agent for this request. "
+                "Use your tools and expertise to give a complete, confident answer. "
+                "Only call each tool once — do not call the same tool with the same or similar arguments more than once."
+            )
+            route_system_prompt = _prepend_team_context(sel_agent.system_prompt, route_single_note)
+            route_system_prompt += _ARTIFACT_SYSTEM_HINT
+            route_system_prompt += _build_teammates_memory_injection(db, sel_agent.id, agents_with_providers, sel_agent.user_id)
+
+            if mcp_configs:
+                async for event in _stream_response_with_mcp(
+                    sel_llm, messages, route_system_prompt, db, session_id,
+                    sel_agent.id, sel_provider, start_time, tools, mcp_configs,
+                    agent=sel_agent, sandbox_container_id_override=team_sandbox_container_id,
+                ):
+                    yield event
+            else:
+                async for event in _stream_response(
+                    sel_llm, messages, route_system_prompt, db, session_id,
+                    sel_agent.id, sel_provider, start_time, tools,
+                    agent=sel_agent, sandbox_container_id_override=team_sandbox_container_id,
+                ):
+                    yield event
+            return
+
+        # 2+ agents genuinely relevant — query only those selected, then synthesize.
+        selected_agents_with_providers = [agents_with_providers[i] for i in selected_indices]
+        _route_team_names = [ag.name for ag, _ in selected_agents_with_providers]
         _route_n = len(_route_team_names)
+
+        # Parallel specialists run inside plain _chat_with_tools (can't yield), so each
+        # gets an on_event closure pushing into this shared queue; we drain it below while
+        # awaiting the gather so sandbox tool progress/artifacts surface live instead of
+        # only after every specialist finishes.
+        _route_events: asyncio.Queue = asyncio.Queue()
+
+        def _make_on_event(agent):
+            def _on_event(ev: dict) -> None:
+                _route_events.put_nowait((agent, ev))
+            return _on_event
 
         async def get_agent_response_once(agent, provider):
             llm = _create_llm_for_provider(provider, agent.model_id or provider.model_id or "gpt-4o")
@@ -3830,7 +4133,11 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
                 content = await _chat_with_tools_and_mcp(llm, messages, effective_system_prompt, tools, db, mcp_configs)
             else:
                 _sandbox_cid = team_sandbox_container_id or getattr(agent, "sandbox_container_id", None)
-                content = await _chat_with_tools(llm, messages, effective_system_prompt, tools, db, sandbox_container_id=_sandbox_cid, team_context=(agents_with_providers, agent.id, 0))
+                content = await _chat_with_tools(
+                    llm, messages, effective_system_prompt, tools, db, sandbox_container_id=_sandbox_cid,
+                    team_context=(agents_with_providers, agent.id, 0),
+                    on_event=_make_on_event(agent), agent_for_sandbox=agent,
+                )
             return content
 
         async def get_agent_response(agent, provider):
@@ -3847,8 +4154,21 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
                 except Exception as e2:
                     return agent, provider, None, str(e2)
 
-        tasks = [get_agent_response(ag, pr) for ag, pr in agents_with_providers]
-        results = await asyncio.gather(*tasks)
+        tasks = [asyncio.ensure_future(get_agent_response(ag, pr)) for ag, pr in selected_agents_with_providers]
+        _persisted_route_tags: list[str] = []
+        while not all(t.done() for t in tasks):
+            try:
+                _agent, _ev = await asyncio.wait_for(_route_events.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            for _out_ev in _route_event_to_sse(str(_agent.id), _agent.name, _ev, _persisted_route_tags):
+                yield _out_ev
+        # Drain any remaining events pushed right as the last task finished
+        while not _route_events.empty():
+            _agent, _ev = _route_events.get_nowait()
+            for _out_ev in _route_event_to_sse(str(_agent.id), _agent.name, _ev, _persisted_route_tags):
+                yield _out_ev
+        results = [t.result() for t in tasks]
 
         # Collect successful responses; surface failures instead of silently dropping them
         agent_responses = []
@@ -3890,6 +4210,7 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
             "Present the information confidently as if you retrieved it yourself. "
             "Do NOT hedge, qualify, or suggest the user fetch data themselves. "
             "Do NOT mention that multiple agents or specialists were involved."
+            + _ARTIFACT_SYSTEM_HINT
         )
         # Include full conversation history so the synthesizer has context, then append the specialist results
         synth_messages = list(messages) + [
@@ -3904,17 +4225,27 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
             "data": json.dumps({"agent_id": "", "agent_name": "Synthesizer", "step": "synthesizing"}),
         }
 
-        # Stream the synthesized response
+        # Stream the synthesized response, scanning for artifacts the same way the
+        # real streaming generators do.
         full_content = ""
         async for chunk in synth_llm.chat_stream(synth_messages, system_prompt=synth_prompt):
             if chunk.type == "content":
+                prev_len = len(full_content)
                 full_content += chunk.content
                 yield {"event": "content_delta", "data": json.dumps({"content": chunk.content})}
+                for ev in _scan_content_for_elements(full_content, prev_len):
+                    yield ev
             elif chunk.type == "error":
                 yield {"event": "error", "data": json.dumps({"error": chunk.error})}
                 return
             elif chunk.type == "done":
                 break
+
+        # Persist any sandbox-synced artifact tags the parallel specialists produced
+        # (see _persisted_route_tags / _route_event_to_sse) — otherwise these only ever
+        # existed as transient SSE events and would vanish on reload.
+        if _persisted_route_tags:
+            full_content += "".join(_persisted_route_tags)
 
         # Save the final message
         latency_ms = int((time.time() - start_time) * 1000)
@@ -3960,7 +4291,7 @@ def _prepend_team_context(system_prompt: str | None, note: str) -> str:
     return f"{base}\n\n---\n[Team context: {note}]" if base else f"[Team context: {note}]"
 
 
-def _build_collaborate_system_prompt(agent_system_prompt: str | None, agent_name: str, position: int, total: int, prior_agent_names: list[str]) -> str:
+def _build_collaborate_system_prompt(agent_system_prompt: str | None, agent_name: str, position: int, total: int, prior_agent_names: list[str], next_agent_name: str | None = None) -> str:
     """Prepend team-awareness context to an agent's system prompt for collaborate mode."""
     team_size = total
     is_first = position == 0
@@ -3969,7 +4300,7 @@ def _build_collaborate_system_prompt(agent_system_prompt: str | None, agent_name
     if is_first:
         role_note = (
             f"You are the first agent in a {team_size}-agent collaboration pipeline. "
-            f"Your output will be passed to the next agent ({prior_agent_names[0] if False else 'the next specialist'}) to build upon. "
+            f"Your output will be passed to the next agent ({next_agent_name or 'the next specialist'}) to build upon. "
             "Be thorough and use your tools — your response is the foundation for the whole pipeline."
         )
     elif is_last:
@@ -4000,6 +4331,10 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
         contributing_agents = []
         total = len(agents_with_providers)
         all_names = [ag.name for ag, _ in agents_with_providers]
+        # Sandbox-synced artifact tags from non-final agents (see below) — no Message row
+        # is ever saved for non-final agents' output, so these ride along on the final
+        # agent's saved message content instead, or they'd vanish on reload.
+        _persisted_non_final_tags: list[str] = []
 
         for i, (ag, pr) in enumerate(agents_with_providers):
             is_last = (i == total - 1)
@@ -4016,8 +4351,10 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
 
             # Inject team-awareness into this agent's system prompt
             effective_system_prompt = _build_collaborate_system_prompt(
-                ag.system_prompt, ag.name, i, total, all_names[:i]
+                ag.system_prompt, ag.name, i, total, all_names[:i],
+                next_agent_name=all_names[i + 1] if i + 1 < total else None,
             )
+            effective_system_prompt += _ARTIFACT_SYSTEM_HINT
             effective_system_prompt += _build_teammates_memory_injection(db, ag.id, agents_with_providers, ag.user_id)
 
             # Build messages for this agent: original history + accumulated context from previous agents
@@ -4047,19 +4384,26 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
                         agent=ag, sandbox_container_id_override=team_sandbox_container_id,
                     )
                 async for event in stream:
-                    if event.get("event") == "message_complete" and contributing_agents:
+                    if event.get("event") == "message_complete" and (contributing_agents or _persisted_non_final_tags):
                         data = json.loads(event["data"])
                         meta = data.get("metadata") or {}
                         meta["team_mode"] = "collaborate"
                         meta["contributing_agents"] = contributing_agents
                         data["metadata"] = meta
-                        # Persist updated metadata to DB
+                        if _persisted_non_final_tags:
+                            # Sandbox-synced artifacts from earlier (non-final) agents have
+                            # no Message row of their own — append their tags onto the final
+                            # agent's saved content so they survive reload too.
+                            data["content"] = (data.get("content") or "") + "".join(_persisted_non_final_tags)
+                        # Persist updated content/metadata to DB
                         msg_id = data.get("id")
                         if msg_id:
                             try:
                                 db_msg = db.query(Message).filter(Message.id == int(msg_id)).first()
                                 if db_msg:
                                     db_msg.metadata_json = json.dumps(meta)
+                                    if _persisted_non_final_tags:
+                                        db_msg.content = data["content"]
                                     db.commit()
                             except Exception:
                                 pass
@@ -4067,21 +4411,43 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
                     else:
                         yield event
             else:
-                # Non-final agents: get response with tool execution (not streamed)
+                # Non-final agents: get response with tool execution (not streamed). Tool
+                # progress/artifact-sync events can't be yielded directly from _chat_with_tools
+                # (plain string return), so collect them via on_event and replay below —
+                # see _run_sandboxed_tool_with_events / _route_event_to_sse.
+                _collab_events: list[dict] = []
                 if mcp_configs:
                     # NOTE: _chat_with_tools_and_mcp doesn't support sandbox tools at all
                     # (pre-existing limitation, not specific to teams).
                     content = await _chat_with_tools_and_mcp(llm, agent_messages, effective_system_prompt, tools, db, mcp_configs)
                 else:
                     _sandbox_cid = team_sandbox_container_id or getattr(ag, "sandbox_container_id", None)
-                    content = await _chat_with_tools(llm, agent_messages, effective_system_prompt, tools, db, sandbox_container_id=_sandbox_cid, team_context=(agents_with_providers, ag.id, 0))
+                    content = await _chat_with_tools(
+                        llm, agent_messages, effective_system_prompt, tools, db, sandbox_container_id=_sandbox_cid,
+                        team_context=(agents_with_providers, ag.id, 0),
+                        on_event=_collab_events.append, agent_for_sandbox=ag,
+                    )
+                _persisted_collab_tags: list[str] = []
+                for _raw_ev in _collab_events:
+                    for _out_ev in _route_event_to_sse(str(ag.id), ag.name, _raw_ev, _persisted_collab_tags):
+                        yield _out_ev
                 accumulated_context.append({"agent_name": ag.name, "response": content})
                 contributing_agents.append({"id": str(ag.id), "name": ag.name})
+                # Scan this agent's complete response for <artifact> tags (one-shot scan,
+                # not incremental, since _chat_with_tools returns the whole string at once
+                # with no SSE access) and emit the resulting events, then strip the raw tag
+                # text out of what's shown in agent_message so the user doesn't see both the
+                # rendered artifact and literal <artifact> text duplicated in the chat.
+                _artifact_events = _scan_content_for_elements(content, 0)
+                for ev in _artifact_events:
+                    yield ev
+                _display_content = _ARTIFACT_TAG_RE.sub("", content).strip() if _artifact_events else content
                 # Emit intermediate output so the frontend can show each agent's contribution
                 yield {
                     "event": "agent_message",
-                    "data": json.dumps({"agent_id": str(ag.id), "agent_name": ag.name, "content": content}),
+                    "data": json.dumps({"agent_id": str(ag.id), "agent_name": ag.name, "content": _display_content}),
                 }
+                _persisted_non_final_tags.extend(_persisted_collab_tags)
 
     except Exception as e:
         yield {"event": "error", "data": json.dumps({"error": str(e)})}
@@ -4149,6 +4515,57 @@ def _create_llm_for_mongo_provider(provider_record, model_id: str):
     )
 
 
+async def _build_llm_messages_from_history_mongo(past_messages: list, mongo_db, current_agent_id: str | None, is_team: bool, current_model_id: str | None = None) -> list:
+    """Mongo twin of _build_llm_messages_from_history — see its docstring for the
+    cross-agent/model identity tagging and tool-call reconstruction rationale."""
+    agent_ids = {msg["agent_id"] for msg in past_messages if msg.get("agent_id")}
+    agent_names: dict[str, str] = {}
+    if agent_ids:
+        from bson import ObjectId as _ObjId
+        _agents_collection = mongo_db["agents"]
+        async for ag in _agents_collection.find({"_id": {"$in": [_ObjId(aid) for aid in agent_ids]}}):
+            agent_names[str(ag["_id"])] = ag.get("name", "Agent")
+
+    messages = []
+    for msg in past_messages:
+        if msg["role"] not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "") or ""
+        msg_agent_id = msg.get("agent_id")
+        if msg["role"] == "assistant" and msg_agent_id:
+            msg_model_id = None
+            if msg.get("metadata_json"):
+                try:
+                    msg_model_id = json.loads(msg["metadata_json"]).get("model")
+                except (json.JSONDecodeError, TypeError):
+                    msg_model_id = None
+            cross_agent = is_team or msg_agent_id != current_agent_id
+            cross_model = (not cross_agent) and msg_model_id and current_model_id and msg_model_id != current_model_id
+            if cross_agent:
+                name = agent_names.get(msg_agent_id, "another agent")
+                content = f"[Previous response from agent '{name}']\n{content}"
+            elif cross_model:
+                content = f"[Previous response generated by a different model ('{msg_model_id}') than the one answering now]\n{content}"
+
+        tool_calls_data = None
+        if msg["role"] == "assistant" and msg.get("tool_calls_json"):
+            try:
+                tool_calls_data = json.loads(msg["tool_calls_json"])
+            except (json.JSONDecodeError, TypeError):
+                tool_calls_data = None
+
+        if tool_calls_data:
+            messages.append(LLMMessage(
+                role="assistant", content=content,
+                tool_calls=[LLMToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments") or "{}") for tc in tool_calls_data],
+            ))
+            for tc in tool_calls_data:
+                messages.append(LLMMessage(role="tool", content=tc.get("result") or "", tool_call_id=tc["id"]))
+        else:
+            messages.append(LLMMessage(role=msg["role"], content=content))
+    return messages
+
+
 async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time: float):
     mongo_db = get_database()
 
@@ -4158,10 +4575,6 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
 
     # Build message history
     past_messages = await MessageCollection.find_by_session(mongo_db, request.session_id)
-    messages = []
-    for msg in past_messages:
-        if msg["role"] in ("user", "assistant"):
-            messages.append(LLMMessage(role=msg["role"], content=msg.get("content", "")))
 
     # Process attachments if present
     image_parts = []
@@ -4209,6 +4622,10 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
         if _agent_for_kb_mongo and _agent_for_kb_mongo.get("sandbox_enabled") and session["entity_type"] == "agent"
         else None
     )
+
+    _current_agent_id_m = session.get("entity_id") if session.get("entity_type") == "agent" else None
+    _current_model_id_m = _agent_for_kb_mongo.get("model_id") if _agent_for_kb_mongo else None
+    messages = await _build_llm_messages_from_history_mongo(past_messages, mongo_db, _current_agent_id_m, session.get("entity_type") == "team", current_model_id=_current_model_id_m)
 
     # Add user message to history (with images + RAG context)
     _user_llm_msg_mongo, _kb_meta_mongo = await _build_user_llm_message(
@@ -4380,6 +4797,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
     reasoning_parts = []
     token_usage = {}
     _persisted_artifact_tags: list[str] = []
+    _persisted_tool_calls: list[dict] = []
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -4726,6 +5144,10 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 )
 
                 yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": result, "status": "completed"})}
+                _persisted_tool_calls.append({
+                    "id": tc.id, "name": tc.name, "arguments": tc.arguments,
+                    "result": str(result), "status": "completed",
+                })
 
                 # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
                 # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
@@ -4788,6 +5210,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
         msg = await MessageCollection.create(mongo_db, {
             "session_id": session_id, "role": "assistant", "content": full_content,
             "agent_id": agent_id, "reasoning_json": reasoning_json, "metadata_json": json.dumps(metadata),
+            "tool_calls_json": json.dumps(_persisted_tool_calls) if _persisted_tool_calls else None,
         })
 
         # Back-fill message_id on all trace spans recorded during this response
@@ -4821,6 +5244,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
             "metadata": metadata, "created_at": msg["created_at"].isoformat() if msg.get("created_at") else None,
         }
         yield {"event": "message_complete", "data": json.dumps(msg_response)}
+        _ctx_limit = await _resolve_context_limit(llm, provider_record)
         yield {
             "event": "token_usage",
             "data": json.dumps({
@@ -4828,6 +5252,8 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 "output_tokens": output_tokens,
                 "session_total_input": updated_session.get("total_input_tokens", input_tokens) if updated_session else input_tokens,
                 "session_total_output": updated_session.get("total_output_tokens", output_tokens) if updated_session else output_tokens,
+                "context_used_tokens": _estimate_tokens(messages),
+                "context_limit_tokens": _ctx_limit,
             }),
         }
         yield {"event": "done", "data": "{}"}
@@ -4847,6 +5273,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
     reasoning_parts = []
     token_usage = {}
     _persisted_artifact_tags: list[str] = []
+    _persisted_tool_calls: list[dict] = []
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     native_tools = _inject_create_tool_schema(native_tools, agent)
@@ -5190,6 +5617,10 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                     )
 
                     yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": result, "status": "completed"})}
+                    _persisted_tool_calls.append({
+                        "id": tc.id, "name": tc.name, "arguments": tc.arguments,
+                        "result": str(result), "status": "completed",
+                    })
 
                     # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
                     # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
@@ -5250,6 +5681,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
             msg = await MessageCollection.create(mongo_db, {
                 "session_id": session_id, "role": "assistant", "content": full_content,
                 "agent_id": agent_id, "reasoning_json": reasoning_json, "metadata_json": json.dumps(metadata),
+                "tool_calls_json": json.dumps(_persisted_tool_calls) if _persisted_tool_calls else None,
             })
 
             # Back-fill message_id on all trace spans recorded during this response
@@ -5283,6 +5715,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                 "metadata": metadata, "created_at": msg["created_at"].isoformat() if msg.get("created_at") else None,
             }
             yield {"event": "message_complete", "data": json.dumps(msg_response)}
+            _ctx_limit = await _resolve_context_limit(llm, provider_record)
             yield {
                 "event": "token_usage",
                 "data": json.dumps({
@@ -5290,6 +5723,8 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                     "output_tokens": output_tokens,
                     "session_total_input": updated_session.get("total_input_tokens", input_tokens) if updated_session else input_tokens,
                     "session_total_output": updated_session.get("total_output_tokens", output_tokens) if updated_session else output_tokens,
+                    "context_used_tokens": _estimate_tokens(messages),
+                    "context_limit_tokens": _ctx_limit,
                 }),
             }
             yield {"event": "done", "data": "{}"}
@@ -5380,6 +5815,7 @@ async def _team_chat_coordinate_mongo(agents_with_providers, messages, mongo_db,
             "Only call each tool once — do not call the same tool with the same or similar arguments more than once."
         )
         coord_system_prompt_m = _prepend_team_context(sel_agent.get("system_prompt"), _coord_note_m)
+        coord_system_prompt_m += _ARTIFACT_SYSTEM_HINT
         coord_system_prompt_m += await _build_teammates_memory_injection_mongo(mongo_db, str(sel_agent["_id"]), agents_with_providers, sel_agent.get("user_id"))
 
         if mcp_configs:
@@ -5402,15 +5838,115 @@ async def _team_chat_coordinate_mongo(agents_with_providers, messages, mongo_db,
 
 
 async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, session_id, start_time, user_message, team_sandbox_container_id=None):
-    """Route mode (MongoDB): all agents respond in parallel, synthesizer merges."""
+    """Route mode (MongoDB): a router LLM picks which agent(s) are actually relevant
+    (usually one), matching coordinate mode's pattern instead of always querying the
+    full team. See the SQLite _team_chat_route's docstring for the full rationale."""
     try:
+        router_agent, router_provider = agents_with_providers[0]
+        router_llm = _create_llm_for_mongo_provider(router_provider, router_agent.get("model_id") or router_provider.get("model_id") or "gpt-4o")
+
+        agent_descriptions = []
+        for idx, (ag, pr) in enumerate(agents_with_providers):
+            desc = ag.get("description") or ""
+            name = ag.get("name", "Unknown")
+            tools_for_agent = await _build_tools_for_llm_mongo(ag, mongo_db)
+            tool_names = (
+                ", ".join(t["function"]["name"] for t in tools_for_agent)
+                if tools_for_agent else "no tools"
+            )
+            sys_hint = ""
+            if ag.get("system_prompt"):
+                sys_hint = ag["system_prompt"][:200].replace("\n", " ").strip()
+            line = f"- index={idx}, name={name}"
+            if desc:
+                line += f" ({desc})"
+            if sys_hint:
+                line += f" | role: {sys_hint}"
+            line += f" | tools: {tool_names}"
+            agent_descriptions.append(line)
+        agents_list = "\n".join(agent_descriptions)
+
+        router_prompt = (
+            "You are a routing assistant. Select ALL agents relevant to the user's latest request — "
+            "usually just one, but select multiple only if the request genuinely needs more than one "
+            "specialist's expertise combined.\n\n"
+            f"Available agents:\n{agents_list}\n\n"
+            "Consider the agent description, role, and available tools when choosing.\n"
+            "Reply with ONLY a comma-separated list of integer indices (e.g. \"1\" or \"0,2\"). Nothing else."
+        )
+
         yield {
             "event": "agent_step",
-            "data": json.dumps({"agent_id": "", "agent_name": "Router", "step": "routing"}),
+            "data": json.dumps({"agent_id": str(router_agent["_id"]), "agent_name": "Router", "step": "routing"}),
         }
 
-        _route_team_names_m = [ag.get("name", "Agent") for ag, _ in agents_with_providers]
+        router_response = await router_llm.chat(messages, system_prompt=router_prompt)
+        router_answer = (router_response.content or "").strip()
+
+        selected_indices: list[int] = []
+        for tok in re.findall(r'\d+', router_answer):
+            try:
+                idx = int(tok)
+            except ValueError:
+                continue
+            if 0 <= idx < len(agents_with_providers) and idx not in selected_indices:
+                selected_indices.append(idx)
+        if not selected_indices:
+            selected_indices = [0]
+
+        if len(selected_indices) == 1:
+            # Single relevant agent — stream its response directly, same as coordinate
+            # mode, with zero synthesis overhead.
+            sel_agent, sel_provider = agents_with_providers[selected_indices[0]]
+            sel_name = sel_agent.get("name", "Agent")
+            yield {
+                "event": "agent_step",
+                "data": json.dumps({
+                    "agent_id": str(sel_agent["_id"]), "agent_name": sel_name,
+                    "step": "responding", "router_decision": router_answer,
+                }),
+            }
+            sel_llm = _create_llm_for_mongo_provider(sel_provider, sel_agent.get("model_id") or sel_provider.get("model_id") or "gpt-4o")
+            tools = await _build_tools_for_llm_mongo(sel_agent, mongo_db)
+            mcp_configs = await _load_mcp_server_configs_mongo(sel_agent, mongo_db)
+            team_names = [ag.get("name", "Agent") for ag, _ in agents_with_providers]
+            route_single_note = (
+                f"You are part of a {len(team_names)}-agent team ({', '.join(team_names)}). "
+                "A router selected you as the best agent for this request. "
+                "Use your tools and expertise to give a complete, confident answer. "
+                "Only call each tool once — do not call the same tool with the same or similar arguments more than once."
+            )
+            route_system_prompt = _prepend_team_context(sel_agent.get("system_prompt"), route_single_note)
+            route_system_prompt += _ARTIFACT_SYSTEM_HINT
+            route_system_prompt += await _build_teammates_memory_injection_mongo(mongo_db, str(sel_agent["_id"]), agents_with_providers, sel_agent.get("user_id"))
+
+            if mcp_configs:
+                async for event in _stream_response_with_mcp_mongo(
+                    sel_llm, messages, route_system_prompt, mongo_db, session_id,
+                    str(sel_agent["_id"]), sel_provider, start_time, tools, mcp_configs,
+                    agent=sel_agent, sandbox_container_id_override=team_sandbox_container_id,
+                ):
+                    yield event
+            else:
+                async for event in _stream_response_mongo(
+                    sel_llm, messages, route_system_prompt, mongo_db, session_id,
+                    str(sel_agent["_id"]), sel_provider, start_time, tools,
+                    agent=sel_agent, sandbox_container_id_override=team_sandbox_container_id,
+                ):
+                    yield event
+            return
+
+        # 2+ agents genuinely relevant — query only those selected, then synthesize.
+        selected_agents_with_providers = [agents_with_providers[i] for i in selected_indices]
+        _route_team_names_m = [ag.get("name", "Agent") for ag, _ in selected_agents_with_providers]
         _route_n_m = len(_route_team_names_m)
+
+        _route_events_m: asyncio.Queue = asyncio.Queue()
+
+        def _make_on_event_m(agent):
+            def _on_event(ev: dict) -> None:
+                _route_events_m.put_nowait((agent, ev))
+            return _on_event
 
         async def get_agent_response_once(agent, provider):
             llm = _create_llm_for_mongo_provider(provider, agent.get("model_id") or provider.get("model_id") or "gpt-4o")
@@ -5429,7 +5965,11 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
                 content = await _chat_with_tools_and_mcp_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db, mcp_configs)
             else:
                 _sandbox_cid = team_sandbox_container_id or agent.get("sandbox_container_id")
-                content = await _chat_with_tools_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db, sandbox_container_id=_sandbox_cid, team_context=(agents_with_providers, str(agent["_id"]), 0))
+                content = await _chat_with_tools_mongo(
+                    llm, messages, effective_system_prompt_m, tools, mongo_db, sandbox_container_id=_sandbox_cid,
+                    team_context=(agents_with_providers, str(agent["_id"]), 0),
+                    on_event=_make_on_event_m(agent), agent_for_sandbox=agent,
+                )
             return content
 
         async def get_agent_response(agent, provider):
@@ -5444,8 +5984,20 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
                 except Exception as e2:
                     return agent, provider, None, str(e2)
 
-        tasks = [get_agent_response(ag, pr) for ag, pr in agents_with_providers]
-        results = await asyncio.gather(*tasks)
+        tasks = [asyncio.ensure_future(get_agent_response(ag, pr)) for ag, pr in selected_agents_with_providers]
+        _persisted_route_tags_m: list[str] = []
+        while not all(t.done() for t in tasks):
+            try:
+                _agent_m, _ev_m = await asyncio.wait_for(_route_events_m.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            for _out_ev in _route_event_to_sse(str(_agent_m["_id"]), _agent_m.get("name", "Agent"), _ev_m, _persisted_route_tags_m):
+                yield _out_ev
+        while not _route_events_m.empty():
+            _agent_m, _ev_m = _route_events_m.get_nowait()
+            for _out_ev in _route_event_to_sse(str(_agent_m["_id"]), _agent_m.get("name", "Agent"), _ev_m, _persisted_route_tags_m):
+                yield _out_ev
+        results = [t.result() for t in tasks]
 
         agent_responses = []
         for ag, pr, content, error in results:
@@ -5484,6 +6036,7 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
             "Present the information confidently as if you retrieved it yourself. "
             "Do NOT hedge, qualify, or suggest the user fetch data themselves. "
             "Do NOT mention that multiple agents or specialists were involved."
+            + _ARTIFACT_SYSTEM_HINT
         )
         synth_messages = list(messages) + [
             LLMMessage(
@@ -5500,13 +6053,19 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
         full_content = ""
         async for chunk in synth_llm.chat_stream(synth_messages, system_prompt=synth_prompt):
             if chunk.type == "content":
+                prev_len = len(full_content)
                 full_content += chunk.content
                 yield {"event": "content_delta", "data": json.dumps({"content": chunk.content})}
+                for ev in _scan_content_for_elements(full_content, prev_len):
+                    yield ev
             elif chunk.type == "error":
                 yield {"event": "error", "data": json.dumps({"error": chunk.error})}
                 return
             elif chunk.type == "done":
                 break
+
+        if _persisted_route_tags_m:
+            full_content += "".join(_persisted_route_tags_m)
 
         latency_ms = int((time.time() - start_time) * 1000)
         contributing_agents = [{"id": r["agent_id"], "name": r["agent_name"]} for r in agent_responses]
@@ -5549,6 +6108,10 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
         contributing_agents = []
         total = len(agents_with_providers)
         all_names = [ag.get("name", "Agent") for ag, _ in agents_with_providers]
+        # See the SQLite _team_chat_collaborate's identical comment: non-final agents
+        # never get their own saved Message row, so sandbox-synced artifact tags ride
+        # along on the final agent's saved content instead.
+        _persisted_non_final_tags: list[str] = []
 
         for i, (ag, pr) in enumerate(agents_with_providers):
             is_last = (i == total - 1)
@@ -5564,8 +6127,10 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
             mcp_configs = await _load_mcp_server_configs_mongo(ag, mongo_db)
 
             effective_system_prompt = _build_collaborate_system_prompt(
-                ag.get("system_prompt"), name, i, total, all_names[:i]
+                ag.get("system_prompt"), name, i, total, all_names[:i],
+                next_agent_name=all_names[i + 1] if i + 1 < total else None,
             )
+            effective_system_prompt += _ARTIFACT_SYSTEM_HINT
             effective_system_prompt += await _build_teammates_memory_injection_mongo(mongo_db, str(ag["_id"]), agents_with_providers, ag.get("user_id"))
 
             agent_messages = list(messages)
@@ -5592,34 +6157,53 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
                         agent=ag, sandbox_container_id_override=team_sandbox_container_id,
                     )
                 async for event in stream:
-                    if event.get("event") == "message_complete" and contributing_agents:
+                    if event.get("event") == "message_complete" and (contributing_agents or _persisted_non_final_tags):
                         data = json.loads(event["data"])
                         meta = data.get("metadata") or {}
                         meta["team_mode"] = "collaborate"
                         meta["contributing_agents"] = contributing_agents
                         data["metadata"] = meta
+                        if _persisted_non_final_tags:
+                            data["content"] = (data.get("content") or "") + "".join(_persisted_non_final_tags)
                         msg_id = data.get("id")
                         if msg_id:
                             try:
-                                await MessageCollection.update_metadata(mongo_db, msg_id, meta)
+                                if _persisted_non_final_tags:
+                                    await MessageCollection.update_content_and_metadata(mongo_db, msg_id, data["content"], meta)
+                                else:
+                                    await MessageCollection.update_metadata(mongo_db, msg_id, meta)
                             except Exception:
                                 pass
                         yield {"event": "message_complete", "data": json.dumps(data)}
                     else:
                         yield event
             else:
+                _collab_events_m: list[dict] = []
                 if mcp_configs:
                     # NOTE: _chat_with_tools_and_mcp_mongo doesn't support sandbox tools at all
                     # (pre-existing limitation, not specific to teams).
                     content = await _chat_with_tools_and_mcp_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db, mcp_configs)
                 else:
                     _sandbox_cid = team_sandbox_container_id or ag.get("sandbox_container_id")
-                    content = await _chat_with_tools_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db, sandbox_container_id=_sandbox_cid, team_context=(agents_with_providers, str(ag["_id"]), 0))
+                    content = await _chat_with_tools_mongo(
+                        llm, agent_messages, effective_system_prompt, tools, mongo_db, sandbox_container_id=_sandbox_cid,
+                        team_context=(agents_with_providers, str(ag["_id"]), 0),
+                        on_event=_collab_events_m.append, agent_for_sandbox=ag,
+                    )
+                _persisted_collab_tags_m: list[str] = []
+                for _raw_ev in _collab_events_m:
+                    for _out_ev in _route_event_to_sse(str(ag["_id"]), name, _raw_ev, _persisted_collab_tags_m):
+                        yield _out_ev
+                _persisted_non_final_tags.extend(_persisted_collab_tags_m)
                 accumulated_context.append({"agent_name": name, "response": content})
                 contributing_agents.append({"id": str(ag["_id"]), "name": name})
+                _artifact_events = _scan_content_for_elements(content, 0)
+                for ev in _artifact_events:
+                    yield ev
+                _display_content = _ARTIFACT_TAG_RE.sub("", content).strip() if _artifact_events else content
                 yield {
                     "event": "agent_message",
-                    "data": json.dumps({"agent_id": str(ag["_id"]), "agent_name": name, "content": content}),
+                    "data": json.dumps({"agent_id": str(ag["_id"]), "agent_name": name, "content": _display_content}),
                 }
 
     except Exception as e:

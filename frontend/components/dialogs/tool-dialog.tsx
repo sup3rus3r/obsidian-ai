@@ -461,7 +461,7 @@ export function ToolDialog({ open, onOpenChange, initialTool }: ToolDialogProps)
         onOpenChange(o)
       }}
     >
-      <DialogContent showFullscreenButton className="sm:max-w-2xl overflow-hidden">
+      <DialogContent showFullscreenButton className="sm:max-w-[60vw] overflow-hidden">
         {view === "pick" ? (
           <>
             <DialogHeader>

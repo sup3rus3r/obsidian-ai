@@ -754,7 +754,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showFullscreenButton className="sm:max-w-150 max-h-[85vh] flex flex-col p-0 gap-0">
+      <DialogContent showFullscreenButton className="sm:max-w-[60vw] max-h-[85vh] flex flex-col p-0 gap-0">
         <DialogHeader className="px-6 pt-6 pb-0 shrink-0">
           <DialogTitle>{isEditing ? "Edit Agent" : "Create Agent"}</DialogTitle>
           <DialogDescription>

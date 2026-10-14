@@ -78,7 +78,7 @@ export function CreateUserDialog({ open, onOpenChange }: CreateUserDialogProps) 
         else onOpenChange(o)
       }}
     >
-      <DialogContent showFullscreenButton className="sm:max-w-lg min-w-200">
+      <DialogContent showFullscreenButton className="sm:max-w-[60vw]">
         <DialogHeader>
           <DialogTitle>Create User</DialogTitle>
           <DialogDescription>

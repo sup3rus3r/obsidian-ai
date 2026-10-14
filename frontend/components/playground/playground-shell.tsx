@@ -147,6 +147,7 @@ function TopBar() {
   const streamingArtifact = usePlaygroundStore((s) => s.streamingArtifact)
   const artifactPanelOpen = usePlaygroundStore((s) => s.artifactPanelOpen)
   const setArtifactPanelOpen = usePlaygroundStore((s) => s.setArtifactPanelOpen)
+  const contextUsage = usePlaygroundStore((s) => s.contextUsage)
 
   const selectedAgentEntity = mode === "agent" ? agents.find((a) => a.id === selectedAgentId) : undefined
   const selectedTeamEntity = mode === "team" ? teams.find((t) => t.id === selectedTeamId) : undefined
@@ -184,6 +185,32 @@ function TopBar() {
             </>
           )}
           <ModelSelector />
+          {contextUsage && contextUsage.limit > 0 && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <div className="h-1.5 w-14 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          contextUsage.used / contextUsage.limit > 0.9
+                            ? "bg-destructive"
+                            : contextUsage.used / contextUsage.limit > 0.7
+                            ? "bg-amber-500"
+                            : "bg-primary"
+                        }`}
+                        style={{ width: `${Math.min(100, Math.round((contextUsage.used / contextUsage.limit) * 100))}%` }}
+                      />
+                    </div>
+                    <span>{Math.round((contextUsage.used / contextUsage.limit) * 100)}%</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Context used: {contextUsage.used.toLocaleString()} / {contextUsage.limit.toLocaleString()} tokens</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
           <div className="ml-auto flex items-center gap-1">
             {(artifacts.length > 0 || !!streamingArtifact) && (
               <TooltipProvider>
