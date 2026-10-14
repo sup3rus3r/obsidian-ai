@@ -32,9 +32,10 @@ class LLMToolCall:
 
 @dataclass
 class LLMStreamChunk:
-    type: str  # "content" | "tool_call" | "reasoning" | "done" | "error"
+    type: str  # "content" | "tool_call" | "tool_call_delta" | "reasoning" | "done" | "error"
     content: str = ""
     tool_call: LLMToolCall | None = None
+    tool_call_delta: dict | None = None  # {"id": str, "name": str, "arguments_so_far": str}
     reasoning: str = ""
     finish_reason: str | None = None
     usage: dict | None = None

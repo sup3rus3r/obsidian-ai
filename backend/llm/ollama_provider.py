@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 import httpx
 from typing import AsyncIterator
 
@@ -119,6 +120,23 @@ class OllamaProvider(BaseLLMProvider):
                         chunk = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+
+                    # Tool calls: Ollama does not stream argument tokens incrementally
+                    # (assumed atomic delivery). Check every chunk's message for a
+                    # tool_calls array and yield each as a complete "tool_call" chunk
+                    # as soon as it appears, whichever chunk carries it.
+                    _msg_for_tools = chunk.get("message", {})
+                    _raw_tool_calls = _msg_for_tools.get("tool_calls")
+                    if _raw_tool_calls:
+                        for _i, _tc in enumerate(_raw_tool_calls):
+                            yield LLMStreamChunk(
+                                type="tool_call",
+                                tool_call=LLMToolCall(
+                                    id=_tc.get("id", f"call_{_i}_{int(time.time()*1000)}"),
+                                    name=_tc.get("function", {}).get("name", ""),
+                                    arguments=json.dumps(_tc.get("function", {}).get("arguments", {})),
+                                ),
+                            )
 
                     if chunk.get("done"):
                         # Flush remaining buffer

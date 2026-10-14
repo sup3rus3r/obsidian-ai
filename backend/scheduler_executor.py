@@ -321,7 +321,7 @@ async def _run_scheduled_dag_sqlite(schedule, workflow, steps, run_id, db):
         return [{"id": str(s.id), "name": s.name, "transport_type": s.transport_type, "command": s.command, "args_json": s.args_json, "env_json": s.env_json, "url": s.url, "headers_json": s.headers_json} for s in servers]
 
     async def _execute_native_tool(name, args):
-        return _execute_tool_sqlite(name, args, db)
+        return await _execute_tool_sqlite(name, args, db)
 
     async def _evaluate_condition(upstream, user_input, branches, prompt):
         if not branches:
@@ -434,7 +434,7 @@ async def _chat_non_streaming(llm, messages, system_prompt, tools, mcp_configs, 
                         else:
                             result = json.dumps({"error": f"MCP server '{server_name}' not connected"})
                     else:
-                        result = _execute_tool_sqlite(tc.name, tc.arguments, db)
+                        result = await _execute_tool_sqlite(tc.name, tc.arguments, db)
                     chat_messages.append(LLMMessage(role="user", content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}"))
             final = await llm.chat(chat_messages, system_prompt=system_prompt)
             return final.content or ""
@@ -446,13 +446,13 @@ async def _chat_non_streaming(llm, messages, system_prompt, tools, mcp_configs, 
                 return response.content or ""
             chat_messages.append(LLMMessage(role="assistant", content=response.content or ""))
             for tc in response.tool_calls:
-                result = _execute_tool_sqlite(tc.name, tc.arguments, db)
+                result = await _execute_tool_sqlite(tc.name, tc.arguments, db)
                 chat_messages.append(LLMMessage(role="user", content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}"))
         final = await llm.chat(chat_messages, system_prompt=system_prompt)
         return final.content or ""
 
 
-def _execute_tool_sqlite(tool_name: str, arguments_str: str, db) -> str:
+async def _execute_tool_sqlite(tool_name: str, arguments_str: str, db) -> str:
     import json
     from models import ToolDefinition
     try:
@@ -466,7 +466,7 @@ def _execute_tool_sqlite(tool_name: str, arguments_str: str, db) -> str:
         return json.dumps({"error": f"Tool '{tool_name}' not found"})
     if tool_def.handler_type == "python":
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
-        return run_python_tool(config.get("code", ""), arguments)
+        return await run_python_tool(config.get("code", ""), arguments)
     elif tool_def.handler_type == "http":
         import httpx
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
@@ -476,11 +476,11 @@ def _execute_tool_sqlite(tool_name: str, arguments_str: str, db) -> str:
         if not url:
             return json.dumps({"error": "No URL configured"})
         try:
-            with httpx.Client(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 if method == "GET":
-                    resp = client.get(url, params=arguments, headers=headers)
+                    resp = await client.get(url, params=arguments, headers=headers)
                 else:
-                    resp = client.request(method, url, json=arguments, headers=headers)
+                    resp = await client.request(method, url, json=arguments, headers=headers)
                 return resp.text
         except Exception as e:
             return json.dumps({"error": str(e)})
@@ -874,7 +874,7 @@ async def _execute_tool_mongo_native(tool_name: str, arguments_str: str, mongo_d
     config_raw = tool_def.get("handler_config")
     config = json.loads(config_raw) if isinstance(config_raw, str) and config_raw else (config_raw or {})
     if handler_type == "python":
-        return run_python_tool(config.get("code", ""), arguments)
+        return await run_python_tool(config.get("code", ""), arguments)
     elif handler_type == "http":
         import httpx
         url = config.get("url", "")
@@ -936,7 +936,7 @@ async def _chat_non_streaming_mongo(llm, messages, system_prompt, tools, mcp_con
         else:
             config = {}
         if handler_type == "python":
-            return run_python_tool(config.get("code", ""), arguments)
+            return await run_python_tool(config.get("code", ""), arguments)
         elif handler_type == "http":
             import httpx
             url = config.get("url", "")

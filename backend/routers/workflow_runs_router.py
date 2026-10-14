@@ -69,7 +69,7 @@ def _create_llm_mongo(provider_record, agent_model_id: str | None = None):
     )
 
 
-def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
+async def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
     try:
         arguments = json.loads(arguments_str) if arguments_str else {}
     except json.JSONDecodeError:
@@ -81,7 +81,7 @@ def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         return json.dumps({"error": f"Tool '{tool_name}' not found"})
     if tool_def.handler_type == "python":
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
-        return run_python_tool(config.get("code", ""), arguments)
+        return await run_python_tool(config.get("code", ""), arguments)
     elif tool_def.handler_type == "http":
         import httpx
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
@@ -91,11 +91,11 @@ def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         if not url:
             return json.dumps({"error": "No URL configured for this tool"})
         try:
-            with httpx.Client(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 if method == "GET":
-                    resp = client.get(url, params=arguments, headers=headers)
+                    resp = await client.get(url, params=arguments, headers=headers)
                 else:
-                    resp = client.request(method, url, json=arguments, headers=headers)
+                    resp = await client.request(method, url, json=arguments, headers=headers)
                 return resp.text
         except Exception as e:
             return json.dumps({"error": f"HTTP request failed: {e}"})
@@ -123,7 +123,7 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
     else:
         config = {}
     if handler_type == "python":
-        return run_python_tool(config.get("code", ""), arguments)
+        return await run_python_tool(config.get("code", ""), arguments)
     elif handler_type == "http":
         import httpx
         url = config.get("url", "")
@@ -269,7 +269,7 @@ async def _execute_mcp_or_native(tc_name, tc_arguments, mcp_connections, db):
                 args = {}
             return await conn.call_tool(original_tool_name, args)
         return json.dumps({"error": f"MCP server '{server_name}' not connected"})
-    return _execute_tool(tc_name, tc_arguments, db)
+    return await _execute_tool(tc_name, tc_arguments, db)
 
 
 async def _execute_mcp_or_native_mongo(tc_name, tc_arguments, mcp_connections, mongo_db):
@@ -296,7 +296,7 @@ async def _chat_with_tools(llm, messages, system_prompt, tools, db):
             return response.content or ""
         chat_messages.append(LLMMessage(role="assistant", content=response.content or ""))
         for tc in response.tool_calls:
-            result = _execute_tool(tc.name, tc.arguments, db)
+            result = await _execute_tool(tc.name, tc.arguments, db)
             chat_messages.append(LLMMessage(role="user", content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}"))
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
     return final.content or ""
@@ -783,7 +783,7 @@ async def _execute_workflow_sqlite(run, workflow, sorted_steps, step_results, us
                                 break
                             messages.append(LLMMessage(role="assistant", content=""))
                             for tc in tool_calls_collected:
-                                result = _execute_tool(tc.name, tc.arguments, db)
+                                result = await _execute_tool(tc.name, tc.arguments, db)
                                 messages.append(LLMMessage(role="user", content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}"))
                             full_content = ""
                     step_output = full_content
@@ -1019,7 +1019,7 @@ async def _execute_dag_sqlite(run, workflow, steps, user_input, db):
         return _load_mcp_configs(agent, db)
 
     async def _execute_native_tool(name, args):
-        return _execute_tool(name, args, db)
+        return await _execute_tool(name, args, db)
 
     async def _evaluate_condition_a(upstream, uinput, branches, prompt):
         return await _evaluate_condition(upstream, uinput, branches, prompt, db)

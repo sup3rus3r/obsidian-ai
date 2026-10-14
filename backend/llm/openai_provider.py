@@ -267,6 +267,20 @@ class OpenAIProvider(BaseLLMProvider):
                     if tc_delta.get("function", {}).get("arguments"):
                         tool_call_acc[idx]["arguments"] += tc_delta["function"]["arguments"]
 
+                    # Live-stream accumulated-so-far arguments once an id is known.
+                    # Buffering until id arrives avoids a transient "no id yet" chunk
+                    # that would otherwise need a throwaway temporary id.
+                    acc = tool_call_acc[idx]
+                    if acc["id"]:
+                        yield LLMStreamChunk(
+                            type="tool_call_delta",
+                            tool_call_delta={
+                                "id": acc["id"],
+                                "name": self._restore_tool_name(acc["name"]),
+                                "arguments_so_far": acc["arguments"],
+                            },
+                        )
+
     async def chat_stream(self, messages, system_prompt=None, tools=None) -> AsyncIterator[LLMStreamChunk]:
         self._tool_name_map = {}
         payload = {
@@ -340,7 +354,7 @@ class OpenAIProvider(BaseLLMProvider):
     async def list_models(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                f"{self.base_url}/models",
+                f"{self.base_url}/v1/models",
                 headers=self._headers(),
             )
             response.raise_for_status()

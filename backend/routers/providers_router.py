@@ -26,13 +26,13 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 def _default_model_for_type(provider_type: str) -> str:
     """Return a sensible default model_id for connectivity/listing tests when none is stored."""
     defaults = {
-        "openai": "gpt-4o",
-        "anthropic": "claude-sonnet-4-6",
+        "openai": "gpt-5.5",
+        "anthropic": "claude-sonnet-5-5",
         "google": "gemini-2.0-flash",
         "ollama": "llama3",
-        "openrouter": "openai/gpt-4o",
+        "openrouter": "openai/gpt-5.5",
     }
-    return defaults.get(provider_type, "gpt-4o")
+    return defaults.get(provider_type, "gpt-5.5")
 
 
 def _provider_to_response(provider, is_mongo=False) -> LLMProviderResponse:

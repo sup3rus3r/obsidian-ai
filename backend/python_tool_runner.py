@@ -13,8 +13,15 @@ hang or crash the server. Each call now gets its own short-lived interpreter:
 This is process isolation, not a filesystem sandbox: the child runs as the same
 OS user and can still open any file that user can. Code that must not touch the
 host belongs in the Docker sandbox (sandbox_tools.py).
+
+Execution is native async (asyncio.create_subprocess_exec), not blocking
+subprocess.Popen + communicate() — a tool whose handler makes slow network calls
+(e.g. a weather lookup chaining two HTTP requests) must not stall the whole
+event loop, which otherwise stalls every other in-flight chat stream on the
+server for the duration of the call.
 """
 
+import asyncio
 import json
 import os
 import signal
@@ -79,7 +86,7 @@ def _child_env(workdir: str) -> dict:
     return env
 
 
-def _kill_tree(proc: subprocess.Popen) -> None:
+async def _kill_tree(proc: "asyncio.subprocess.Process") -> None:
     """Kill the tool process and anything it spawned."""
     if sys.platform == "win32":
         subprocess.run(
@@ -95,10 +102,10 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.kill()
     except ProcessLookupError:
         pass
-    proc.wait()
+    await proc.wait()
 
 
-def run_python_tool(code: str, arguments: dict) -> str:
+async def run_python_tool(code: str, arguments: dict) -> str:
     """Execute a tool's `handler(params)` out of process and return its result string.
 
     Keeps the contract the old in-process exec() versions had: returns the
@@ -114,20 +121,20 @@ def run_python_tool(code: str, arguments: dict) -> str:
     with tempfile.TemporaryDirectory(prefix="pytool-", ignore_cleanup_errors=True) as workdir:
         result_path = os.path.join(workdir, ".result")
         with open(result_path, "wb") as result_file:
-            proc = subprocess.Popen(
-                [_INTERPRETER, "-I", "-S", "-X", "utf8", "-c", _BOOTSTRAP,
-                 str(TIMEOUT_SECONDS), str(MEMORY_LIMIT_BYTES)],
-                stdin=subprocess.PIPE,
+            proc = await asyncio.create_subprocess_exec(
+                _INTERPRETER, "-I", "-S", "-X", "utf8", "-c", _BOOTSTRAP,
+                str(TIMEOUT_SECONDS), str(MEMORY_LIMIT_BYTES),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=result_file,
-                stderr=subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
                 cwd=workdir,
                 env=_child_env(workdir),
                 **platform_kwargs,
             )
             try:
-                proc.communicate(payload, timeout=TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                _kill_tree(proc)
+                await asyncio.wait_for(proc.communicate(payload), timeout=TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                await _kill_tree(proc)
                 return json.dumps({"error": f"Tool timed out after {TIMEOUT_SECONDS}s"})
 
         with open(result_path, "rb") as f:

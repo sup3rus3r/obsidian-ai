@@ -1,15 +1,17 @@
 """
 Sandbox tools — Docker-proxied file/shell tools injected into agents with sandbox_enabled=True.
 
-All subprocess calls use run_in_executor + subprocess.Popen to avoid asyncio.create_subprocess_exec
-raising NotImplementedError on Windows (SelectorEventLoop). Paths use // prefix to prevent
-Git Bash MSYS path mangling on Windows.
+All subprocess calls use asyncio.create_subprocess_exec (native async subprocess support,
+available on Windows under the default ProactorEventLoop that uvicorn uses here) so a long
+docker exec never blocks the event loop — critical for keeping the SSE chat stream flowing
+live while a sandbox command is still running. Paths use // prefix to prevent Git Bash MSYS
+path mangling on Windows.
 """
 
 import asyncio
 import json
-import subprocess
 import sys
+import httpx
 
 
 def _double_slash(path: str) -> str:
@@ -19,34 +21,88 @@ def _double_slash(path: str) -> str:
     return path
 
 
-async def _docker_exec(container_id: str, *args: str, stdin_data: bytes | None = None) -> tuple[str, int]:
+async def _run_subprocess(cmd: list[str], stdin_data: bytes | None = None, timeout: float = 30) -> tuple[str, int]:
+    """Run a command via native async subprocess, with a timeout. Never raises."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except Exception as e:
+        return f"Error: {e}", 1
+
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(input=stdin_data), timeout=timeout)
+        return out.decode("utf-8", errors="replace"), proc.returncode
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return f"Error: command timed out after {int(timeout)}s", 1
+    except Exception as e:
+        return f"Error: {e}", 1
+
+
+async def _docker_exec(container_id: str, *args: str, stdin_data: bytes | None = None, timeout: float = 30) -> tuple[str, int]:
     """
     Run: docker exec -i [-e TERM=xterm-256color] [-w //workspace] <container> <args...>
     Returns (stdout_text, exit_code).
-    Uses run_in_executor so it works on Windows SelectorEventLoop.
     """
-    loop = asyncio.get_event_loop()
-
     cmd = ["docker", "exec", "-i", "-e", "TERM=xterm-256color", "-w", "//workspace", container_id, *args]
+    return await _run_subprocess(cmd, stdin_data=stdin_data, timeout=timeout)
 
-    def _run():
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        out, _ = proc.communicate(input=stdin_data, timeout=30)
-        return out.decode("utf-8", errors="replace"), proc.returncode
 
-    try:
-        output, code = await loop.run_in_executor(None, _run)
-    except subprocess.TimeoutExpired:
-        output, code = "Error: command timed out after 30s", 1
-    except Exception as e:
-        output, code = f"Error: {e}", 1
+# ---------------------------------------------------------------------------
+# Artifact <-> sandbox path bridging (backend-side, never exposed as a tool)
+# ---------------------------------------------------------------------------
 
-    return output, code
+ARTIFACT_TYPE_TO_EXT = {
+    "html": "html", "jsx": "jsx", "tsx": "tsx", "css": "css",
+    "javascript": "js", "typescript": "ts", "python": "py",
+    "markdown": "md", "json": "json", "svg": "svg",
+    "latex": "tex", "text": "txt",
+}
+
+
+def artifact_workspace_path(artifact_id: str, artifact_type: str) -> str:
+    """Convention: artifact id/type maps to a fixed file under /workspace."""
+    ext = ARTIFACT_TYPE_TO_EXT.get(artifact_type, "txt")
+    return f"/workspace/{artifact_id}.{ext}"
+
+
+async def read_sandbox_file_direct(container_id: str, path: str) -> str | None:
+    """Backend-side direct read (no SSE tool_call event). None on any failure/absence."""
+    if not container_id:
+        return None
+    out, code = await _docker_exec(container_id, "cat", _double_slash(path))
+    return out if code == 0 else None
+
+
+async def write_sandbox_file_direct(container_id: str, path: str, content: str) -> bool:
+    """Backend-side direct write. False on failure — never raises."""
+    if not container_id:
+        return False
+    dir_path = "/".join(path.split("/")[:-1])
+    if dir_path:
+        await _docker_exec(container_id, "//bin/sh", "-c", f"mkdir -p {_double_slash(dir_path)}")
+    _, code = await _docker_exec(
+        container_id, "tee", _double_slash(path),
+        stdin_data=content.encode("utf-8"),
+    )
+    return code == 0
+
+
+async def wait_for_port_ready(host_port: int, attempts: int = 5, delay_s: float = 1.0) -> bool:
+    """Poll http://localhost:{host_port}/ a few times; True once any HTTP response (even non-2xx) arrives."""
+    for _ in range(attempts):
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.get(f"http://localhost:{host_port}/")
+            return True
+        except httpx.RequestError:
+            await asyncio.sleep(delay_s)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +114,12 @@ SANDBOX_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "sandbox_bash",
-            "description": "Run a shell command inside the Docker sandbox. Working directory is /workspace.",
+            "description": "Run a shell command inside the Docker sandbox. Working directory is /workspace. Use for one-shot commands (git clone, npm install, pip install, builds, tests). For commands that run forever (dev servers), use sandbox_start_process instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "Shell command to execute."},
+                    "timeout": {"type": "integer", "description": "Execution timeout in seconds. Default 30, max 600 (10 min). Raise this for npm install/build/clone of large repos."},
                 },
                 "required": ["command"],
             },
@@ -188,6 +245,66 @@ SANDBOX_TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "sandbox_start_process",
+            "description": "Start a long-running command (dev server, e.g. 'npm run dev', 'uvicorn app:app --host 0.0.0.0 --port 8080 --reload') detached inside the sandbox. Returns immediately. The process must bind to port 8080 to be reachable via the live preview. Use sandbox_process_status / sandbox_read_log to check on it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run detached, must bind to port 8080."},
+                    "name": {"type": "string", "description": "Short identifier for this process. Defaults to 'dev'."},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sandbox_process_status",
+            "description": "Check whether a process started with sandbox_start_process is still running, and whether port 8080 is accepting connections.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Process identifier. Defaults to 'dev'."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sandbox_read_log",
+            "description": "Read the captured stdout/stderr log of a process started with sandbox_start_process.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Process identifier. Defaults to 'dev'."},
+                    "lines": {"type": "integer", "description": "Trailing lines to return. Default 200."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sandbox_browser_action",
+            "description": "Visually inspect a page served by your own running dev server (e.g. after sandbox_start_process) using headless Chromium. mode='screenshot' returns a PNG (base64); mode='snapshot' returns the accessibility tree as JSON — use snapshot to check structure/content, screenshot to visually verify layout/styling.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path on your own dev server to visit, e.g. '/' or '/about'. Resolved against http://localhost:8080 (your own server, from inside the sandbox)."},
+                    "mode": {"type": "string", "enum": ["screenshot", "snapshot"], "description": "Default 'screenshot'."},
+                    "selector": {"type": "string", "description": "Optional CSS selector to scope the screenshot/snapshot to a single element instead of the full page."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 
@@ -204,9 +321,10 @@ async def execute_sandbox_tool(tool_name: str, arguments_str: str, container_id:
 
     if tool_name == "sandbox_bash":
         command = args.get("command", "")
+        timeout = min(max(int(args.get("timeout", 30)), 1), 600)
         if not command:
             return json.dumps({"error": "No command provided"})
-        out, code = await _docker_exec(container_id, "//bin/sh", "-c", command)
+        out, code = await _docker_exec(container_id, "//bin/sh", "-c", command, timeout=timeout)
         return json.dumps({"output": out, "exit_code": code})
 
     elif tool_name == "sandbox_read":
@@ -274,27 +392,7 @@ async def execute_sandbox_tool(tool_name: str, arguments_str: str, container_id:
         timeout = min(int(args.get("timeout", 30)), 120)
         if not code:
             return json.dumps({"error": "No code provided"})
-        loop = asyncio.get_event_loop()
-
-        def _run_python():
-            proc = subprocess.Popen(
-                ["docker", "exec", "-i", "-w", "//workspace", container_id, "python3", "-c", code],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            try:
-                out, _ = proc.communicate(timeout=timeout)
-                return out.decode("utf-8", errors="replace"), proc.returncode
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                return f"Error: execution timed out after {timeout}s", 1
-
-        try:
-            out, code_ = await loop.run_in_executor(None, _run_python)
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        out, code_ = await _docker_exec(container_id, "python3", "-c", code, timeout=timeout)
         return json.dumps({"output": out, "exit_code": code_})
 
     elif tool_name == "sandbox_node":
@@ -314,32 +412,80 @@ async def execute_sandbox_tool(tool_name: str, arguments_str: str, container_id:
         )
 
         runner = "ts-node" if use_ts else "node"
-        loop = asyncio.get_event_loop()
-
-        def _run_node():
-            proc = subprocess.Popen(
-                ["docker", "exec", "-i", "-w", "//workspace", container_id, runner, tmp_file],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            try:
-                out, _ = proc.communicate(timeout=timeout)
-                return out.decode("utf-8", errors="replace"), proc.returncode
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                return f"Error: execution timed out after {timeout}s", 1
-
-        try:
-            out, code_ = await loop.run_in_executor(None, _run_node)
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        out, code_ = await _docker_exec(container_id, runner, tmp_file, timeout=timeout)
 
         # Clean up temp file (best effort)
         await _docker_exec(container_id, "rm", "-f", tmp_file)
 
         return json.dumps({"output": out, "exit_code": code_})
+
+    elif tool_name == "sandbox_start_process":
+        command = args.get("command", "")
+        proc_name = args.get("name", "dev") or "dev"
+        if not command:
+            return json.dumps({"error": "No command provided"})
+        log_path = f"//workspace/.sandbox/{proc_name}.log"
+        pid_path = f"//workspace/.sandbox/{proc_name}.pid"
+        await _docker_exec(container_id, "//bin/sh", "-c", "mkdir -p //workspace/.sandbox")
+        wrapped = f"nohup {command} > {log_path} 2>&1 & echo $! > {pid_path}"
+        _, code = await _docker_exec(container_id, "//bin/sh", "-c", wrapped)
+        return json.dumps({"success": code == 0, "name": proc_name, "log_path": log_path})
+
+    elif tool_name == "sandbox_process_status":
+        proc_name = args.get("name", "dev") or "dev"
+        pid_path = f"//workspace/.sandbox/{proc_name}.pid"
+        out, _ = await _docker_exec(
+            container_id, "//bin/sh", "-c",
+            f"PID=$(cat {pid_path} 2>/dev/null); if [ -n \"$PID\" ] && kill -0 $PID 2>/dev/null; then echo running; else echo stopped; fi",
+        )
+        running = out.strip() == "running"
+        port_out, _ = await _docker_exec(
+            container_id, "//bin/bash", "-c",
+            "exec 3<>/dev/tcp/127.0.0.1/8080 2>/dev/null && echo open || echo closed",
+        )
+        port_open = port_out.strip() == "open"
+        return json.dumps({
+            "name": proc_name,
+            "process": "running" if running else "stopped",
+            "port_8080": "open" if port_open else "closed",
+        })
+
+    elif tool_name == "sandbox_read_log":
+        proc_name = args.get("name", "dev") or "dev"
+        n = min(max(int(args.get("lines", 200)), 1), 2000)
+        log_path = f"//workspace/.sandbox/{proc_name}.log"
+        out, _ = await _docker_exec(container_id, "//bin/sh", "-c", f"tail -n {n} {log_path} 2>/dev/null || echo '(no log yet)'")
+        return out
+
+    elif tool_name == "sandbox_browser_action":
+        path = args.get("path", "/")
+        mode = args.get("mode", "screenshot")
+        selector = args.get("selector")
+        url = f"http://localhost:8080{path if path.startswith('/') else '/' + path}"
+        # repr(...) produces valid Python literals (None, 'foo') — json.dumps would emit
+        # JSON tokens like null/true that aren't valid Python and crash the generated script.
+        script = (
+            "import json, base64\n"
+            "from playwright.sync_api import sync_playwright\n"
+            "with sync_playwright() as p:\n"
+            "    browser = p.chromium.launch()\n"
+            "    page = browser.new_page()\n"
+            f"    page.goto({url!r}, wait_until='networkidle', timeout=15000)\n"
+            f"    selector = {selector!r}\n"
+            "    target = page.locator(selector) if selector else page\n"
+            f"    if {mode!r} == 'screenshot':\n"
+            "        print(base64.b64encode(target.screenshot()).decode())\n"
+            "    else:\n"
+            "        print(json.dumps(page.accessibility.snapshot()))\n"
+            "    browser.close()\n"
+        )
+        out, code = await _docker_exec(container_id, "python3", "-c", script, timeout=30)
+
+        if code != 0:
+            return json.dumps({"error": out.strip()})
+        if mode == "screenshot":
+            return json.dumps({"image_base64": out.strip(), "mime_type": "image/png"})
+        return out.strip()
 
     return json.dumps({"error": f"Unknown sandbox tool: {tool_name}"})
 

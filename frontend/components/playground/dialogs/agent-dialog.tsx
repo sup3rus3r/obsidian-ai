@@ -1239,7 +1239,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               Docker Sandbox
             </Label>
             <p className="text-xs text-muted-foreground -mt-1">
-              Spin up an isolated Docker container for this agent. Injects file and shell tools (bash, read, write, ls, glob, grep, delete) into every conversation.
+              Highly recommended — gives this agent its own computer: a real, isolated Docker container with file and shell tools (bash, read, write, ls, glob, grep, delete) plus Python and Node.js execution. Files it creates show up live in the artifact panel automatically, extending what it can build and how efficiently it works.
             </p>
             <button
               type="button"

@@ -93,6 +93,7 @@ export interface ToolCall {
   arguments: Record<string, unknown> | string
   result?: string
   status: "pending" | "running" | "completed" | "error"
+  elapsed_seconds?: number
 }
 
 export interface ReasoningStep {
@@ -595,7 +596,7 @@ export interface WorkflowRunTrace {
 }
 
 // Artifacts — persistent editable content panels
-export type ArtifactType = "html" | "jsx" | "tsx" | "css" | "javascript" | "typescript" | "python" | "markdown" | "text" | "json" | "svg" | "latex"
+export type ArtifactType = "html" | "jsx" | "tsx" | "css" | "javascript" | "typescript" | "python" | "markdown" | "text" | "json" | "svg" | "latex" | "preview"
 
 export interface Artifact {
   id: string

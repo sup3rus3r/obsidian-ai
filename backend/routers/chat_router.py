@@ -19,7 +19,11 @@ from llm.provider_factory import create_provider_from_config
 from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
 from file_storage import FileStorageService
 from rag_service import RAGService
-from sandbox_tools import SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool
+from sandbox_tools import (
+    SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool,
+    ARTIFACT_TYPE_TO_EXT, artifact_workspace_path,
+    read_sandbox_file_direct, write_sandbox_file_direct, wait_for_port_ready,
+)
 from python_tool_runner import run_python_tool
 from async_job_tools import SCHEDULE_ASYNC_CHECK_TOOL_SCHEMA, is_async_job_tool, execute_schedule_async_check
 from builtin_tools import BUILTIN_TOOL_SCHEMAS, execute_builtin_tool, is_builtin_tool
@@ -248,16 +252,52 @@ Example:
 
 _SANDBOX_SYSTEM_HINT = """
 
-## Docker Sandbox
-You have access to an isolated Docker sandbox at /workspace. Use the sandbox tools freely to create, edit, and run files.
+## Docker Sandbox — this is your real computer, not an optional side tool
+When the sandbox is enabled, treat /workspace as your actual filesystem for
+this conversation. Do real work here: create real files, run real code, install
+and use real packages. Do not simulate or describe what a file "would contain"
+— write it.
 
-**Important — surfacing files to the user:**
-After creating or significantly modifying any file, always read it back with `sandbox_read` and present its content as an artifact so the user can view, copy, and download it. Choose the artifact type that matches the file (html, python, javascript, typescript, markdown, json, text, etc.).
+**Every artifact you produce while the sandbox is active MUST be a real file
+at /workspace/<artifact_id>.<ext>** (ext matches the artifact's type: html,
+py, js, ts, css, json, md, svg, tex, txt, jsx, tsx). Use `sandbox_write` to
+create or fully rewrite that file; the backend automatically detects the
+write, reads the file back, and shows it in the artifact panel for you — you
+do NOT need to (and should NOT) also wrap the content in an `<artifact>` tag
+yourself. Do not emit inline `<artifact>` tags for sandbox-backed files; write
+them with `sandbox_write` instead.
 
-Example: after writing /workspace/app.py, call `sandbox_read` with path="/workspace/app.py", then wrap the returned content in:
-<artifact id="app_py" title="app.py" type="python">...content...</artifact>
+For incremental edits to a file you already created, you may use `sandbox_bash`
+(e.g. `sed`, patch tools) or re-run `sandbox_write` with the full updated
+content — either way, the backend syncs the artifact panel automatically from
+the file on disk after any `sandbox_write` or `sandbox_delete` call that
+targets a /workspace/<id>.<ext> path. Note: edits made purely via `sandbox_bash`
+to a file NOT going through `sandbox_write` are not auto-synced to the artifact
+panel yet — prefer `sandbox_write` whenever the result should be visible there.
 
-This gives the user a live preview and download option in the artifact panel.
+Use `sandbox_python` / `sandbox_node` for running and testing code, not for
+authoring artifact content — write the file with `sandbox_write` first, then
+execute it.
+
+**You are effectively root in this container.** You can `git clone` a repo,
+install any dependencies (`npm install`, `pip install`, apt packages, etc.),
+and build on real frameworks like Next.js or FastAPI. `sandbox_bash` accepts
+an optional `timeout` (seconds, up to 600) — raise it for slow installs/builds
+instead of letting the default 30s cut them off.
+
+**Running a dev server or anything that doesn't exit on its own** (`npm run
+dev`, `uvicorn ... --reload`): use `sandbox_start_process`, not `sandbox_bash`
+— `sandbox_bash` waits for the command to finish and will hang forever on a
+server. The process must listen on port 8080. Use `sandbox_process_status` to
+check whether it's up, and `sandbox_read_log` if it crashes or won't start.
+Once it's reachable, the backend automatically shows it to the user as a
+"Live Preview" tab — you don't need to do anything else to surface it.
+
+**Look at what you built.** Use `sandbox_browser_action` (mode="screenshot" or
+"snapshot") to navigate your own running app (via localhost:8080, from inside
+the sandbox) and actually see it — check layout/styling with a screenshot, or
+check structure/content with an accessibility snapshot — rather than assuming
+the code is correct. Iterate on what you see.
 """
 
 _ARTIFACT_ID_RE = re.compile(r'<artifact\s+[^>]*\bid\s*=\s*"([^"]*)"[^>]*\btitle\s*=\s*"([^"]*)"', re.DOTALL)
@@ -282,8 +322,17 @@ _PATCH_BLOCK_RE = re.compile(
 )
 
 
-def _get_artifact_content(past_messages, artifact_id: str) -> str | None:
-    """Scan assistant messages (newest first) to find the latest content of an artifact."""
+async def _get_artifact_content(
+    past_messages, artifact_id: str, artifact_type: str | None = None,
+    container_id: str | None = None,
+) -> str | None:
+    """
+    Resolve an artifact's current content. When a sandbox container is active,
+    the live file at /workspace/<id>.<ext> is the source of truth — chat history
+    is only a fallback for artifacts that never touched the sandbox.
+    """
+    history_content: str | None = None
+    history_type: str | None = None
     for msg in reversed(past_messages):
         content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else None) or ""
         if not content or "<artifact" not in content:
@@ -291,8 +340,19 @@ def _get_artifact_content(past_messages, artifact_id: str) -> str | None:
         for m in _ARTIFACT_TAG_RE.finditer(content):
             attrs = _parse_artifact_attrs(m.group(1))
             if attrs.get("id") == artifact_id:
-                return m.group(2)
-    return None
+                history_content = m.group(2)
+                history_type = attrs.get("type")
+                break
+        if history_content is not None:
+            break
+
+    if container_id:
+        resolved_type = artifact_type or history_type or "text"
+        sandbox_content = await read_sandbox_file_direct(container_id, artifact_workspace_path(artifact_id, resolved_type))
+        if sandbox_content is not None:
+            return sandbox_content
+
+    return history_content
 
 
 def _apply_patch(original: str, patch_body: str) -> str:
@@ -328,31 +388,137 @@ def _apply_patch(original: str, patch_body: str) -> str:
     return result
 
 
-def _process_artifact_patches(full_content: str, past_messages) -> str:
+async def _process_artifact_patches(full_content: str, past_messages, container_id: str | None = None) -> str:
     """
     Find <artifact_patch ...>...</artifact_patch> blocks in full_content.
-    For each, look up the current artifact content from past_messages, apply the patch,
-    and replace the patch tag with a full <artifact ...>patched content</artifact> tag.
+    For each, look up the current artifact content (sandbox file first when
+    container_id is active, else chat history), apply the patch, write the
+    patched result back to the sandbox file when active, and replace the
+    patch tag with a full <artifact ...>patched content</artifact> tag.
     This lets the existing SSE artifact machinery handle it unchanged.
     Returns modified full_content.
     """
-    def replace_patch(m: re.Match) -> str:
+    if "<artifact_patch" not in full_content:
+        return full_content
+    matches = list(_ARTIFACT_PATCH_RE.finditer(full_content))
+    if not matches:
+        return full_content
+
+    replacements: list[tuple[tuple[int, int], str]] = []
+    for m in matches:
         attrs = _parse_artifact_attrs(m.group(1))
         patch_body = m.group(2)
         artifact_id = attrs.get("id", "")
         title = attrs.get("title", "Artifact")
         atype = attrs.get("type", "text")
         if not artifact_id:
-            return m.group(0)  # leave as-is if no id
-        original = _get_artifact_content(past_messages, artifact_id)
+            replacements.append((m.span(), m.group(0)))  # leave as-is if no id
+            continue
+        original = await _get_artifact_content(past_messages, artifact_id, artifact_type=atype, container_id=container_id)
         if original is None:
-            return m.group(0)  # can't patch without original — leave as-is
+            replacements.append((m.span(), m.group(0)))  # can't patch without original — leave as-is
+            continue
         patched = _apply_patch(original, patch_body)
-        return f'<artifact id="{artifact_id}" title="{title}" type="{atype}">\n{patched}\n</artifact>'
+        if container_id:
+            await write_sandbox_file_direct(container_id, artifact_workspace_path(artifact_id, atype), patched)
+        replacements.append((m.span(), f'<artifact id="{artifact_id}" title="{title}" type="{atype}">\n{patched}\n</artifact>'))
 
-    if "<artifact_patch" not in full_content:
-        return full_content
-    return _ARTIFACT_PATCH_RE.sub(replace_patch, full_content)
+    result = full_content
+    for (start, end), replacement in sorted(replacements, key=lambda r: r[0][0], reverse=True):
+        result = result[:start] + replacement + result[end:]
+    return result
+
+
+_HEARTBEAT_INTERVAL_S = 3.0
+
+
+async def _run_sandbox_tool_with_heartbeat(tool_name: str, arguments_str: str, container_id: str, tool_call_id: str):
+    """
+    Run execute_sandbox_tool while yielding periodic 'tool_call' SSE heartbeat
+    events (status still "running", with elapsed_seconds) so a long sandbox
+    call (installs, builds, dev servers) doesn't look frozen in the UI.
+    Yields zero or more heartbeat dicts, then the final result string as the
+    last item — callers should treat the last yielded item specially, e.g.:
+
+        result = None
+        async for item in _run_sandbox_tool_with_heartbeat(...):
+            if isinstance(item, str):
+                result = item
+            else:
+                yield item  # forward heartbeat SSE event
+    """
+    task = asyncio.ensure_future(execute_sandbox_tool(tool_name, arguments_str, container_id))
+    start = time.time()
+    while not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=_HEARTBEAT_INTERVAL_S)
+        except asyncio.TimeoutError:
+            yield {
+                "event": "tool_call",
+                "data": json.dumps({
+                    "id": tool_call_id,
+                    "name": tool_name,
+                    "arguments": arguments_str,
+                    "status": "running",
+                    "elapsed_seconds": int(time.time() - start),
+                }),
+            }
+    yield await task
+
+
+def _match_tracked_artifact(tool_name: str, arguments_str: str) -> tuple[str, str] | None:
+    """
+    If a sandbox_write/sandbox_delete call targets /workspace/<id>.<ext> with a
+    recognized artifact extension, return (id, artifact_type) so the caller can
+    auto-sync the artifact panel. Returns None for anything else (including
+    sandbox_bash/python/node — see _SANDBOX_SYSTEM_HINT for why those aren't
+    auto-synced in v1).
+    """
+    if tool_name not in ("sandbox_write", "sandbox_delete"):
+        return None
+    try:
+        args = json.loads(arguments_str) if arguments_str else {}
+    except json.JSONDecodeError:
+        return None
+    path = args.get("path", "")
+    if not path or not path.startswith("/workspace/"):
+        return None
+    rel = path[len("/workspace/"):]
+    if "/" in rel or "." not in rel:
+        return None
+    stem, _, ext = rel.rpartition(".")
+    if not stem or not ext:
+        return None
+    ext_to_type = {v: k for k, v in ARTIFACT_TYPE_TO_EXT.items()}
+    atype = ext_to_type.get(ext)
+    return (stem, atype) if atype else None
+
+
+async def _maybe_build_preview_artifact_event(
+    tool_name: str, result: str, host_port: int | None, scope: str, entity_id: str,
+) -> dict | None:
+    """
+    If a sandbox_start_process call succeeded and the process is actually
+    reachable on port 8080, build an SSE 'artifact' event (type 'preview')
+    pointing at the reverse-proxy URL. scope is 'agents' or 'teams'.
+    Returns None if this isn't a start_process call, it failed, or the
+    process never came up within the readiness poll.
+    """
+    if tool_name != "sandbox_start_process":
+        return None
+    try:
+        ok = json.loads(result).get("success")
+    except (json.JSONDecodeError, AttributeError):
+        ok = False
+    if not ok or not host_port:
+        return None
+    if not await wait_for_port_ready(host_port):
+        return None
+    preview_url = f"/api/{scope}/{entity_id}/sandbox/preview/"
+    return {"event": "artifact", "data": json.dumps({
+        "id": "sandbox-preview", "title": "Live Preview", "type": "preview",
+        "content": preview_url, "is_complete": True,
+    })}
 
 
 def _extract_edit_target(message: str) -> tuple[str, str, str] | None:
@@ -376,24 +542,6 @@ def _enforce_artifact_id(content: str, target_id: str, target_title: str, target
         return f'<artifact {attrs}>{body}</artifact>'
 
     return _ARTIFACT_TAG_RE.sub(fix_tag, content)
-
-
-def _build_edit_context(past_messages, edit_target: tuple | None) -> str:
-    """
-    When the user is editing an existing artifact, inject its current content into the
-    system prompt so the model can write a minimal patch instead of the full file.
-    """
-    if not edit_target:
-        return ""
-    artifact_id, title, atype = edit_target
-    content = _get_artifact_content(past_messages, artifact_id)
-    if content is None:
-        return ""
-    return (
-        f'\n\n## Current content of artifact "{title}" (id: {artifact_id})\n'
-        f'Use this as the base for your patch:\n'
-        f'```{atype}\n{content}\n```\n'
-    )
 
 
 def _build_artifact_context(past_messages) -> str:
@@ -425,9 +573,15 @@ def _build_artifact_context(past_messages) -> str:
 # whatever OpenAI model IDs are commonly used, since OpenAI's list_models() is fetched live
 # and isn't otherwise constrained to this map).
 _MODEL_COST_PER_1M: dict[str, tuple[float, float]] = {
-    # Anthropic — current generation
+    # Anthropic — current generation (5.5 line)
+    "claude-fable-5-1":             (10.0,   50.0),
+    "claude-opus-5-5":              (4.0,    20.0),
+    "claude-sonnet-5-5":            (2.0,    10.0),
+    "claude-haiku-5-5":             (0.1,    0.5),
+    # Anthropic — legacy (still callable)
     "claude-fable-5":               (15.0,   75.0),
-    "claude-mythos-5":               (15.0,   75.0),
+    "claude-mythos-5":              (15.0,   75.0),
+    "claude-opus-5":                (15.0,   75.0),
     "claude-opus-4-8":              (15.0,   75.0),
     "claude-opus-4-7":              (15.0,   75.0),
     "claude-sonnet-5":              (3.0,    15.0),
@@ -440,8 +594,18 @@ _MODEL_COST_PER_1M: dict[str, tuple[float, float]] = {
     "claude-opus-4-5-20251101":     (15.0,   75.0),
     "claude-opus-4-20250514":       (15.0,   75.0),
     "claude-sonnet-4-20250514":     (3.0,    15.0),
-    # OpenAI — current generation
+    # OpenAI — current generation (GPT-6 line)
+    "gpt-6-astra":                  (10.0,   50.0),
+    "gpt-6.1-sol":                  (2.0,    10.0),
+    "gpt-6-sol":                    (2.0,    10.0),
+    "gpt-6-luna":                   (0.1,    0.5),
+    # OpenAI — GPT-5.6 series (still callable)
+    "gpt-5.6-sol":                  (4.0,    20.0),
+    "gpt-5.6-terra":                (2.0,    12.0),
+    "gpt-5.6-luna":                 (0.2,    1.2),
+    # OpenAI — GPT-5.5
     "gpt-5.5":                      (5.0,    30.0),
+    "gpt-5.5-pro":                  (30.0,   180.0),
     # OpenAI — GPT-5 series (older, still callable)
     "gpt-5.4":                      (2.5,    15.0),
     "gpt-5.4-pro":                  (30.0,   180.0),
@@ -1029,7 +1193,7 @@ def _scan_content_for_elements(full_content: str, prev_len: int, edit_target: tu
     return events
 
 
-def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
+async def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
     """Look up a tool by name and execute it, returning the result string."""
     try:
         arguments = json.loads(arguments_str) if arguments_str else {}
@@ -1049,7 +1213,7 @@ def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         code_str = config.get("code", "")
         if not code_str:
             return json.dumps({"error": "No code configured for this tool"})
-        return run_python_tool(code_str, arguments)
+        return await run_python_tool(code_str, arguments)
 
     elif tool_def.handler_type == "http":
         import httpx
@@ -1060,11 +1224,11 @@ def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         if not url:
             return json.dumps({"error": "No URL configured for this tool"})
         try:
-            with httpx.Client(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 if method == "GET":
-                    resp = client.get(url, params=arguments, headers=headers)
+                    resp = await client.get(url, params=arguments, headers=headers)
                 else:
-                    resp = client.request(method, url, json=arguments, headers=headers)
+                    resp = await client.request(method, url, json=arguments, headers=headers)
                 return resp.text
         except Exception as e:
             return json.dumps({"error": f"HTTP request failed: {e}"})
@@ -1101,7 +1265,7 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
         code_str = config.get("code", "")
         if not code_str:
             return json.dumps({"error": "No code configured for this tool"})
-        return run_python_tool(code_str, arguments)
+        return await run_python_tool(code_str, arguments)
 
     elif handler_type == "http":
         import httpx
@@ -1250,7 +1414,7 @@ async def _execute_mcp_or_native_tool(
         else:
             return json.dumps({"error": f"MCP server '{server_name}' not connected"})
     else:
-        return _execute_tool(tc_name, tc_arguments, db)
+        return await _execute_tool(tc_name, tc_arguments, db)
 
 
 async def _execute_mcp_or_native_tool_mongo(
@@ -1415,7 +1579,7 @@ async def _process_attachments_mongo(attachments, session_id: str, user_id: str,
     return image_parts, attachment_records
 
 
-def _build_user_llm_message(
+async def _build_user_llm_message(
     message_text: str,
     session_id: str,
     image_parts: list,
@@ -1423,6 +1587,7 @@ def _build_user_llm_message(
     kb_names: dict[str, str] | None = None,
     edit_target: tuple | None = None,
     past_messages=None,
+    sandbox_container_id: str | None = None,
 ) -> tuple["LLMMessage", dict]:
     """Build an LLMMessage for the user, including RAG context and image parts.
 
@@ -1438,10 +1603,13 @@ def _build_user_llm_message(
     # user message so the model sees what it needs to patch (not in the system prompt).
     # The frontend already prepends [EDIT ARTIFACT id="..." title="..." type="..."] to
     # message_text; we expand that prefix to include the actual current content so the
-    # model has it right in front of it when producing the patch.
+    # model has it right in front of it when producing the patch. When a sandbox is
+    # active, the live sandbox file is the source of truth, not chat history.
     if edit_target and past_messages is not None:
         artifact_id, title, atype = edit_target
-        artifact_content = _get_artifact_content(past_messages, artifact_id)
+        artifact_content = await _get_artifact_content(
+            past_messages, artifact_id, artifact_type=atype, container_id=sandbox_container_id,
+        )
         if artifact_content is not None:
             # Strip the bare [EDIT ARTIFACT ...] prefix the frontend added (we'll
             # rebuild it with the content embedded).
@@ -1942,11 +2110,20 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
     # Detect artifact edit intent early so it can be used in both message building and system prompt
     _edit_target_early = _extract_edit_target(request.message)
 
+    # Sandbox is the source of truth for edit-context resolution only for single-agent
+    # sessions with an active container — team sessions keep today's chat-history behavior.
+    _sandbox_cid_for_edit = (
+        _agent_for_kb.sandbox_container_id
+        if _agent_for_kb and _agent_for_kb.sandbox_enabled and session.entity_type == "agent"
+        else None
+    )
+
     # Add user message to history (with images + RAG context)
-    _user_llm_msg, _kb_meta = _build_user_llm_message(
+    _user_llm_msg, _kb_meta = await _build_user_llm_message(
         request.message, str(request.session_id), image_parts,
         kb_ids=_agent_kb_ids, kb_names=_agent_kb_names,
         edit_target=_edit_target_early, past_messages=past_messages,
+        sandbox_container_id=_sandbox_cid_for_edit,
     )
     messages.append(_user_llm_msg)
 
@@ -2396,6 +2573,18 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     tc = chunk.tool_call
                     if tc:
                         tool_calls_collected.append(tc)
+                elif chunk.type == "tool_call_delta":
+                    _tcd = chunk.tool_call_delta
+                    if _tcd:
+                        yield {
+                            "event": "tool_call",
+                            "data": json.dumps({
+                                "id": _tcd["id"],
+                                "name": _tcd["name"],
+                                "arguments": _tcd["arguments_so_far"],
+                                "status": "running",
+                            }),
+                        }
                 elif chunk.type == "done":
                     if chunk.usage:
                         token_usage = {
@@ -2694,11 +2883,18 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 if is_builtin_tool(tc.name):
                     result = await execute_builtin_tool(tc.name, tc.arguments)
                 elif is_sandbox_tool(tc.name):
-                    result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid) if _sandbox_cid else json.dumps({"error": "Sandbox is not running for this agent"})
+                    if _sandbox_cid:
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id):
+                            if isinstance(_item, str):
+                                result = _item
+                            else:
+                                yield _item
+                    else:
+                        result = json.dumps({"error": "Sandbox is not running for this agent"})
                 elif is_async_job_tool(tc.name):
                     result = await execute_schedule_async_check(tc.arguments, session_id, agent_id, mcp_server_configs, "sqlite", db)
                 else:
-                    result = _execute_tool(tc.name, tc.arguments, db)
+                    result = await _execute_tool(tc.name, tc.arguments, db)
                 _tc.record_tool_span(
                     tool_name=tc.name,
                     arguments_str=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
@@ -2720,6 +2916,30 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     }),
                 }
 
+                # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
+                # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
+                if _sandbox_cid:
+                    _tracked = _match_tracked_artifact(tc.name, tc.arguments)
+                    if _tracked:
+                        _artifact_id, _artifact_type = _tracked
+                        if tc.name == "sandbox_delete":
+                            yield {"event": "artifact", "data": json.dumps({
+                                "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                "content": "", "is_complete": True, "deleted": True,
+                            })}
+                        else:
+                            _synced = await read_sandbox_file_direct(_sandbox_cid, artifact_workspace_path(_artifact_id, _artifact_type))
+                            if _synced is not None:
+                                yield {"event": "artifact", "data": json.dumps({
+                                    "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                    "content": _synced, "is_complete": True,
+                                })}
+                    elif _sandbox_cid:
+                        _host_port = getattr(agent, "sandbox_host_port", None) if agent else None
+                        _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
+                        if _preview_ev:
+                            yield _preview_ev
+
                 # Emit rich element events based on tool name / result
                 for ev in _yield_tool_element_events(tc.name, result):
                     yield ev
@@ -2734,8 +2954,12 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
             full_content = ""
 
         # Convert any artifact_patch tags → full artifact tags, then enforce correct id
+        _active_sandbox_cid = sandbox_container_id_override or (
+            getattr(agent, "sandbox_container_id", None)
+            if agent and getattr(agent, "sandbox_enabled", False) else None
+        )
         if "<artifact_patch" in full_content and past_messages is not None:
-            full_content = _process_artifact_patches(full_content, past_messages)
+            full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
         if edit_target and "<artifact" in full_content:
             full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
 
@@ -2890,6 +3114,18 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                         tc = chunk.tool_call
                         if tc:
                             tool_calls_collected.append(tc)
+                    elif chunk.type == "tool_call_delta":
+                        _tcd = chunk.tool_call_delta
+                        if _tcd:
+                            yield {
+                                "event": "tool_call",
+                                "data": json.dumps({
+                                    "id": _tcd["id"],
+                                    "name": _tcd["name"],
+                                    "arguments": _tcd["arguments_so_far"],
+                                    "status": "running",
+                                }),
+                            }
                     elif chunk.type == "done":
                         if chunk.usage:
                             token_usage = {
@@ -3136,7 +3372,14 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
 
                     _tool_start = time.time()
                     _sandbox_cid = sandbox_container_id_override or (getattr(agent, "sandbox_container_id", None) if agent else None)
-                    result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db, sandbox_container_id=_sandbox_cid)
+                    if is_sandbox_tool(tc.name) and _sandbox_cid:
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id):
+                            if isinstance(_item, str):
+                                result = _item
+                            else:
+                                yield _item
+                    else:
+                        result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db, sandbox_container_id=_sandbox_cid)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     _tc.record_tool_span(
                         tool_name=tc.name,
@@ -3148,6 +3391,30 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     )
 
                     yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": result, "status": "completed"})}
+
+                    # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
+                    # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
+                    if _sandbox_cid and is_sandbox_tool(tc.name):
+                        _tracked = _match_tracked_artifact(tc.name, tc.arguments)
+                        if _tracked:
+                            _artifact_id, _artifact_type = _tracked
+                            if tc.name == "sandbox_delete":
+                                yield {"event": "artifact", "data": json.dumps({
+                                    "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                    "content": "", "is_complete": True, "deleted": True,
+                                })}
+                            else:
+                                _synced = await read_sandbox_file_direct(_sandbox_cid, artifact_workspace_path(_artifact_id, _artifact_type))
+                                if _synced is not None:
+                                    yield {"event": "artifact", "data": json.dumps({
+                                        "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                        "content": _synced, "is_complete": True,
+                                    })}
+                        else:
+                            _host_port = getattr(agent, "sandbox_host_port", None) if agent else None
+                            _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
+                            if _preview_ev:
+                                yield _preview_ev
 
                     # Emit rich element events based on tool name / result
                     for ev in _yield_tool_element_events(tc.name, result):
@@ -3161,7 +3428,13 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
 
                 full_content = ""
 
-            # Apply artifact ID enforcement if user was editing a specific artifact
+            # Convert any artifact_patch tags → full artifact tags, then enforce correct id
+            _active_sandbox_cid = sandbox_container_id_override or (
+                getattr(agent, "sandbox_container_id", None)
+                if agent and getattr(agent, "sandbox_enabled", False) else None
+            )
+            if "<artifact_patch" in full_content and past_messages is not None:
+                full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
             if edit_target and "<artifact" in full_content:
                 full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
 
@@ -3299,7 +3572,7 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
             elif is_sandbox_tool(tc.name):
                 result = await execute_sandbox_tool(tc.name, tc.arguments, sandbox_container_id) if sandbox_container_id else json.dumps({"error": "Sandbox is not running for this agent"})
             else:
-                result = _execute_tool(tc.name, tc.arguments, db)
+                result = await _execute_tool(tc.name, tc.arguments, db)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     # Final call without tools to force a text response
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
@@ -3878,6 +4151,7 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
     # Resolve agent KB IDs + names for RAG (only for agent sessions)
     _agent_kb_ids_mongo: list[str] | None = None
     _agent_kb_names_mongo: dict[str, str] = {}
+    _agent_for_kb_mongo = None
     if session["entity_type"] == "agent":
         _agent_for_kb_mongo = await AgentCollection.find_by_id(mongo_db, str(session["entity_id"]))
         if _agent_for_kb_mongo:
@@ -3896,11 +4170,20 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
     # Detect artifact edit intent early so it can be used in both message building and system prompt
     _edit_target_mongo_early = _extract_edit_target(request.message)
 
+    # Sandbox is the source of truth for edit-context resolution only for single-agent
+    # sessions with an active container — team sessions keep today's chat-history behavior.
+    _sandbox_cid_for_edit_mongo = (
+        _agent_for_kb_mongo.get("sandbox_container_id")
+        if _agent_for_kb_mongo and _agent_for_kb_mongo.get("sandbox_enabled") and session["entity_type"] == "agent"
+        else None
+    )
+
     # Add user message to history (with images + RAG context)
-    _user_llm_msg_mongo, _kb_meta_mongo = _build_user_llm_message(
+    _user_llm_msg_mongo, _kb_meta_mongo = await _build_user_llm_message(
         request.message, request.session_id, image_parts,
         kb_ids=_agent_kb_ids_mongo, kb_names=_agent_kb_names_mongo,
         edit_target=_edit_target_mongo_early, past_messages=past_messages,
+        sandbox_container_id=_sandbox_cid_for_edit_mongo,
     )
     messages.append(_user_llm_msg_mongo)
 
@@ -4149,6 +4432,18 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                     tc = chunk.tool_call
                     if tc:
                         tool_calls_collected.append(tc)
+                elif chunk.type == "tool_call_delta":
+                    _tcd = chunk.tool_call_delta
+                    if _tcd:
+                        yield {
+                            "event": "tool_call",
+                            "data": json.dumps({
+                                "id": _tcd["id"],
+                                "name": _tcd["name"],
+                                "arguments": _tcd["arguments_so_far"],
+                                "status": "running",
+                            }),
+                        }
                 elif chunk.type == "done":
                     if chunk.usage:
                         token_usage = {
@@ -4376,7 +4671,14 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 if is_builtin_tool(tc.name):
                     result = await execute_builtin_tool(tc.name, tc.arguments)
                 elif is_sandbox_tool(tc.name):
-                    result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid) if _sandbox_cid else json.dumps({"error": "Sandbox is not running for this agent"})
+                    if _sandbox_cid:
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id):
+                            if isinstance(_item, str):
+                                result = _item
+                            else:
+                                yield _item
+                    else:
+                        result = json.dumps({"error": "Sandbox is not running for this agent"})
                 elif is_async_job_tool(tc.name):
                     result = await execute_schedule_async_check(tc.arguments, session_id, agent_id, mcp_server_configs, "mongo", mongo_db)
                 else:
@@ -4392,6 +4694,30 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
 
                 yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": result, "status": "completed"})}
 
+                # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
+                # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
+                if _sandbox_cid:
+                    _tracked = _match_tracked_artifact(tc.name, tc.arguments)
+                    if _tracked:
+                        _artifact_id, _artifact_type = _tracked
+                        if tc.name == "sandbox_delete":
+                            yield {"event": "artifact", "data": json.dumps({
+                                "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                "content": "", "is_complete": True, "deleted": True,
+                            })}
+                        else:
+                            _synced = await read_sandbox_file_direct(_sandbox_cid, artifact_workspace_path(_artifact_id, _artifact_type))
+                            if _synced is not None:
+                                yield {"event": "artifact", "data": json.dumps({
+                                    "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                    "content": _synced, "is_complete": True,
+                                })}
+                    else:
+                        _host_port = (agent or {}).get("sandbox_host_port") if agent else None
+                        _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
+                        if _preview_ev:
+                            yield _preview_ev
+
                 for ev in _yield_tool_element_events(tc.name, result):
                     yield ev
 
@@ -4403,8 +4729,11 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
             full_content = ""
 
         # Convert any artifact_patch tags → full artifact tags, then enforce correct id
+        _active_sandbox_cid = sandbox_container_id_override or (
+            (agent or {}).get("sandbox_container_id") if agent and (agent or {}).get("sandbox_enabled") else None
+        )
         if "<artifact_patch" in full_content and past_messages is not None:
-            full_content = _process_artifact_patches(full_content, past_messages)
+            full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
         if edit_target and "<artifact" in full_content:
             full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
 
@@ -4565,6 +4894,18 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                         tc = chunk.tool_call
                         if tc:
                             tool_calls_collected.append(tc)
+                    elif chunk.type == "tool_call_delta":
+                        _tcd = chunk.tool_call_delta
+                        if _tcd:
+                            yield {
+                                "event": "tool_call",
+                                "data": json.dumps({
+                                    "id": _tcd["id"],
+                                    "name": _tcd["name"],
+                                    "arguments": _tcd["arguments_so_far"],
+                                    "status": "running",
+                                }),
+                            }
                     elif chunk.type == "done":
                         if chunk.usage:
                             token_usage = {
@@ -4790,7 +5131,14 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
 
                     _tool_start = time.time()
                     _sandbox_cid_mongo = sandbox_container_id_override or (agent.get("sandbox_container_id") if agent else None)
-                    result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db, sandbox_container_id=_sandbox_cid_mongo)
+                    if is_sandbox_tool(tc.name) and _sandbox_cid_mongo:
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid_mongo, tc.id):
+                            if isinstance(_item, str):
+                                result = _item
+                            else:
+                                yield _item
+                    else:
+                        result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db, sandbox_container_id=_sandbox_cid_mongo)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     await _record_tool_span_mcp_mongo(
                         tool_name=tc.name,
@@ -4803,6 +5151,30 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
 
                     yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": result, "status": "completed"})}
 
+                    # Auto-sync the artifact panel when a sandbox_write/sandbox_delete
+                    # targeted a tracked /workspace/<id>.<ext> file — no model action needed.
+                    if _sandbox_cid_mongo and is_sandbox_tool(tc.name):
+                        _tracked = _match_tracked_artifact(tc.name, tc.arguments)
+                        if _tracked:
+                            _artifact_id, _artifact_type = _tracked
+                            if tc.name == "sandbox_delete":
+                                yield {"event": "artifact", "data": json.dumps({
+                                    "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                    "content": "", "is_complete": True, "deleted": True,
+                                })}
+                            else:
+                                _synced = await read_sandbox_file_direct(_sandbox_cid_mongo, artifact_workspace_path(_artifact_id, _artifact_type))
+                                if _synced is not None:
+                                    yield {"event": "artifact", "data": json.dumps({
+                                        "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
+                                        "content": _synced, "is_complete": True,
+                                    })}
+                        else:
+                            _host_port = (agent or {}).get("sandbox_host_port") if agent else None
+                            _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
+                            if _preview_ev:
+                                yield _preview_ev
+
                     # Feed result back as user message (compatible with all providers)
                     messages.append(LLMMessage(
                         role="user",
@@ -4811,7 +5183,12 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
 
                 full_content = ""
 
-            # Apply artifact ID enforcement if user was editing a specific artifact
+            # Convert any artifact_patch tags → full artifact tags, then enforce correct id
+            _active_sandbox_cid = sandbox_container_id_override or (
+                agent.get("sandbox_container_id") if agent and agent.get("sandbox_enabled") else None
+            )
+            if "<artifact_patch" in full_content and past_messages is not None:
+                full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
             if edit_target and "<artifact" in full_content:
                 full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
 

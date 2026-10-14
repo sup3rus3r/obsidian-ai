@@ -331,7 +331,7 @@ async def _run_headless_sqlite(session_id: int, agent_id: int, db) -> str | None
             elif is_sandbox_tool(tc.name):
                 result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid) if _sandbox_cid else json.dumps({"error": "Sandbox not running"})
             else:
-                result = _execute_tool(tc.name, tc.arguments, db)
+                result = await _execute_tool(tc.name, tc.arguments, db)
 
             messages.append(LLMMessage(
                 role="user",

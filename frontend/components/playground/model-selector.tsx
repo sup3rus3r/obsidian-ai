@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import { apiClient } from "@/lib/api-client"
-import { ChevronDown, Cpu, Users, Check, Loader2 } from "lucide-react"
+import { ChevronDown, Cpu, Users, Check, Loader2, Bot } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,6 +20,7 @@ export function ModelSelector() {
   const setAgents = usePlaygroundStore((s) => s.setAgents)
   const selectedAgentId = usePlaygroundStore((s) => s.selectedAgentId)
   const selectedTeamId = usePlaygroundStore((s) => s.selectedTeamId)
+  const setSelectedAgent = usePlaygroundStore((s) => s.setSelectedAgent)
   const teams = usePlaygroundStore((s) => s.teams)
   const providers = usePlaygroundStore((s) => s.providers)
 
@@ -36,17 +37,27 @@ export function ModelSelector() {
   const [savingModelId, setSavingModelId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (mode === "team" || !currentProvider) {
+    if (mode === "team" || !selectedAgent?.provider_id) {
       setModels([])
       return
     }
+    let cancelled = false
     setLoadingModels(true)
     apiClient
-      .listModels(currentProvider.id)
-      .then(setModels)
-      .catch(() => setModels([]))
-      .finally(() => setLoadingModels(false))
-  }, [mode, currentProvider?.id])
+      .listModels(selectedAgent.provider_id)
+      .then((result) => {
+        if (!cancelled) setModels(result)
+      })
+      .catch(() => {
+        if (!cancelled) setModels([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingModels(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mode, selectedAgent?.provider_id])
 
   const getModelLabel = (modelId: string | null | undefined) => {
     if (!modelId) return "No model"
@@ -153,6 +164,30 @@ export function ModelSelector() {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-64">
+        {agents.length > 1 && (
+          <>
+            <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Switch Agent
+            </DropdownMenuLabel>
+            {agents.map((a) => (
+              <DropdownMenuItem
+                key={a.id}
+                onClick={() => setSelectedAgent(a.id)}
+                className={cn(
+                  "flex items-center justify-between gap-2 cursor-pointer",
+                  a.id === selectedAgentId && "bg-accent"
+                )}
+              >
+                <span className="flex items-center gap-1.5 text-xs font-medium truncate">
+                  <Bot className="h-3 w-3 shrink-0 text-muted-foreground" />
+                  {a.name}
+                </span>
+                {a.id === selectedAgentId && <Check className="h-3 w-3 shrink-0" />}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
           Switch Model
         </DropdownMenuLabel>
@@ -195,7 +230,13 @@ export function ModelSelector() {
             {providers.map((provider) => (
               <DropdownMenuItem
                 key={provider.id}
-                onClick={() => handleSelectProvider(provider.id)}
+                onSelect={(e) => {
+                  // Stay open after switching provider so the newly loaded model
+                  // list is immediately visible, instead of closing and forcing
+                  // the user to reopen the dropdown to see it.
+                  e.preventDefault()
+                  handleSelectProvider(provider.id)
+                }}
                 className={cn(
                   "flex flex-col items-start gap-0.5 cursor-pointer",
                   provider.id === selectedAgent.provider_id && "bg-accent"

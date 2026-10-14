@@ -55,6 +55,10 @@ RUN npm install -g \
     eslint \
     jest
 
+# Playwright for visual verification (agent can screenshot/inspect its own running app)
+RUN pip install --no-cache-dir --break-system-packages playwright \
+ && playwright install --with-deps chromium
+
 # Create workspace
 RUN mkdir -p /workspace
 WORKDIR /workspace

@@ -127,7 +127,7 @@ function isWebPreview(type: ArtifactType): boolean {
 }
 
 function isPreviewable(type: ArtifactType): boolean {
-  return isWebPreview(type) || type === "markdown" || type === "text" || type === "json" || type === "latex"
+  return isWebPreview(type) || type === "markdown" || type === "text" || type === "json" || type === "latex" || type === "preview"
 }
 
 type PanelTab = "preview" | "code" | "edit"
@@ -188,9 +188,12 @@ export function ArtifactPanel() {
     ? { ...streamingArtifact, sessionId: "", createdAt: "", updatedAt: "" }
     : completedArtifact
 
-  // Switch to code view for non-previewable types or while streaming
+  // Switch to code view for non-previewable types or while streaming;
+  // a live-preview artifact has no code/edit view, so always force it to preview.
   useEffect(() => {
-    if (isStreamingActive) {
+    if (artifact?.type === "preview") {
+      setPanelTab("preview")
+    } else if (isStreamingActive) {
       setPanelTab("code")
     } else if (artifact && !isPreviewable(artifact.type) && panelTab === "preview") {
       setPanelTab("code")
@@ -213,6 +216,7 @@ export function ArtifactPanel() {
       html: "html", jsx: "jsx", tsx: "tsx", css: "css",
       javascript: "js", typescript: "ts", python: "py",
       markdown: "md", text: "txt", json: "json", svg: "svg", latex: "tex",
+      preview: "txt",
     }
     const blob = new Blob([artifact.content], { type: "text/plain" })
     const url = URL.createObjectURL(blob)
@@ -227,6 +231,8 @@ export function ArtifactPanel() {
 
   const canPreview = artifact ? isPreviewable(artifact.type) : false
   const canWebPreview = artifact ? isWebPreview(artifact.type) : false
+  // A "preview" artifact's content is a proxy URL, not source — there's nothing to show in Code/Edit.
+  const isLivePreview = artifact?.type === "preview"
 
   return (
     <div
@@ -286,32 +292,36 @@ export function ArtifactPanel() {
             Preview
           </button>
         )}
-        <button
-          onClick={() => setPanelTab("code")}
-          className={cn(
-            "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors",
-            panelTab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
-          )}
-        >
-          <Code2 className="h-3.5 w-3.5" />
-          Code
-        </button>
-        <button
-          onClick={() => {
-            if (isStreamingActive) return
-            setPanelTab("edit")
-            setTimeout(() => editRef.current?.focus(), 50)
-          }}
-          disabled={isStreamingActive}
-          className={cn(
-            "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors",
-            panelTab === "edit" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
-            isStreamingActive && "opacity-40 cursor-not-allowed",
-          )}
-        >
-          <Edit3 className="h-3.5 w-3.5" />
-          Edit
-        </button>
+        {!isLivePreview && (
+          <button
+            onClick={() => setPanelTab("code")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors",
+              panelTab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Code2 className="h-3.5 w-3.5" />
+            Code
+          </button>
+        )}
+        {!isLivePreview && (
+          <button
+            onClick={() => {
+              if (isStreamingActive) return
+              setPanelTab("edit")
+              setTimeout(() => editRef.current?.focus(), 50)
+            }}
+            disabled={isStreamingActive}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors",
+              panelTab === "edit" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+              isStreamingActive && "opacity-40 cursor-not-allowed",
+            )}
+          >
+            <Edit3 className="h-3.5 w-3.5" />
+            Edit
+          </button>
+        )}
 
         <div className="ml-auto flex items-center gap-0.5 pr-1">
           {/* Type badge */}
@@ -371,7 +381,15 @@ export function ArtifactPanel() {
             No artifact selected
           </div>
         ) : panelTab === "preview" && canPreview ? (
-          artifact.type === "latex" ? (
+          artifact.type === "preview" ? (
+            <iframe
+              key={artifact.id + artifact.updatedAt}
+              src={artifact.content}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              className="h-full w-full border-0"
+              title={artifact.title}
+            />
+          ) : artifact.type === "latex" ? (
             <LatexPreview content={artifact.content} />
           ) : canWebPreview ? (
             <iframe

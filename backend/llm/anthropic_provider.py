@@ -114,12 +114,13 @@ class AnthropicProvider(BaseLLMProvider):
         """Wrap system prompt as a structured block with prompt caching enabled."""
         return [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
 
-    # Current-generation models (Opus 4.7+, Sonnet 5+, and the Fable/Mythos lines)
+    # Current-generation models (Opus 4.7+, Sonnet 5+, Haiku 5+, and the Fable/Mythos lines)
     # reject temperature/top_p/top_k sampling params outright and use
     # output_config.effort instead of the older thinking.budget_tokens knob.
     _CURRENT_GEN_PREFIXES = (
-        "claude-opus-4-7", "claude-opus-4-8",
+        "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5",
         "claude-sonnet-5",
+        "claude-haiku-5",
         "claude-fable-5", "claude-mythos-5",
     )
 
@@ -253,6 +254,14 @@ class AnthropicProvider(BaseLLMProvider):
 
                         elif delta_type == "input_json_delta":
                             tool_call_args += delta.get("partial_json", "")
+                            yield LLMStreamChunk(
+                                type="tool_call_delta",
+                                tool_call_delta={
+                                    "id": tool_call_id,
+                                    "name": tool_call_name,
+                                    "arguments_so_far": tool_call_args,
+                                },
+                            )
 
                     elif event_type == "content_block_stop":
                         if current_block_type == "tool_use":
@@ -282,7 +291,14 @@ class AnthropicProvider(BaseLLMProvider):
     async def list_models(self) -> list[dict]:
         # Anthropic doesn't have a public models listing API usable here
         return [
+            # Current generation
+            {"id": "claude-fable-5-1", "name": "Claude Fable 5.1"},
+            {"id": "claude-opus-5-5", "name": "Claude Opus 5.5"},
+            {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5"},
+            {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"},
+            # Legacy (still callable)
             {"id": "claude-fable-5", "name": "Claude Fable 5"},
+            {"id": "claude-opus-5", "name": "Claude Opus 5"},
             {"id": "claude-opus-4-8", "name": "Claude Opus 4.8"},
             {"id": "claude-sonnet-5", "name": "Claude Sonnet 5"},
             {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5"},

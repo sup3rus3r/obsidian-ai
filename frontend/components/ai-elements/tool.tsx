@@ -38,6 +38,14 @@ export type ToolProps = {
   output?: string
   className?: string
   defaultOpen?: boolean
+  elapsedSeconds?: number
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}m ${s}s`
 }
 
 function parseInput(input: Record<string, unknown> | string | undefined): Record<string, unknown> | null {
@@ -123,12 +131,16 @@ export function renderGenerativeUI(name: string, output: string): React.ReactNod
   }
 }
 
-const Tool = ({ name, state, input, output, className, defaultOpen = false }: ToolProps) => {
+const Tool = ({ name, state, input, output, className, defaultOpen = false, elapsedSeconds }: ToolProps) => {
   const parsed = parseInput(input)
   const { displayName, serverName } = cleanToolName(name)
   // Generative UI is rendered externally by MessageBubble; suppress it inside the tool block
   const hasGenerativeUI = state === "completed" && output ? renderGenerativeUI(displayName, output) !== null : false
-  const hasDetails = (parsed && Object.keys(parsed).length > 0) || (!hasGenerativeUI && output)
+  // Arguments can arrive as a growing, still-incomplete JSON string while the model is
+  // mid-generation (e.g. a large sandbox_write content field) — show it as raw streaming
+  // text instead of silently rendering nothing until it becomes valid JSON.
+  const isStreamingRawArgs = parsed === null && state === "running" && typeof input === "string" && input.length > 0
+  const hasDetails = (parsed && Object.keys(parsed).length > 0) || (!hasGenerativeUI && output) || isStreamingRawArgs
   const canPreview = !hasGenerativeUI && output && isPreviewable(output)
   const [showPreview, setShowPreview] = useState(canPreview)
 
@@ -151,7 +163,7 @@ const Tool = ({ name, state, input, output, className, defaultOpen = false }: To
       case "running":
         return (
           <span className={cn(base, "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400")}>
-            {state === "pending" ? "Pending" : "Running"}
+            {state === "pending" ? "Pending" : elapsedSeconds !== undefined ? `Running • ${formatElapsed(elapsedSeconds)}` : "Running"}
           </span>
         )
       case "completed":
@@ -171,7 +183,7 @@ const Tool = ({ name, state, input, output, className, defaultOpen = false }: To
 
   return (
     <Collapsible
-      defaultOpen={defaultOpen}
+      defaultOpen={defaultOpen || isStreamingRawArgs}
       className={cn(
         "overflow-hidden rounded-lg border border-border shadow-sm transition-shadow",
         hasDetails && "hover:shadow-md",
@@ -224,7 +236,15 @@ const Tool = ({ name, state, input, output, className, defaultOpen = false }: To
       {hasDetails && (
         <CollapsibleContent>
           <div className="border-t border-border bg-background p-3 space-y-2">
-            {parsed && Object.keys(parsed).length > 0 && (
+            {isStreamingRawArgs ? (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Input</div>
+                <pre className="rounded bg-muted/30 border border-border px-2 py-1.5 font-mono text-xs max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word">
+                  {input as string}
+                  <span className="inline-block h-3 w-0.5 bg-amber-400 animate-pulse ml-0.5 align-middle" />
+                </pre>
+              </div>
+            ) : parsed && Object.keys(parsed).length > 0 && (
               <div>
                 <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Input</div>
                 <div className="rounded bg-muted/30 border border-border px-2 py-1.5 font-mono text-xs space-y-0.5">

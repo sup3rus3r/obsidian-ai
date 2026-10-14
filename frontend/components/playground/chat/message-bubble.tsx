@@ -229,6 +229,7 @@ export function MessageBubble({
                 state={tc.status === "completed" ? "completed" : tc.status === "error" ? "error" : "running"}
                 input={tc.arguments}
                 output={tc.result}
+                elapsedSeconds={tc.elapsed_seconds}
               />
             ))}
           </div>

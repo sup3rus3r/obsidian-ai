@@ -54,6 +54,7 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
   const [providerType, setProviderType] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
   const [apiKey, setApiKey] = useState("")
+  const [maxTokens, setMaxTokens] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "connected" | "failed">("idle")
@@ -73,6 +74,8 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
       setProviderType(provider.provider_type)
       setBaseUrl(provider.base_url ?? "")
       setApiKey("")
+      const existingMaxTokens = provider.config?.max_tokens
+      setMaxTokens(typeof existingMaxTokens === "number" ? String(existingMaxTokens) : "")
       setTestStatus("idle")
       setError("")
       if (provider.secret_id) {
@@ -115,12 +118,21 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
     setLoading(true)
     setError("")
     try {
+      const parsedMaxTokens = maxTokens.trim() ? parseInt(maxTokens, 10) : undefined
+      const hasMaxTokens = parsedMaxTokens !== undefined && !Number.isNaN(parsedMaxTokens)
+      // Only include `config` in the payload when there's an actual value to send —
+      // the backend's update endpoint treats any explicitly-set `config` key (even
+      // `undefined`) as "replace config with this", which would wipe an existing
+      // config (e.g. temperature) whenever max_tokens is left blank.
+      const configField = hasMaxTokens ? { config: { max_tokens: parsedMaxTokens } } : {}
+
       if (isEditMode && provider) {
         // Edit mode: build partial update payload
         const payload: Parameters<typeof apiClient.updateProvider>[1] = {
           name,
           provider_type: providerType,
           base_url: baseUrl || undefined,
+          ...configField,
         }
 
         if (selectedType?.needsKey) {
@@ -142,6 +154,7 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
           name,
           provider_type: providerType,
           base_url: baseUrl || undefined,
+          ...configField,
         }
 
         if (selectedType?.needsKey) {
@@ -170,6 +183,7 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
     setProviderType("")
     setBaseUrl("")
     setApiKey("")
+    setMaxTokens("")
     setKeySource("manual")
     setSelectedSecretId("")
     setTestStatus("idle")
@@ -214,6 +228,23 @@ export function ProviderDialog({ open, onOpenChange, provider, onUpdated }: Prov
               placeholder={`My ${selectedType?.label || "Provider"}`}
             />
           </div>
+
+          {providerType && (
+            <div className="grid gap-2">
+              <Label htmlFor="max-tokens">Max Output Tokens</Label>
+              <Input
+                id="max-tokens"
+                type="number"
+                min={1}
+                value={maxTokens}
+                onChange={(e) => setMaxTokens(e.target.value)}
+                placeholder="Provider default (e.g. 4096)"
+              />
+              <p className="text-xs text-muted-foreground">
+                Caps how many tokens a response can generate, including reasoning/thinking. Leave blank to use the provider's default — raise this if long or complex responses are cutting off empty.
+              </p>
+            </div>
+          )}
 
           {(providerType === "ollama" || providerType === "custom" || providerType === "openrouter") && (
             <div className="grid gap-2">
