@@ -8,8 +8,10 @@ import { ModelSelector } from "./model-selector"
 import { TeamMembersPopover } from "./team-members-popover"
 import { ArtifactPanel } from "./artifact-panel"
 import { usePlaygroundStore } from "@/stores/playground-store"
-import { PanelLeftClose, PanelLeft, SquarePen, PanelRight, Terminal } from "lucide-react"
+import { PanelLeftClose, PanelLeft, SquarePen, PanelRight, Terminal, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { apiClient } from "@/lib/api-client"
+import { toast } from "sonner"
 import {
   Tooltip,
   TooltipContent,
@@ -157,14 +159,29 @@ function TopBar() {
           <span className="text-sm font-medium">{selectedEntity.name}</span>
           {selectedTeamEntity && <TeamMembersPopover team={selectedTeamEntity} />}
           {selectedEntity.sandbox_enabled && (
-            <span className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full font-medium ${
-              selectedEntity.sandbox_container_id
-                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                : "bg-muted text-muted-foreground"
-            }`}>
-              <Terminal className="h-3 w-3" />
-              {selectedEntity.sandbox_container_id ? "Sandbox" : "Sandbox off"}
-            </span>
+            <>
+              <span className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                selectedEntity.sandbox_container_id
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "bg-muted text-muted-foreground"
+              }`}>
+                <Terminal className="h-3 w-3" />
+                {selectedEntity.sandbox_container_id ? "Sandbox" : "Sandbox off"}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const downloadFn = mode === "team" ? apiClient.downloadTeamSandbox : apiClient.downloadAgentSandbox
+                  downloadFn(selectedEntity.id, selectedEntity.name).catch((err: unknown) => {
+                    toast.error(err instanceof Error ? err.message : "Failed to download project files")
+                  })
+                }}
+                title="Download project files"
+                className="inline-flex items-center justify-center h-6 w-6 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+            </>
           )}
           <ModelSelector />
           <div className="ml-auto flex items-center gap-1">

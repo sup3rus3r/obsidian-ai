@@ -172,9 +172,11 @@ export const AppRoutes = {
     AgentSandboxStart   : (id: string) => `/api/agents/${id}/sandbox/start`,
     AgentSandboxStop    : (id: string) => `/api/agents/${id}/sandbox/stop`,
     AgentSandboxStatus  : (id: string) => `/api/agents/${id}/sandbox/status`,
+    AgentSandboxDownload: (id: string) => `/api/agents/${id}/sandbox/download`,
     TeamSandboxStart    : (id: string) => `/api/teams/${id}/sandbox/start`,
     TeamSandboxStop     : (id: string) => `/api/teams/${id}/sandbox/stop`,
     TeamSandboxStatus   : (id: string) => `/api/teams/${id}/sandbox/status`,
+    TeamSandboxDownload : (id: string) => `/api/teams/${id}/sandbox/download`,
 
     // Prompt Auto-Optimizer
     TriggerOptimization     : () => "/api/optimizer/trigger",

@@ -14,9 +14,11 @@ import sys
 import uuid
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 
 from config import DATABASE_TYPE
 from auth import get_current_user, TokenData
+from sandbox_tools import run_docker_command_bytes
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
@@ -42,6 +44,8 @@ _HOP_BY_HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-length",
 }
+
+_DOWNLOAD_EXCLUDES = ["node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".sandbox"]
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +270,62 @@ async def get_agent_sandbox_status(
             db.close()
 
 
+async def _download_workspace_tar(volume_name: str) -> StreamingResponse:
+    """Archive a sandbox's /workspace volume to a tar.gz, using a throwaway
+    container so this works whether the real sandbox container is running or
+    stopped — the volume persists independently either way."""
+    exclude_args = []
+    for pattern in _DOWNLOAD_EXCLUDES:
+        exclude_args += ["--exclude", pattern]
+    tar_cmd = ["tar", "-czf", "-"] + exclude_args + ["-C", "/workspace", "."]
+    out, err, code = await run_docker_command_bytes(
+        ["run", "--rm", "-v", f"{volume_name}:/workspace", _SANDBOX_IMAGE, *tar_cmd],
+        timeout=180,
+    )
+    if code != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to archive workspace: {err.decode('utf-8', errors='replace')}")
+    if not out:
+        raise HTTPException(status_code=404, detail="Workspace is empty or sandbox was never used")
+
+    async def _body():
+        yield out
+
+    return StreamingResponse(
+        _body(),
+        media_type="application/gzip",
+        headers={"Content-Disposition": 'attachment; filename="project.tar.gz"'},
+    )
+
+
+@router.get("/agents/{agent_id}/sandbox/download")
+async def download_agent_sandbox(
+    agent_id: str,
+    current_user: TokenData = Depends(get_current_user),
+):
+    if DATABASE_TYPE == "mongo":
+        db = get_database()
+        agent = await AgentCollection.find_by_id(db, agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        if str(agent.get("user_id")) != current_user.user_id:
+            raise HTTPException(status_code=403, detail="Not your agent")
+        volume_name = f"obsidian-sandbox-vol-agent-{agent_id[:8]}"
+    else:
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            agent = db.query(Agent).filter(Agent.id == int(agent_id)).first()
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found")
+            if agent.user_id != int(current_user.user_id):
+                raise HTTPException(status_code=403, detail="Not your agent")
+            volume_name = f"obsidian-sandbox-vol-agent-{agent_id}"
+        finally:
+            db.close()
+
+    return await _download_workspace_tar(volume_name)
+
+
 async def _proxy_to_sandbox(host_port: int | None, path: str, request: Request) -> Response:
     """Reverse-proxy a request to whatever the agent's sandbox has listening on port 8080."""
     if not host_port:
@@ -460,6 +520,35 @@ async def get_team_sandbox_status(
             }
         finally:
             db.close()
+
+
+@router.get("/teams/{team_id}/sandbox/download")
+async def download_team_sandbox(
+    team_id: str,
+    current_user: TokenData = Depends(get_current_user),
+):
+    if DATABASE_TYPE == "mongo":
+        db = get_database()
+        team = await TeamCollection.find_by_id(db, team_id)
+        if not team:
+            raise HTTPException(status_code=404, detail="Team not found")
+        if str(team.get("user_id")) != current_user.user_id:
+            raise HTTPException(status_code=403, detail="Not your team")
+        volume_name = f"obsidian-sandbox-vol-team-{team_id[:8]}"
+    else:
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            team = db.query(Team).filter(Team.id == int(team_id)).first()
+            if not team:
+                raise HTTPException(status_code=404, detail="Team not found")
+            if team.user_id != int(current_user.user_id):
+                raise HTTPException(status_code=403, detail="Not your team")
+            volume_name = f"obsidian-sandbox-vol-team-{team_id}"
+        finally:
+            db.close()
+
+    return await _download_workspace_tar(volume_name)
 
 
 @router.api_route("/teams/{team_id}/sandbox/preview/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

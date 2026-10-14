@@ -521,6 +521,18 @@ async def _maybe_build_preview_artifact_event(
     })}
 
 
+def _artifact_tag_for_persistence(artifact_id: str, title: str, atype: str, content: str) -> str:
+    """
+    Render an <artifact> tag for a sandbox-synced artifact so it gets appended
+    to full_content and persisted with the message — otherwise these only ever
+    exist as a live SSE event and vanish on reload (nothing to rehydrate from,
+    see _ARTIFACT_RE scan in the frontend's fetchSessionMessages). The frontend
+    already strips <artifact> tags from the rendered chat bubble text, so this
+    is safe to append without changing what the user sees in the conversation.
+    """
+    return f'\n<artifact id="{artifact_id}" title="{title}" type="{atype}">\n{content}\n</artifact>\n'
+
+
 def _extract_edit_target(message: str) -> tuple[str, str, str] | None:
     """If message starts with [EDIT ARTIFACT ...], return (id, title, type), else None."""
     m = _EDIT_PREFIX_RE.match(message)
@@ -2506,6 +2518,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
     reasoning_parts = []
     tool_calls_collected = []  # accumulate tool calls from the current round
     token_usage = {}  # accumulates usage across all tool rounds
+    # Sandbox-synced artifact tags, collected across ALL rounds (full_content gets
+    # reset after every round's tool loop, so these can't live there until persisted
+    # at the very end — otherwise they're wiped before the final answer round runs).
+    _persisted_artifact_tags: list[str] = []
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -2934,11 +2950,14 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                                     "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
                                     "content": _synced, "is_complete": True,
                                 })}
+                                _persisted_artifact_tags.append(_artifact_tag_for_persistence(_artifact_id, _artifact_id, _artifact_type, _synced))
                     elif _sandbox_cid:
                         _host_port = getattr(agent, "sandbox_host_port", None) if agent else None
                         _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
                         if _preview_ev:
                             yield _preview_ev
+                            _pd = json.loads(_preview_ev["data"])
+                            _persisted_artifact_tags.append(_artifact_tag_for_persistence(_pd["id"], _pd["title"], _pd["type"], _pd["content"]))
 
                 # Emit rich element events based on tool name / result
                 for ev in _yield_tool_element_events(tc.name, result):
@@ -2962,6 +2981,12 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
             full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
         if edit_target and "<artifact" in full_content:
             full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
+
+        # Append sandbox-synced artifact tags collected across all rounds so they
+        # get persisted with the message, instead of only existing as a transient
+        # SSE event (see _persisted_artifact_tags comment at top of this function).
+        if _persisted_artifact_tags:
+            full_content += "".join(_persisted_artifact_tags)
 
         # Emit the final message
         latency_ms = int((time.time() - start_time) * 1000)
@@ -3057,6 +3082,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
     full_content = ""
     reasoning_parts = []
     token_usage = {}
+    _persisted_artifact_tags: list[str] = []
 
     # Context compaction check before streaming
     compaction_event = await _compact_context_if_needed(messages, llm, system_prompt, db, session_id, provider_record)
@@ -3410,11 +3436,14 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                                         "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
                                         "content": _synced, "is_complete": True,
                                     })}
+                                    _persisted_artifact_tags.append(_artifact_tag_for_persistence(_artifact_id, _artifact_id, _artifact_type, _synced))
                         else:
                             _host_port = getattr(agent, "sandbox_host_port", None) if agent else None
                             _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
                             if _preview_ev:
                                 yield _preview_ev
+                                _pd = json.loads(_preview_ev["data"])
+                                _persisted_artifact_tags.append(_artifact_tag_for_persistence(_pd["id"], _pd["title"], _pd["type"], _pd["content"]))
 
                     # Emit rich element events based on tool name / result
                     for ev in _yield_tool_element_events(tc.name, result):
@@ -3437,6 +3466,9 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                 full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
             if edit_target and "<artifact" in full_content:
                 full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
+
+            if _persisted_artifact_tags:
+                full_content += "".join(_persisted_artifact_tags)
 
             latency_ms = int((time.time() - start_time) * 1000)
             input_tokens = token_usage.get("input_tokens", 0)
@@ -4347,6 +4379,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
     full_content = ""
     reasoning_parts = []
     token_usage = {}
+    _persisted_artifact_tags: list[str] = []
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -4712,11 +4745,14 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                                     "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
                                     "content": _synced, "is_complete": True,
                                 })}
+                                _persisted_artifact_tags.append(_artifact_tag_for_persistence(_artifact_id, _artifact_id, _artifact_type, _synced))
                     else:
                         _host_port = (agent or {}).get("sandbox_host_port") if agent else None
                         _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
                         if _preview_ev:
                             yield _preview_ev
+                            _pd = json.loads(_preview_ev["data"])
+                            _persisted_artifact_tags.append(_artifact_tag_for_persistence(_pd["id"], _pd["title"], _pd["type"], _pd["content"]))
 
                 for ev in _yield_tool_element_events(tc.name, result):
                     yield ev
@@ -4736,6 +4772,9 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
             full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
         if edit_target and "<artifact" in full_content:
             full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
+
+        if _persisted_artifact_tags:
+            full_content += "".join(_persisted_artifact_tags)
 
         latency_ms = int((time.time() - start_time) * 1000)
         input_tokens = token_usage.get("input_tokens", 0)
@@ -4807,6 +4846,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
     full_content = ""
     reasoning_parts = []
     token_usage = {}
+    _persisted_artifact_tags: list[str] = []
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     native_tools = _inject_create_tool_schema(native_tools, agent)
@@ -5169,11 +5209,14 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                                         "id": _artifact_id, "title": _artifact_id, "type": _artifact_type,
                                         "content": _synced, "is_complete": True,
                                     })}
+                                    _persisted_artifact_tags.append(_artifact_tag_for_persistence(_artifact_id, _artifact_id, _artifact_type, _synced))
                         else:
                             _host_port = (agent or {}).get("sandbox_host_port") if agent else None
                             _preview_ev = await _maybe_build_preview_artifact_event(tc.name, result, _host_port, "agents", str(agent_id))
                             if _preview_ev:
                                 yield _preview_ev
+                                _pd = json.loads(_preview_ev["data"])
+                                _persisted_artifact_tags.append(_artifact_tag_for_persistence(_pd["id"], _pd["title"], _pd["type"], _pd["content"]))
 
                     # Feed result back as user message (compatible with all providers)
                     messages.append(LLMMessage(
@@ -5191,6 +5234,9 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                 full_content = await _process_artifact_patches(full_content, past_messages, container_id=_active_sandbox_cid)
             if edit_target and "<artifact" in full_content:
                 full_content = _enforce_artifact_id(full_content, edit_target[0], edit_target[1], edit_target[2])
+
+            if _persisted_artifact_tags:
+                full_content += "".join(_persisted_artifact_tags)
 
             latency_ms = int((time.time() - start_time) * 1000)
             input_tokens = token_usage.get("input_tokens", 0)

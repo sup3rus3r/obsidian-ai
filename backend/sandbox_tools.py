@@ -53,6 +53,29 @@ async def _docker_exec(container_id: str, *args: str, stdin_data: bytes | None =
     return await _run_subprocess(cmd, stdin_data=stdin_data, timeout=timeout)
 
 
+async def run_docker_command_bytes(args: list[str], timeout: float = 120) -> tuple[bytes, bytes, int]:
+    """
+    Run a docker CLI command and return raw (stdout_bytes, stderr_bytes, exit_code).
+    Unlike _docker_exec/_run_subprocess, stdout is never decoded or merged with
+    stderr — required for piping binary data (e.g. a tar stream) through un-corrupted.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception as e:
+        return b"", str(e).encode(), 1
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return out, err, proc.returncode
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return b"", f"command timed out after {int(timeout)}s".encode(), 1
+
+
 # ---------------------------------------------------------------------------
 # Artifact <-> sandbox path bridging (backend-side, never exposed as a tool)
 # ---------------------------------------------------------------------------

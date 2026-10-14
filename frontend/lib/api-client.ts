@@ -300,6 +300,48 @@ class ApiClient {
     URL.revokeObjectURL(url)
   }
 
+  async downloadAgentSandbox(id: string, name: string): Promise<void> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const response = await fetch(AppRoutes.AgentSandboxDownload(id), { headers })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Download failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${name.replace(/[^a-z0-9\-_ ]/gi, "_")}.tar.gz`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  async downloadTeamSandbox(id: string, name: string): Promise<void> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const response = await fetch(AppRoutes.TeamSandboxDownload(id), { headers })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Download failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${name.replace(/[^a-z0-9\-_ ]/gi, "_")}.tar.gz`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   async importAgent(file: File): Promise<{ agent: Agent; warnings: string[] }> {
     const headers: Record<string, string> = {}
     if (this.accessToken) {
