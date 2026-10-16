@@ -127,12 +127,14 @@ class UserCollection:
 
 
 class APIClientMongo(BaseModel):
-    """API client model for MongoDB."""
+    """API client model for MongoDB. agent_id is None for account-wide keys
+    (today's behavior); set, it scopes the key to exactly that one agent."""
     id: Optional[PyObjectId] = Field(default=None, alias="_id")
     name            : str
     client_id       : str
     hashed_secret   : str
     created_by      : str
+    agent_id        : Optional[str] = None
     is_active       : bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -161,6 +163,12 @@ class APIClientCollection:
     async def find_by_user(cls, db, user_id: str) -> list[dict]:
         collection = db[cls.collection_name]
         cursor = collection.find({"created_by": user_id})
+        return await cursor.to_list(length=100)
+
+    @classmethod
+    async def find_by_agent(cls, db, agent_id: str, user_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"agent_id": agent_id, "created_by": user_id})
         return await cursor.to_list(length=100)
 
     @classmethod

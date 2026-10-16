@@ -59,6 +59,7 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
   - [Admin Panel & RBAC](#admin-panel--rbac)
   - [Agent Import / Export](#agent-import--export)
   - [Docker Sandbox](#docker-sandbox)
+  - [Public Agent API](#public-agent-api)
   - [Dual Database Support](#dual-database-support)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
@@ -465,7 +466,7 @@ Enterprise-grade security features built in from day one.
 | **Secrets at Rest** | Fernet-encrypted storage for API keys and credentials |
 | **Password Hashing** | Bcrypt with salt for all user passwords |
 | **Rate Limiting** | Per-endpoint limits via SlowAPI (configurable per user and API client) |
-| **API Client Credentials** | Generate client ID/secret pairs for programmatic access |
+| **API Client Credentials** | Generate client ID/secret pairs for programmatic access - account-wide, or scoped to a single agent (see [Public Agent API](#public-agent-api)) |
 
 ---
 
@@ -529,6 +530,38 @@ Give any agent or team an isolated Docker container for safe code execution and 
 | `sandbox_node` | Execute JavaScript (Node.js 20) or TypeScript (ts-node) code and return output |
 
 - **Automatic artifact surfacing** - The agent is instructed via system prompt to call `sandbox_read` after creating or modifying any file and wrap the result in an `<artifact>` tag, so files appear in the artifact panel with live preview, copy, and download
+
+---
+
+### Public Agent API
+
+Expose any single agent - with its own tools, system prompt, sandbox, and conversation memory - as a standalone API endpoint that other apps and platforms can call directly, independent of the normal login flow.
+
+- **Agent-scoped API keys** - Generate a `client_id` / `client_secret` pair scoped to exactly one agent from that agent's **API Access** panel in the sidebar (hover an agent, click the key icon); the secret is shown once at creation and never stored in plaintext
+- **One endpoint, full capability** - `POST /api/v1/agent/chat` reuses the exact same tool-execution loop as the in-app chat - no reduced-capability "API mode"; tool calls, sandbox access, and artifact handling all work identically
+- **Conversation memory built in** - Omit `conversation_id` to start a new conversation, or pass one back to continue it; history, tool-call records, and context persist exactly like a normal session
+- **Streaming or single response** - Set `stream: true` for Server-Sent Events, or leave it off to get one JSON response once the agent (and any tools it calls) finishes
+- **Independent key lifecycle** - List and revoke agent-scoped keys at any time without affecting the agent itself or any other key
+- **Built-in rate limiting** - Public API calls are rate-limited per key via the existing SlowAPI integration, separate from normal user rate limits
+- **Optional public tunnel** - Self-hosted instances have no public URL by default. Set `ENABLE_NGROK_TUNNEL=true` (and optionally `NGROK_AUTHTOKEN`) to have the backend open an [ngrok](https://ngrok.com/) tunnel on startup; the resulting public URL is shown directly in the API Access panel so external platforms can reach the agent without any manual port-forwarding or reverse-proxy setup
+
+**Example request:**
+
+```bash
+curl -X POST https://your-backend-or-tunnel-url/api/v1/agent/chat \
+  -H "X-API-Key: <client_id>" \
+  -H "X-API-Secret: <client_secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello!"}'
+```
+
+```json
+{
+  "conversation_id": "42",
+  "message": "Hi there! How can I help you today?",
+  "tool_calls": []
+}
+```
 
 ---
 
@@ -794,6 +827,12 @@ PROVIDER_KEY_SECRET=<output of: python -c "from cryptography.fernet import Ferne
 RATE_LIMIT_USER=60
 RATE_LIMIT_API_CLIENT=100
 
+# Optional: public tunnel for the Public Agent API (see "Public Agent API" feature)
+# When enabled, the backend opens an ngrok tunnel on startup and shows the public
+# URL in each agent's API Access panel. Leave unset to run fully local/LAN-only.
+ENABLE_NGROK_TUNNEL=false
+NGROK_AUTHTOKEN=
+
 # Database type: "sqlite" (default) or "mongo"
 DATABASE_TYPE=sqlite
 
@@ -895,6 +934,10 @@ The backend exposes a RESTful API with interactive documentation:
 | **Schedules** | `/schedules/{id}` | PUT | Update a schedule |
 | **Schedules** | `/schedules/{id}` | DELETE | Delete a schedule |
 | **Chat** | `/chat` | POST | Stream a chat response (SSE) |
+| **Public Agent API** | `/agents/{id}/api-clients` | GET / POST | List or generate agent-scoped API keys |
+| **Public Agent API** | `/agents/{id}/api-clients/{client_id}` | DELETE | Revoke an agent-scoped API key |
+| **Public Agent API** | `/api/v1/agent/chat` | POST | Call an agent externally via its API key (streaming or single response) |
+| **Public Agent API** | `/tunnel/status` | GET | Check whether a public tunnel is active and its URL |
 | **Sessions** | `/sessions` | GET | List conversation sessions |
 | **Sessions** | `/sessions/{id}/messages` | GET | Get session messages |
 | **Traces** | `/traces/sessions/{id}` | GET | Get full execution trace for a session |
@@ -945,13 +988,15 @@ The backend exposes a RESTful API with interactive documentation:
 
 ### Programmatic Access
 
-Generate API client credentials from **Settings** to access the API programmatically:
+Generate account-wide API client credentials from **Settings** to access the full API programmatically:
 
 ```bash
 curl -H "X-API-Key: your-client-id" \
      -H "X-API-Secret: your-client-secret" \
      http://localhost:8000/agents
 ```
+
+To call a single agent from an external app or platform instead, generate an agent-scoped key from that agent's **API Access** panel and use it with `/api/v1/agent/chat` - see [Public Agent API](#public-agent-api).
 
 ---
 
@@ -1022,6 +1067,7 @@ obsidian-ai/
 │   ├── scheduler_executor.py       # Background workflow execution functions
 │   ├── eval_engine.py              # Eval grading logic + background run tasks
 │   ├── optimizer.py                # Prompt auto-optimizer pipeline (SQLite + Mongo)
+│   ├── tunnel.py                   # Optional ngrok tunnel for the Public Agent API
 │   │
 │   ├── llm/                        # LLM provider integrations
 │   │   ├── base.py                 # Base provider interface
@@ -1038,6 +1084,8 @@ obsidian-ai/
 │   └── routers/                    # API route handlers
 │       ├── auth_router.py          # Login, register, 2FA/TOTP
 │       ├── agents_router.py        # Agent CRUD + import/export
+│       ├── agent_api_router.py     # Agent-scoped API key management
+│       ├── public_api_router.py    # Public Agent API - external single-agent invoke endpoint
 │       ├── teams_router.py         # Team coordination
 │       ├── workflows_router.py     # Workflow definitions
 │       ├── workflow_runs_router.py  # Workflow execution & tracking
@@ -1116,6 +1164,30 @@ obsidian-ai/
 ## Updates
 
 Recent additions shipped to the platform.
+
+---
+
+### 🟢 Public Agent API
+
+> **Expose any agent as a standalone API endpoint - with its tools, sandbox, and memory intact - for use in other apps and platforms.**
+
+Previously, the only way to talk to an agent was through the in-app chat (JWT-authenticated) or a generic, account-wide API client that had no concept of "this key belongs to this one agent." This release adds a proper agent-scoped API key and a public, external-facing chat endpoint that reuses the exact same execution engine as the main app - no reduced-capability API mode.
+
+**What's included:**
+
+- **Agent-scoped API keys** - Generate, list, and revoke `client_id`/`client_secret` pairs bound to exactly one agent from a new **API Access** panel (key icon on each agent row in the sidebar)
+- **`POST /api/v1/agent/chat`** - Authenticates via `X-API-Key`/`X-API-Secret`, always runs the agent's full tool-execution loop (tools, sandbox, artifacts) regardless of whether the caller asks for streaming or a single JSON response, and returns a `conversation_id` so follow-up calls continue the same conversation with full memory
+- **Built on existing infrastructure, not duplicated** - Reuses the account-wide `APIClient` credential system (`auth.py`), the same `_stream_response`/`_stream_response_with_mcp` tool loop every chat message already goes through, and the existing per-API-key rate limiter - the ~200 lines of agent/provider/system-prompt resolution logic were extracted into a shared helper so the public endpoint and the main chat endpoint can never drift apart
+- **Optional ngrok tunnel** - Since this platform is self-hosted, a working API key alone doesn't help an external platform reach an instance behind a home network or NAT. Setting `ENABLE_NGROK_TUNNEL=true` has the backend open a public tunnel on startup; the resulting URL is shown directly in the API Access panel. Fully opt-in - nothing about normal startup changes if it's left unset
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|--------------|
+| `/agents/{id}/api-clients` | GET / POST | List or generate agent-scoped API keys |
+| `/agents/{id}/api-clients/{client_id}` | DELETE | Revoke an agent-scoped API key |
+| `/api/v1/agent/chat` | POST | Call an agent externally (streaming or single response) |
+| `/tunnel/status` | GET | Check whether a public tunnel is active and its URL |
 
 ---
 

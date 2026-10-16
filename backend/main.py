@@ -7,7 +7,7 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr.reconfigure(encoding='utf-8')
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 import uvicorn
@@ -18,11 +18,14 @@ load_dotenv()
 from config import DATABASE_TYPE
 from database import engine, Base
 from rate_limiter import limiter, rate_limit_exceeded_handler
+from auth import get_current_user, TokenData
 
 from routers.auth_router import router as auth_router
 from routers.user_router import router as user_router
 from routers.providers_router import router as providers_router
 from routers.agents_router import router as agents_router
+from routers.agent_api_router import router as agent_api_router
+from routers.public_api_router import router as public_api_router
 from routers.teams_router import router as teams_router
 from routers.workflows_router import router as workflows_router
 from routers.sessions_router import router as sessions_router
@@ -768,6 +771,16 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add agent_id to api_clients if missing (scopes a key to one agent;
+        # NULL preserves today's account-wide key behavior)
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE api_clients ADD COLUMN agent_id INTEGER REFERENCES agents(id)"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
 
 # ── Module-level APScheduler job functions ────────────────────────────────────
 # Must be at module scope (not closures) so APScheduler can pickle them for the
@@ -1073,10 +1086,18 @@ async def lifespan(app: FastAPI):
 
     _scheduler.start()
 
+    # Optional ngrok tunnel — only starts if ENABLE_NGROK_TUNNEL is set; see
+    # tunnel.py. Lets an agent's public API endpoint be reached from outside
+    # this self-hosted instance's local network without any other setup.
+    from tunnel import start_tunnel, stop_tunnel
+    import os as _os
+    start_tunnel(int(_os.getenv("PORT", "8000")))
+
     yield
 
     # Shutdown APScheduler
     _scheduler.shutdown(wait=False)
+    stop_tunnel()
     if DATABASE_TYPE == "mongo":
         await close_mongo_connection()
 
@@ -1099,6 +1120,8 @@ app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(providers_router)
 app.include_router(agents_router)
+app.include_router(agent_api_router)
+app.include_router(public_api_router)
 app.include_router(teams_router)
 app.include_router(workflows_router)
 app.include_router(sessions_router)
@@ -1124,6 +1147,15 @@ app.include_router(whatsapp_router)
 app.include_router(prompt_vault_router)
 app.include_router(skills_router)
 app.include_router(vault_router)
+
+
+@app.get("/tunnel/status")
+async def tunnel_status(current_user: TokenData = Depends(get_current_user)):
+    """Public-API tunnel status for the frontend's API-access dialog: whether
+    an ngrok tunnel is enabled/running, and its current public URL if so."""
+    from tunnel import is_enabled, get_public_url
+    return {"enabled": is_enabled(), "public_url": get_public_url()}
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

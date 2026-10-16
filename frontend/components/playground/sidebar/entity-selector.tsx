@@ -1,7 +1,7 @@
 "use client"
 
 import { usePlaygroundStore } from "@/stores/playground-store"
-import { Plus, Bot, Users, Trash2, Pencil, Download, Upload } from "lucide-react"
+import { Plus, Bot, Users, Trash2, Pencil, Download, Upload, Key } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { useState } from "react"
@@ -16,6 +16,7 @@ interface EntitySelectorProps {
   onEditTeam?: (teamId: string) => void
   onExportAgent?: (agentId: string, agentName: string) => void
   onImportAgent?: () => void
+  onAgentApiAccess?: (agentId: string, agentName: string) => void
   hideAddAgent?: boolean
   hideAddTeam?: boolean
   hideEditAgent?: boolean
@@ -24,7 +25,7 @@ interface EntitySelectorProps {
   hideDeleteTeam?: boolean
 }
 
-export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onEditTeam, onExportAgent, onImportAgent, hideAddAgent, hideAddTeam, hideEditAgent, hideEditTeam, hideDeleteAgent, hideDeleteTeam }: EntitySelectorProps) {
+export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onEditTeam, onExportAgent, onImportAgent, onAgentApiAccess, hideAddAgent, hideAddTeam, hideEditAgent, hideEditTeam, hideDeleteAgent, hideDeleteTeam }: EntitySelectorProps) {
   const mode = usePlaygroundStore((s) => s.mode)
   const agents = usePlaygroundStore((s) => s.agents)
   const teams = usePlaygroundStore((s) => s.teams)
@@ -119,7 +120,7 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onEditTeam,
             return (
               <div
                 key={entity.id}
-                className={`flex items-center gap-2 px-2 py-2.5 rounded-xl transition-colors group overflow-hidden ${
+                className={`flex flex-col gap-1 px-2 py-2.5 rounded-xl transition-colors group overflow-hidden ${
                   selectedId === entity.id
                     ? "bg-sidebar-accent shadow-sm"
                     : "hover:bg-sidebar-accent/50"
@@ -127,7 +128,7 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onEditTeam,
               >
                 <button
                   onClick={() => setSelected(entity.id)}
-                  className="flex-1 flex items-center gap-2.5 min-w-0 overflow-hidden cursor-pointer"
+                  className="flex items-center gap-2.5 min-w-0 overflow-hidden cursor-pointer w-full"
                 >
                   <span className="flex items-center justify-center h-7 w-7 rounded-lg bg-primary/10 text-primary shrink-0">
                     {mode === "agent" ? (
@@ -155,57 +156,73 @@ export function EntitySelector({ onAddAgent, onAddTeam, onEditAgent, onEditTeam,
                     )
                   })()}
                 </button>
-                {mode === "agent" && onEditAgent && !hideEditAgent && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onEditAgent(entity.id)
-                    }}
-                  >
-                    <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                )}
-                {mode === "team" && onEditTeam && !hideEditTeam && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onEditTeam(entity.id)
-                    }}
-                  >
-                    <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                )}
-                {mode === "agent" && onExportAgent && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onExportAgent(entity.id, entity.name)
-                    }}
-                    title="Export agent as JSON"
-                  >
-                    <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                )}
-                {!(mode === "agent" ? hideDeleteAgent : hideDeleteTeam) && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 cursor-pointer"
-                    onClick={(e) => handleDelete(e, entity.id)}
-                    disabled={deletingId === entity.id}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                  </Button>
-                )}
+                <div className="flex items-center justify-end gap-1 h-0 opacity-0 group-hover:h-7 group-hover:opacity-100 transition-all overflow-hidden">
+                  {mode === "agent" && onEditAgent && !hideEditAgent && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-7 w-7 shrink-0 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onEditAgent(entity.id)
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                    </Button>
+                  )}
+                  {mode === "team" && onEditTeam && !hideEditTeam && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-7 w-7 shrink-0 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onEditTeam(entity.id)
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                    </Button>
+                  )}
+                  {mode === "agent" && onAgentApiAccess && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-7 w-7 shrink-0 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onAgentApiAccess(entity.id, entity.name)
+                      }}
+                      title="API access"
+                    >
+                      <Key className="h-3.5 w-3.5 text-muted-foreground" />
+                    </Button>
+                  )}
+                  {mode === "agent" && onExportAgent && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-7 w-7 shrink-0 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onExportAgent(entity.id, entity.name)
+                      }}
+                      title="Export agent as JSON"
+                    >
+                      <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                    </Button>
+                  )}
+                  {!(mode === "agent" ? hideDeleteAgent : hideDeleteTeam) && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-7 w-7 shrink-0 cursor-pointer"
+                      onClick={(e) => handleDelete(e, entity.id)}
+                      disabled={deletingId === entity.id}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                    </Button>
+                  )}
+                </div>
               </div>
             )
           })}

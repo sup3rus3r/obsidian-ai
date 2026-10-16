@@ -18,7 +18,10 @@ class User(Base):
 
 
 class APIClient(Base):
-    """API clients for external access with client_id/secret authentication."""
+    """API clients for external access with client_id/secret authentication.
+    agent_id is nullable: NULL means an account-wide key (today's behavior,
+    unchanged); set means the key is scoped to exactly that one agent and is
+    the only kind accepted by the public single-agent invoke endpoint."""
     __tablename__ = "api_clients"
 
     id            = Column(Integer, primary_key=True, index=True)
@@ -26,6 +29,7 @@ class APIClient(Base):
     client_id     = Column(String, unique=True, index=True, nullable=False)
     hashed_secret = Column(String, nullable=False)
     created_by    = Column(Integer, ForeignKey("users.id"), nullable=False)
+    agent_id      = Column(Integer, ForeignKey("agents.id"), nullable=True)
     is_active     = Column(Boolean, default=True, nullable=False)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 

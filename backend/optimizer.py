@@ -461,7 +461,6 @@ async def _run_optimization_sqlite(
                 suite_id=eval_suite_id,
                 agent_id=agent_id,
                 run_id=baseline_run.id,
-                db=db,
                 override_system_prompt=current_prompt,
             )
             db.refresh(baseline_run)
@@ -486,7 +485,6 @@ async def _run_optimization_sqlite(
                 suite_id=eval_suite_id,
                 agent_id=agent_id,
                 run_id=proposed_run.id,
-                db=db,
                 override_system_prompt=proposed_prompt,
             )
             db.refresh(proposed_run)

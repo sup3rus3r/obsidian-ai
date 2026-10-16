@@ -309,7 +309,6 @@ async def trigger_run(
         suite_id=suite.id,
         agent_id=int(data.agent_id),
         run_id=run.id,
-        db=db,
         override_system_prompt=data.override_system_prompt,
         version_id=int(data.version_id) if data.version_id else None,
     ))

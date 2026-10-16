@@ -178,6 +178,11 @@ export const AppRoutes = {
     TeamSandboxStatus   : (id: string) => `/api/teams/${id}/sandbox/status`,
     TeamSandboxDownload : (id: string) => `/api/teams/${id}/sandbox/download`,
 
+    // Agent-scoped API access (public API keys)
+    AgentApiClients      : (agentId: string) => `/api/agents/${agentId}/api-clients`,
+    AgentApiClientRevoke  : (agentId: string, clientId: string) => `/api/agents/${agentId}/api-clients/${clientId}`,
+    TunnelStatus          : () => "/api/tunnel/status",
+
     // Prompt Auto-Optimizer
     TriggerOptimization     : () => "/api/optimizer/trigger",
     ListOptimizationRuns    : (agentId: string) => `/api/optimizer/agents/${agentId}`,

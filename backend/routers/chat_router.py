@@ -2226,7 +2226,108 @@ def _build_llm_messages_from_history(past_messages: list, db: DBSession, current
     return messages
 
 
-async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSession, start_time: float):
+def _resolve_agent_chat_context(session, request: ChatRequest, db: DBSession, current_user: TokenData, edit_target_early, past_messages: list):
+    """
+    Resolve everything needed to run a single-agent chat turn: the agent and
+    provider records, a ready LLM instance, the fully-built system prompt
+    (memory/artifact/sandbox/skills/vault injections), and the tool schemas
+    (including sandbox + MCP-poll tools when applicable).
+
+    Extracted from _chat_sqlite's inline agent-chat setup so the public,
+    agent-scoped API endpoint (public_api_router.py) can drive the same
+    _stream_response/_stream_response_with_mcp tool-execution loop the main
+    app uses, instead of duplicating ~80 lines of agent/provider/prompt
+    resolution that would otherwise drift out of sync over time.
+    """
+    agent = db.query(Agent).filter(Agent.id == session.entity_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not agent.provider_id:
+        raise HTTPException(status_code=400, detail="Agent has no provider configured")
+
+    provider_record = db.query(LLMProvider).filter(LLMProvider.id == agent.provider_id).first()
+    if not provider_record:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    _memory_enabled = getattr(agent, "memory_enabled", True)
+
+    # Trigger memory reflection on most recent unprocessed prior session (background)
+    if _memory_enabled:
+        _prior_session = db.query(SessionModel).filter(
+            SessionModel.entity_type == "agent",
+            SessionModel.entity_id == agent.id,
+            SessionModel.user_id == int(current_user.user_id),
+            SessionModel.memory_processed == False,
+            SessionModel.id != int(request.session_id),
+        ).order_by(SessionModel.updated_at.desc()).first()
+        if _prior_session:
+            asyncio.create_task(_reflect_and_store_sqlite(
+                agent.id, provider_record, agent.model_id, _prior_session.id, int(current_user.user_id)
+            ))
+
+    api_key = decrypt_api_key(provider_record.api_key) if provider_record.api_key else None
+    config = json.loads(provider_record.config_json) if provider_record.config_json else None
+    llm = create_provider_from_config(
+        provider_type=provider_record.provider_type,
+        api_key=api_key,
+        base_url=provider_record.base_url,
+        model_id=agent.model_id or provider_record.model_id or "gpt-4o",
+        config=config,
+    )
+
+    # Inject long-term memories into the system prompt
+    _agent_memories = db.query(AgentMemory).filter(
+        AgentMemory.agent_id == agent.id,
+        AgentMemory.user_id == int(current_user.user_id),
+    ).order_by(AgentMemory.created_at.desc()).limit(_MEMORY_CAP).all() if _memory_enabled else []
+
+    _sandbox_active = getattr(agent, "sandbox_enabled", False) and getattr(agent, "sandbox_container_id", None)
+    _skills_injection = ""
+    if agent.skill_ids_json and _agent_supports_skills(provider_record, agent.model_id):
+        try:
+            _skill_ids = json.loads(agent.skill_ids_json)
+        except (json.JSONDecodeError, TypeError):
+            _skill_ids = []
+        if _skill_ids:
+            _skills = db.query(Skill).filter(
+                Skill.id.in_(_skill_ids),
+                Skill.user_id == int(current_user.user_id),
+                Skill.is_active == True,
+            ).all()
+            _skills_injection = _build_skills_injection(_skills)
+    _vault_injection = ""
+    if agent.vault_file_ids_json:
+        try:
+            _vault_ids = json.loads(agent.vault_file_ids_json)
+        except (json.JSONDecodeError, TypeError):
+            _vault_ids = []
+        if _vault_ids:
+            _vault_files = db.query(VaultFile).filter(
+                VaultFile.id.in_(_vault_ids),
+                VaultFile.user_id == int(current_user.user_id),
+            ).all()
+            _vault_injection = _build_vault_injection(_vault_files)
+    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "") + _build_artifact_context(past_messages) + _skills_injection + _vault_injection
+    tools = _build_tools_for_llm(agent, db)
+    # Inject sandbox tools if agent has an active sandbox container
+    if _sandbox_active:
+        tools = list(tools or []) + SANDBOX_TOOL_SCHEMAS
+    mcp_server_configs = _load_mcp_server_configs(agent, db)
+    # schedule_async_check only makes sense when there's an MCP server to poll
+    if mcp_server_configs:
+        tools = list(tools or []) + [SCHEDULE_ASYNC_CHECK_TOOL_SCHEMA]
+
+    return agent, provider_record, llm, system_prompt, tools, mcp_server_configs
+
+
+async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSession, start_time: float, _return_raw_generator: bool = False):
+    """_return_raw_generator is internal-only (never set by the main /chat endpoint,
+    which always wants EventSourceResponse): when True, the single-agent branch
+    returns the bare async generator instead of wrapping it, so a caller (the
+    public single-agent API endpoint) can iterate it directly and collect a final
+    JSON response while still running the full tool-execution loop. Team mode is
+    unaffected — not reachable from the public, agent-scoped API by design."""
     # Load session
     session = db.query(SessionModel).filter(
         SessionModel.id == int(request.session_id),
@@ -2343,94 +2444,17 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
             raise HTTPException(status_code=400, detail=f"Unknown team mode: {mode}")
 
     # --- Agent chat ---
-    agent = db.query(Agent).filter(Agent.id == session.entity_id).first()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    if not agent.provider_id:
-        raise HTTPException(status_code=400, detail="Agent has no provider configured")
-
-    provider_record = db.query(LLMProvider).filter(LLMProvider.id == agent.provider_id).first()
-    if not provider_record:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    _memory_enabled = getattr(agent, "memory_enabled", True)
-
-    # Trigger memory reflection on most recent unprocessed prior session (background)
-    if _memory_enabled:
-        _prior_session = db.query(SessionModel).filter(
-            SessionModel.entity_type == "agent",
-            SessionModel.entity_id == agent.id,
-            SessionModel.user_id == int(current_user.user_id),
-            SessionModel.memory_processed == False,
-            SessionModel.id != int(request.session_id),
-        ).order_by(SessionModel.updated_at.desc()).first()
-        if _prior_session:
-            asyncio.create_task(_reflect_and_store_sqlite(
-                agent.id, provider_record, agent.model_id, _prior_session.id, int(current_user.user_id)
-            ))
-
-    api_key = decrypt_api_key(provider_record.api_key) if provider_record.api_key else None
-    config = json.loads(provider_record.config_json) if provider_record.config_json else None
-    llm = create_provider_from_config(
-        provider_type=provider_record.provider_type,
-        api_key=api_key,
-        base_url=provider_record.base_url,
-        model_id=agent.model_id or provider_record.model_id or "gpt-4o",
-        config=config,
+    agent, provider_record, llm, system_prompt, tools, mcp_server_configs = _resolve_agent_chat_context(
+        session, request, db, current_user, _edit_target_early, past_messages,
     )
-
-    # Inject long-term memories into the system prompt
-    _agent_memories = db.query(AgentMemory).filter(
-        AgentMemory.agent_id == agent.id,
-        AgentMemory.user_id == int(current_user.user_id),
-    ).order_by(AgentMemory.created_at.desc()).limit(_MEMORY_CAP).all() if _memory_enabled else []
-
     _edit_target = _edit_target_early
-    _sandbox_active = getattr(agent, "sandbox_enabled", False) and getattr(agent, "sandbox_container_id", None)
-    _skills_injection = ""
-    if agent.skill_ids_json and _agent_supports_skills(provider_record, agent.model_id):
-        try:
-            _skill_ids = json.loads(agent.skill_ids_json)
-        except (json.JSONDecodeError, TypeError):
-            _skill_ids = []
-        if _skill_ids:
-            _skills = db.query(Skill).filter(
-                Skill.id.in_(_skill_ids),
-                Skill.user_id == int(current_user.user_id),
-                Skill.is_active == True,
-            ).all()
-            _skills_injection = _build_skills_injection(_skills)
-    _vault_injection = ""
-    if agent.vault_file_ids_json:
-        try:
-            _vault_ids = json.loads(agent.vault_file_ids_json)
-        except (json.JSONDecodeError, TypeError):
-            _vault_ids = []
-        if _vault_ids:
-            _vault_files = db.query(VaultFile).filter(
-                VaultFile.id.in_(_vault_ids),
-                VaultFile.user_id == int(current_user.user_id),
-            ).all()
-            _vault_injection = _build_vault_injection(_vault_files)
-    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "") + _build_artifact_context(past_messages) + _skills_injection + _vault_injection
-    tools = _build_tools_for_llm(agent, db)
-    # Inject sandbox tools if agent has an active sandbox container
-    if _sandbox_active:
-        tools = list(tools or []) + SANDBOX_TOOL_SCHEMAS
-    mcp_server_configs = _load_mcp_server_configs(agent, db)
-    # schedule_async_check only makes sense when there's an MCP server to poll
-    if mcp_server_configs:
-        tools = list(tools or []) + [SCHEDULE_ASYNC_CHECK_TOOL_SCHEMA]
 
-    if request.stream:
+    if request.stream or _return_raw_generator:
         if mcp_server_configs:
-            return EventSourceResponse(
-                _stream_response_with_mcp(llm, messages, system_prompt, db, int(request.session_id), agent.id, provider_record, start_time, tools, mcp_server_configs, kb_meta=_kb_meta, agent=agent, edit_target=_edit_target, past_messages=past_messages),
-            )
-        return EventSourceResponse(
-            _stream_response(llm, messages, system_prompt, db, int(request.session_id), agent.id, provider_record, start_time, tools, kb_meta=_kb_meta, agent=agent, edit_target=_edit_target, past_messages=past_messages),
-        )
+            _gen = _stream_response_with_mcp(llm, messages, system_prompt, db, int(request.session_id), agent.id, provider_record, start_time, tools, mcp_server_configs, kb_meta=_kb_meta, agent=agent, edit_target=_edit_target, past_messages=past_messages)
+        else:
+            _gen = _stream_response(llm, messages, system_prompt, db, int(request.session_id), agent.id, provider_record, start_time, tools, kb_meta=_kb_meta, agent=agent, edit_target=_edit_target, past_messages=past_messages)
+        return _gen if _return_raw_generator else EventSourceResponse(_gen)
     else:
         response = await llm.chat(messages, system_prompt=system_prompt, tools=tools)
         latency_ms = int((time.time() - start_time) * 1000)
@@ -4566,7 +4590,92 @@ async def _build_llm_messages_from_history_mongo(past_messages: list, mongo_db, 
     return messages
 
 
-async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time: float):
+async def _resolve_agent_chat_context_mongo(session, request: ChatRequest, mongo_db, current_user: TokenData, edit_target_mongo_early, past_messages: list):
+    """Mongo twin of _resolve_agent_chat_context — see its docstring."""
+    agent = await AgentCollection.find_by_id(mongo_db, str(session["entity_id"]))
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    provider_id = agent.get("provider_id")
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="Agent has no provider configured")
+
+    provider_record = await LLMProviderCollection.find_by_id(mongo_db, str(provider_id))
+    if not provider_record:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    _agent_id_str = str(agent["_id"])
+    _user_id_str = current_user.user_id
+    _memory_enabled_mongo = agent.get("memory_enabled", True)
+
+    # Trigger memory reflection on most recent unprocessed prior session (background)
+    if _memory_enabled_mongo:
+        _all_prior = await SessionCollection.find_by_user(
+            mongo_db, _user_id_str, entity_type="agent", entity_id=_agent_id_str
+        )
+        _prior_unprocessed = [
+            s for s in _all_prior
+            if not s.get("memory_processed", False) and str(s["_id"]) != request.session_id
+        ]
+        if _prior_unprocessed:
+            _prior_s = sorted(_prior_unprocessed, key=lambda s: s.get("updated_at") or s["created_at"], reverse=True)[0]
+            asyncio.create_task(_reflect_and_store_mongo(
+                _agent_id_str, provider_record, agent.get("model_id"), str(_prior_s["_id"]), _user_id_str
+            ))
+
+    # Inject long-term memories into the system prompt
+    _agent_memories_mongo = await AgentMemoryCollection.find_by_agent_user(mongo_db, _agent_id_str, _user_id_str) if _memory_enabled_mongo else []
+
+    llm = _create_llm_for_mongo_provider(provider_record, agent.get("model_id") or provider_record.get("model_id") or "gpt-4o")
+    _sandbox_active_mongo = agent.get("sandbox_enabled") and agent.get("sandbox_container_id")
+    _skills_injection_mongo = ""
+    if agent.get("skill_ids_json") and _agent_supports_skills(provider_record, agent.get("model_id")):
+        _skill_ids_raw = agent.get("skill_ids_json")
+        if isinstance(_skill_ids_raw, str):
+            try:
+                _skill_ids_mongo = json.loads(_skill_ids_raw)
+            except (json.JSONDecodeError, TypeError):
+                _skill_ids_mongo = []
+        elif isinstance(_skill_ids_raw, list):
+            _skill_ids_mongo = _skill_ids_raw
+        else:
+            _skill_ids_mongo = []
+        _skills_mongo = []
+        for _sid in _skill_ids_mongo:
+            _sk = await SkillCollection.find_by_id(mongo_db, str(_sid))
+            if _sk and _sk.get("is_active", True) and _sk.get("user_id") == _user_id_str:
+                _skills_mongo.append(_sk)
+        _skills_injection_mongo = _build_skills_injection_dicts(_skills_mongo)
+    _vault_injection_mongo = ""
+    if agent.get("vault_file_ids_json"):
+        _vault_ids_raw = agent.get("vault_file_ids_json")
+        if isinstance(_vault_ids_raw, str):
+            try:
+                _vault_ids_mongo = json.loads(_vault_ids_raw)
+            except (json.JSONDecodeError, TypeError):
+                _vault_ids_mongo = []
+        elif isinstance(_vault_ids_raw, list):
+            _vault_ids_mongo = _vault_ids_raw
+        else:
+            _vault_ids_mongo = []
+        if _vault_ids_mongo:
+            _vault_files_mongo = await VaultFileCollection.find_by_ids(mongo_db, [str(v) for v in _vault_ids_mongo], _user_id_str)
+            _vault_injection_mongo = _build_vault_injection_dicts(_vault_files_mongo)
+    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active_mongo else "") + _build_artifact_context(past_messages) + _skills_injection_mongo + _vault_injection_mongo
+    tools = await _build_tools_for_llm_mongo(agent, mongo_db)
+    # Inject sandbox tools if agent has an active sandbox container
+    if _sandbox_active_mongo:
+        tools = list(tools or []) + SANDBOX_TOOL_SCHEMAS
+    mcp_server_configs = await _load_mcp_server_configs_mongo(agent, mongo_db)
+    # schedule_async_check only makes sense when there's an MCP server to poll
+    if mcp_server_configs:
+        tools = list(tools or []) + [SCHEDULE_ASYNC_CHECK_TOOL_SCHEMA]
+
+    return agent, provider_record, llm, system_prompt, tools, mcp_server_configs
+
+
+async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time: float, _return_raw_generator: bool = False):
+    """See _chat_sqlite's docstring for _return_raw_generator."""
     mongo_db = get_database()
 
     session = await SessionCollection.find_by_id(mongo_db, request.session_id)
@@ -4683,94 +4792,17 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
             raise HTTPException(status_code=400, detail=f"Unknown team mode: {mode}")
 
     # --- Agent chat (MongoDB) ---
-    agent = await AgentCollection.find_by_id(mongo_db, str(session["entity_id"]))
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    provider_id = agent.get("provider_id")
-    if not provider_id:
-        raise HTTPException(status_code=400, detail="Agent has no provider configured")
-
-    provider_record = await LLMProviderCollection.find_by_id(mongo_db, str(provider_id))
-    if not provider_record:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    _agent_id_str = str(agent["_id"])
-    _user_id_str = current_user.user_id
-    _memory_enabled_mongo = agent.get("memory_enabled", True)
-
-    # Trigger memory reflection on most recent unprocessed prior session (background)
-    if _memory_enabled_mongo:
-        _all_prior = await SessionCollection.find_by_user(
-            mongo_db, _user_id_str, entity_type="agent", entity_id=_agent_id_str
-        )
-        _prior_unprocessed = [
-            s for s in _all_prior
-            if not s.get("memory_processed", False) and str(s["_id"]) != request.session_id
-        ]
-        if _prior_unprocessed:
-            _prior_s = sorted(_prior_unprocessed, key=lambda s: s.get("updated_at") or s["created_at"], reverse=True)[0]
-            asyncio.create_task(_reflect_and_store_mongo(
-                _agent_id_str, provider_record, agent.get("model_id"), str(_prior_s["_id"]), _user_id_str
-            ))
-
-    # Inject long-term memories into the system prompt
-    _agent_memories_mongo = await AgentMemoryCollection.find_by_agent_user(mongo_db, _agent_id_str, _user_id_str) if _memory_enabled_mongo else []
-
-    llm = _create_llm_for_mongo_provider(provider_record, agent.get("model_id") or provider_record.get("model_id") or "gpt-4o")
+    agent, provider_record, llm, system_prompt, tools, mcp_server_configs = await _resolve_agent_chat_context_mongo(
+        session, request, mongo_db, current_user, _edit_target_mongo_early, past_messages,
+    )
     _edit_target_mongo = _edit_target_mongo_early
-    _sandbox_active_mongo = agent.get("sandbox_enabled") and agent.get("sandbox_container_id")
-    _skills_injection_mongo = ""
-    if agent.get("skill_ids_json") and _agent_supports_skills(provider_record, agent.get("model_id")):
-        _skill_ids_raw = agent.get("skill_ids_json")
-        if isinstance(_skill_ids_raw, str):
-            try:
-                _skill_ids_mongo = json.loads(_skill_ids_raw)
-            except (json.JSONDecodeError, TypeError):
-                _skill_ids_mongo = []
-        elif isinstance(_skill_ids_raw, list):
-            _skill_ids_mongo = _skill_ids_raw
-        else:
-            _skill_ids_mongo = []
-        _skills_mongo = []
-        for _sid in _skill_ids_mongo:
-            _sk = await SkillCollection.find_by_id(mongo_db, str(_sid))
-            if _sk and _sk.get("is_active", True) and _sk.get("user_id") == _user_id_str:
-                _skills_mongo.append(_sk)
-        _skills_injection_mongo = _build_skills_injection_dicts(_skills_mongo)
-    _vault_injection_mongo = ""
-    if agent.get("vault_file_ids_json"):
-        _vault_ids_raw = agent.get("vault_file_ids_json")
-        if isinstance(_vault_ids_raw, str):
-            try:
-                _vault_ids_mongo = json.loads(_vault_ids_raw)
-            except (json.JSONDecodeError, TypeError):
-                _vault_ids_mongo = []
-        elif isinstance(_vault_ids_raw, list):
-            _vault_ids_mongo = _vault_ids_raw
-        else:
-            _vault_ids_mongo = []
-        if _vault_ids_mongo:
-            _vault_files_mongo = await VaultFileCollection.find_by_ids(mongo_db, [str(v) for v in _vault_ids_mongo], _user_id_str)
-            _vault_injection_mongo = _build_vault_injection_dicts(_vault_files_mongo)
-    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active_mongo else "") + _build_artifact_context(past_messages) + _skills_injection_mongo + _vault_injection_mongo
-    tools = await _build_tools_for_llm_mongo(agent, mongo_db)
-    # Inject sandbox tools if agent has an active sandbox container
-    if _sandbox_active_mongo:
-        tools = list(tools or []) + SANDBOX_TOOL_SCHEMAS
-    mcp_server_configs = await _load_mcp_server_configs_mongo(agent, mongo_db)
-    # schedule_async_check only makes sense when there's an MCP server to poll
-    if mcp_server_configs:
-        tools = list(tools or []) + [SCHEDULE_ASYNC_CHECK_TOOL_SCHEMA]
 
-    if request.stream:
+    if request.stream or _return_raw_generator:
         if mcp_server_configs:
-            return EventSourceResponse(
-                _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db, request.session_id, str(agent["_id"]), provider_record, start_time, tools, mcp_server_configs, kb_meta=_kb_meta_mongo, agent=agent, edit_target=_edit_target_mongo, past_messages=past_messages),
-            )
-        return EventSourceResponse(
-            _stream_response_mongo(llm, messages, system_prompt, mongo_db, request.session_id, str(agent["_id"]), provider_record, start_time, tools, kb_meta=_kb_meta_mongo, agent=agent, edit_target=_edit_target_mongo, past_messages=past_messages),
-        )
+            _gen = _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db, request.session_id, str(agent["_id"]), provider_record, start_time, tools, mcp_server_configs, kb_meta=_kb_meta_mongo, agent=agent, edit_target=_edit_target_mongo, past_messages=past_messages)
+        else:
+            _gen = _stream_response_mongo(llm, messages, system_prompt, mongo_db, request.session_id, str(agent["_id"]), provider_record, start_time, tools, kb_meta=_kb_meta_mongo, agent=agent, edit_target=_edit_target_mongo, past_messages=past_messages)
+        return _gen if _return_raw_generator else EventSourceResponse(_gen)
     else:
         response = await llm.chat(messages, system_prompt=system_prompt, tools=tools)
         latency_ms = int((time.time() - start_time) * 1000)

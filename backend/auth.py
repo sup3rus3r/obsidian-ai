@@ -38,6 +38,7 @@ class Token(BaseModel):
 class APIClientData(BaseModel):
     client_id       : str
     client_name     : str
+    agent_id        : Optional[str] = None
     token_type      : str = "api_client"
 
 
@@ -153,11 +154,13 @@ async def get_api_client(
         client_name = client.get("name")
         client_id = client.get("client_id")
         is_active = client.get("is_active", True)
+        agent_id = client.get("agent_id")
     else:
         hashed_secret = client.hashed_secret
         client_name = client.name
         client_id = client.client_id
         is_active = client.is_active
+        agent_id = str(client.agent_id) if client.agent_id is not None else None
 
     if not is_active:
         raise HTTPException(
@@ -174,6 +177,7 @@ async def get_api_client(
     return APIClientData(
         client_id=client_id,
         client_name=client_name,
+        agent_id=agent_id,
         token_type="api_client",
     )
 

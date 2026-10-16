@@ -43,11 +43,13 @@ class LoginResponse(BaseModel):
 
 class APIClientCreate(BaseModel):
     name: str
+    agent_id: Optional[str] = None  # when set, scopes this key to one agent
 
 class APIClientResponse(BaseModel):
     id: str
     name: str
     client_id: str
+    agent_id: Optional[str] = None
     is_active: bool
     created_at: datetime
 
@@ -59,6 +61,7 @@ class APIClientCreateResponse(BaseModel):
     id: str
     name: str
     client_id: str
+    agent_id: Optional[str] = None
     client_secret: str  # Only shown once at creation
     is_active: bool
     created_at: datetime
@@ -404,6 +407,22 @@ class ChatRequest(BaseModel):
     message: str
     stream: bool = True
     attachments: Optional[list[FileAttachmentInfo]] = None
+
+
+# ============================================================================
+# Public Agent API Schemas
+# ============================================================================
+
+class PublicAgentChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None  # omit to start a new conversation
+    stream: bool = False
+
+
+class PublicAgentChatResponse(BaseModel):
+    conversation_id: str
+    message: str
+    tool_calls: list[dict] = []
 
 
 # ============================================================================

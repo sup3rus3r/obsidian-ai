@@ -430,6 +430,25 @@ export interface CreateToolRequest {
   requires_confirmation?: boolean
 }
 
+export interface AgentApiKey {
+  id: string
+  name: string
+  client_id: string
+  agent_id?: string | null
+  is_active: boolean
+  created_at: string
+}
+
+export interface AgentApiKeyCreateResponse extends AgentApiKey {
+  client_secret: string
+  message: string
+}
+
+export interface TunnelStatus {
+  enabled: boolean
+  public_url: string | null
+}
+
 export interface UpdateToolRequest {
   name?: string
   description?: string

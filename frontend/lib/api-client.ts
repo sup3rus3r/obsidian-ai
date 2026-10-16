@@ -9,6 +9,9 @@ import type {
   Message,
   ToolDefinition,
   MCPServer,
+  AgentApiKey,
+  AgentApiKeyCreateResponse,
+  TunnelStatus,
   CreateProviderRequest,
   CreateAgentRequest,
   UpdateAgentRequest,
@@ -512,6 +515,29 @@ class ApiClient {
     await this.request<void>(AppRoutes.DeleteTool(id), {
       method: "DELETE",
     })
+  }
+
+  // ============= Agent API Access =============
+  async listAgentApiClients(agentId: string): Promise<AgentApiKey[]> {
+    const result = await this.request<ListResponse<AgentApiKey>>(AppRoutes.AgentApiClients(agentId))
+    return result.clients || []
+  }
+
+  async createAgentApiClient(agentId: string, name: string): Promise<AgentApiKeyCreateResponse> {
+    return this.request<AgentApiKeyCreateResponse>(AppRoutes.AgentApiClients(agentId), {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    })
+  }
+
+  async revokeAgentApiClient(agentId: string, clientId: string): Promise<void> {
+    await this.request<void>(AppRoutes.AgentApiClientRevoke(agentId, clientId), {
+      method: "DELETE",
+    })
+  }
+
+  async getTunnelStatus(): Promise<TunnelStatus> {
+    return this.request<TunnelStatus>(AppRoutes.TunnelStatus())
   }
 
   // ============= MCP Servers =============

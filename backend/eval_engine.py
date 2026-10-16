@@ -106,18 +106,26 @@ async def run_eval_suite_sqlite(
     suite_id: int,
     agent_id: int,
     run_id: int,
-    db,
     override_system_prompt: Optional[str] = None,
     version_id: Optional[int] = None,
 ):
-    """Background task: execute all test cases and update EvalRun with results."""
+    """Background task: execute all test cases and update EvalRun with results.
+
+    Opens its own DB session rather than reusing the triggering request's —
+    this always runs as a detached asyncio task (via asyncio.create_task) that
+    outlives the HTTP request, so a request-scoped session (FastAPI's
+    Depends(get_db)) would already be closed by the time this runs, which
+    previously caused eval runs to hang indefinitely on every db call.
+    """
     from models import EvalSuite, EvalRun, Agent, LLMProvider, AgentVersion
+    from database import SessionLocal
 
-    run = db.query(EvalRun).filter(EvalRun.id == run_id).first()
-    if not run:
-        return
-
+    db = SessionLocal()
     try:
+        run = db.query(EvalRun).filter(EvalRun.id == run_id).first()
+        if not run:
+            return
+
         run.status = "running"
         db.commit()
 
@@ -225,6 +233,8 @@ async def run_eval_suite_sqlite(
             db.commit()
         except Exception:
             pass
+    finally:
+        db.close()
 
 
 async def run_eval_suite_mongo(

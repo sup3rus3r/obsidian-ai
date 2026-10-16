@@ -11,6 +11,7 @@ import { MCPServersSelector } from "./mcp-servers-selector"
 import { ProviderDialog } from "../dialogs/provider-dialog"
 import { AgentDialog } from "../dialogs/agent-dialog"
 import { TeamDialog } from "../dialogs/team-dialog"
+import { AgentApiDialog } from "../dialogs/agent-api-dialog"
 import { ToolDialog } from "@/components/dialogs/tool-dialog"
 import { MCPServerDialog } from "@/components/dialogs/mcp-server-dialog"
 import { usePlaygroundStore } from "@/stores/playground-store"
@@ -36,6 +37,8 @@ export function Sidebar() {
   const [toolDialogOpen, setToolDialogOpen] = useState(false)
   const [mcpServerDialogOpen, setMCPServerDialogOpen] = useState(false)
   const [editingMCPServer, setEditingMCPServer] = useState<MCPServer | null>(null)
+  const [apiAccessDialogOpen, setApiAccessDialogOpen] = useState(false)
+  const [apiAccessAgent, setApiAccessAgent] = useState<{ id: string; name: string } | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
   const providerImportInputRef = useRef<HTMLInputElement>(null)
 
@@ -186,6 +189,7 @@ export function Sidebar() {
               onEditTeam={permissions.create_teams ? handleEditTeam : undefined}
               onExportAgent={handleExportAgent}
               onImportAgent={permissions.create_agents ? handleImportAgent : undefined}
+              onAgentApiAccess={(id, name) => { setApiAccessAgent({ id, name }); setApiAccessDialogOpen(true) }}
               hideAddAgent={!permissions.create_agents}
               hideAddTeam={!permissions.create_teams}
               hideEditAgent={!permissions.create_agents}
@@ -250,6 +254,15 @@ export function Sidebar() {
           if (!open) setEditingMCPServer(null)
         }}
         server={editingMCPServer}
+      />
+      <AgentApiDialog
+        open={apiAccessDialogOpen}
+        onOpenChange={(open) => {
+          setApiAccessDialogOpen(open)
+          if (!open) setApiAccessAgent(null)
+        }}
+        agentId={apiAccessAgent?.id ?? null}
+        agentName={apiAccessAgent?.name ?? ""}
       />
     </>
   )

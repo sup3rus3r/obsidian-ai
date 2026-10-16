@@ -461,18 +461,22 @@ async def create_api_client(
         mongo_db = get_database()
         client_doc = {
             "name": client_data.name, "client_id": client_id, "hashed_secret": hashed_secret,
-            "created_by": current_user.user_id, "is_active": True, "created_at": datetime.now(timezone.utc),
+            "created_by": current_user.user_id, "agent_id": client_data.agent_id,
+            "is_active": True, "created_at": datetime.now(timezone.utc),
         }
         created_client = await APIClientCollection.create(mongo_db, client_doc)
         return APIClientCreateResponse(
             id=str(created_client["_id"]), name=created_client["name"],
-            client_id=created_client["client_id"], client_secret=client_secret,
+            client_id=created_client["client_id"], agent_id=created_client.get("agent_id"),
+            client_secret=client_secret,
             is_active=True, created_at=created_client["created_at"],
         )
 
     db_client = APIClient(
         name=client_data.name, client_id=client_id, hashed_secret=hashed_secret,
-        created_by=int(current_user.user_id), is_active=True,
+        created_by=int(current_user.user_id),
+        agent_id=int(client_data.agent_id) if client_data.agent_id else None,
+        is_active=True,
     )
     db.add(db_client)
     db.commit()
@@ -480,6 +484,7 @@ async def create_api_client(
 
     return APIClientCreateResponse(
         id=str(db_client.id), name=db_client.name, client_id=db_client.client_id,
+        agent_id=str(db_client.agent_id) if db_client.agent_id else None,
         client_secret=client_secret, is_active=db_client.is_active, created_at=db_client.created_at,
     )
 
@@ -495,6 +500,7 @@ async def list_api_clients(
         return APIClientListResponse(clients=[
             APIClientResponse(
                 id=str(c["_id"]), name=c["name"], client_id=c["client_id"],
+                agent_id=c.get("agent_id"),
                 is_active=c.get("is_active", True), created_at=c["created_at"],
             ) for c in clients
         ])
@@ -503,6 +509,7 @@ async def list_api_clients(
     return APIClientListResponse(clients=[
         APIClientResponse(
             id=str(c.id), name=c.name, client_id=c.client_id,
+            agent_id=str(c.agent_id) if c.agent_id else None,
             is_active=c.is_active, created_at=c.created_at,
         ) for c in clients
     ])
