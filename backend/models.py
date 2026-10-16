@@ -533,6 +533,38 @@ class OptimizationRun(Base):
     completed_at        = Column(DateTime(timezone=True), nullable=True)
 
 
+class AuditRun(Base):
+    """A behavioral consistency audit run for an agent — black-box probe
+    testing (paraphrase/order/adversarial/repeat/CoT-alignment), not
+    interpretability. See auditor_engine.py."""
+    __tablename__ = "audit_runs"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    agent_id            = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id             = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status              = Column(String, default="pending")
+    # pending | generating_probes | running_probes | scoring | completed | failed | cancelled
+
+    seed_prompt         = Column(Text, nullable=False)
+    probe_categories_json = Column(Text, nullable=False)   # JSON list, e.g. ["paraphrase","order","adversarial","repeat","cot_alignment"]
+    probes_per_category = Column(Integer, default=5)
+    judge_agent_id      = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+
+    agent_config_snapshot = Column(Text, nullable=True)    # JSON snapshot of agent config audited
+    # JSON array: [{category, original_prompt, variant_prompt, original_response,
+    #               variant_response, consistency_score, passed, disagreement_type,
+    #               reasoning, cot_text, cot_alignment_flag}]
+    results_json        = Column(Text, nullable=True)
+    score                = Column(Float, nullable=True)     # overall 0.0–1.0
+    category_scores_json = Column(Text, nullable=True)      # JSON: {"paraphrase": 0.8, ...}
+
+    triggered_optimization_run_id = Column(Integer, ForeignKey("optimization_runs.id", ondelete="SET NULL"), nullable=True)
+
+    error               = Column(Text, nullable=True)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at        = Column(DateTime(timezone=True), nullable=True)
+
+
 class AppSetting(Base):
     """Global platform settings stored as key/value pairs.
 

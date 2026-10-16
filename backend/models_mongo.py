@@ -1594,6 +1594,61 @@ class OptimizationRunCollection:
         return result.deleted_count
 
 
+class AuditRunCollection:
+    """Collection helper for behavioral consistency audit runs in MongoDB.
+    Mirrors OptimizationRunCollection's shape — see auditor_engine.py."""
+    collection_name = "audit_runs"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("agent_id")
+        await collection.create_index("user_id")
+        await collection.create_index("status")
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        data.setdefault("status", "pending")
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def find_by_id(cls, db, run_id: str) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        try:
+            return await collection.find_one({"_id": ObjectId(run_id)})
+        except Exception:
+            return None
+
+    @classmethod
+    async def find_by_agent(cls, db, agent_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"agent_id": agent_id}).sort("created_at", -1)
+        return await cursor.to_list(length=50)
+
+    @classmethod
+    async def update_status(cls, db, run_id: str, updates: dict) -> dict | None:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        result = await collection.find_one_and_update(
+            {"_id": ObjectId(run_id)},
+            {"$set": updates},
+            return_document=True,
+        )
+        return result
+
+    @classmethod
+    async def delete(cls, db, run_id: str) -> bool:
+        collection = db[cls.collection_name]
+        from bson import ObjectId
+        result = await collection.delete_one({"_id": ObjectId(run_id)})
+        return result.deleted_count > 0
+
+
 class AppSettingCollection:
     """Global key/value platform settings stored in MongoDB."""
     collection_name = "app_settings"

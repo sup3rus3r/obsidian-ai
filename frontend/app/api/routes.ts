@@ -191,6 +191,14 @@ export const AppRoutes = {
     RejectOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}/reject`,
     DeleteOptimizationRun   : (runId: string) => `/api/optimizer/runs/${runId}`,
 
+    // Behavioral Consistency Auditor (phase 1 of model auditing)
+    TriggerAudit             : () => "/api/auditor/trigger",
+    ListAgentAuditRuns       : (agentId: string) => `/api/auditor/agents/${agentId}`,
+    GetAuditRun              : (runId: string) => `/api/auditor/runs/${runId}`,
+    DeleteAuditRun           : (runId: string) => `/api/auditor/runs/${runId}`,
+    CancelAuditRun           : (runId: string) => `/api/auditor/runs/${runId}/cancel`,
+    TriggerOptimizationFromAudit: (runId: string) => `/api/auditor/runs/${runId}/trigger-optimization`,
+
     // Platform Settings
     GetOptimizerSettings    : () => "/api/settings/optimizer",
     UpdateOptimizerSettings : () => "/api/settings/optimizer",

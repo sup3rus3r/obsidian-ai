@@ -20,6 +20,7 @@ export const Routes = {
   SESSIONS    : '/sessions',
   KNOWLEDGE   : '/knowledge',
   EVALS           : '/evals',
+  AUDITS          : '/audits',
   OBSERVABILITY   : '/observability',
   SETTINGS        : '/settings',
   CHANNELS        : '/channels',
@@ -72,6 +73,12 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Evals',
     allowedRoles: ['admin', 'user'],
     description: 'Eval suites for testing agent performance',
+  },
+  {
+    path: Routes.AUDITS,
+    label: 'Audits',
+    allowedRoles: ['admin', 'user'],
+    description: 'Behavioral consistency audits for agents',
   },
   {
     path: Routes.OBSERVABILITY,

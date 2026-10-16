@@ -48,6 +48,8 @@ import type {
   OptimizationRun,
   TriggerOptimizationRequest,
   RejectOptimizationRequest,
+  AuditRun,
+  TriggerAuditRequest,
   SessionTrace,
   WorkflowRunTrace,
   SandboxStatus,
@@ -915,6 +917,35 @@ class ApiClient {
 
   async deleteOptimizationRun(runId: string): Promise<void> {
     await this.request<void>(AppRoutes.DeleteOptimizationRun(runId), { method: "DELETE" })
+  }
+
+  // ============= Behavioral Consistency Auditor =============
+  async triggerAudit(body: TriggerAuditRequest): Promise<AuditRun> {
+    return this.request<AuditRun>(AppRoutes.TriggerAudit(), {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+  }
+
+  async listAgentAuditRuns(agentId: string): Promise<AuditRun[]> {
+    const result = await this.request<{ runs: AuditRun[] }>(AppRoutes.ListAgentAuditRuns(agentId))
+    return result.runs || []
+  }
+
+  async getAuditRun(runId: string): Promise<AuditRun> {
+    return this.request<AuditRun>(AppRoutes.GetAuditRun(runId))
+  }
+
+  async deleteAuditRun(runId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteAuditRun(runId), { method: "DELETE" })
+  }
+
+  async cancelAuditRun(runId: string): Promise<AuditRun> {
+    return this.request<AuditRun>(AppRoutes.CancelAuditRun(runId), { method: "POST" })
+  }
+
+  async triggerOptimizationFromAudit(runId: string): Promise<OptimizationRun> {
+    return this.request<OptimizationRun>(AppRoutes.TriggerOptimizationFromAudit(runId), { method: "POST" })
   }
 
   // ============= Traces =============

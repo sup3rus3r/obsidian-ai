@@ -835,12 +835,68 @@ export interface OptimizationRun {
 export interface TriggerOptimizationRequest {
   agent_id: string
   eval_suite_id?: string
+  audit_run_id?: string
   min_traces?: number
   max_traces?: number
 }
 
 export interface RejectOptimizationRequest {
   reason?: string
+}
+
+// ─── Behavioral Consistency Auditor (phase 1 of model auditing) ────────────
+// Black-box probe testing only — NOT interpretability. See backend's
+// auditor_engine.py / models.py AuditRun docstring for the full rationale.
+
+export type AuditProbeCategory = "paraphrase" | "order" | "adversarial" | "repeat" | "cot_alignment"
+
+export type AuditStatus =
+  | "pending"
+  | "generating_probes"
+  | "running_probes"
+  | "scoring"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export interface AuditProbeResult {
+  category: AuditProbeCategory
+  original_prompt: string
+  variant_prompt: string
+  original_response: string
+  variant_response: string
+  consistency_score: number
+  passed: boolean
+  disagreement_type: "none" | "conclusion" | "action" | "tone_only" | null
+  reasoning: string | null
+  cot_text: string | null
+  cot_alignment_flag: boolean | null
+}
+
+export interface AuditRun {
+  id: number | string
+  agent_id: number | string
+  user_id: number | string
+  status: AuditStatus
+  seed_prompt: string
+  probe_categories: AuditProbeCategory[]
+  probes_per_category: number
+  judge_agent_id?: number | string | null
+  results: AuditProbeResult[] | null
+  score: number | null
+  category_scores: Record<string, number> | null
+  triggered_optimization_run_id: number | string | null
+  error: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+export interface TriggerAuditRequest {
+  agent_id: string
+  seed_prompt: string
+  probe_categories?: AuditProbeCategory[]
+  probes_per_category?: number
+  judge_agent_id?: string
 }
 
 // ─── Analytics ──────────────────────────────────────────────────────────────

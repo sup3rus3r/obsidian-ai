@@ -1108,11 +1108,63 @@ class OptimizationRunListResponse(BaseModel):
 class TriggerOptimizationRequest(BaseModel):
     agent_id: Union[int, str]
     eval_suite_id: Optional[Union[int, str]] = None   # if set, runs eval to validate the proposal
+    audit_run_id: Optional[Union[int, str]] = None    # if set, feeds audit findings as extra failure-signal context
     min_traces: int = 5
     max_traces: int = 50
 
 class RejectOptimizationRequest(BaseModel):
     reason: Optional[str] = None
+
+
+# ============================================================================
+# Behavioral Consistency Auditor Schemas
+# ============================================================================
+# Phase 1 of model auditing: black-box probe testing (paraphrase/order/
+# adversarial/repeat/CoT-alignment consistency), not interpretability.
+# See backend/auditor_engine.py.
+
+class AuditProbeResult(BaseModel):
+    category: str                        # paraphrase | order | adversarial | repeat | cot_alignment
+    original_prompt: str
+    variant_prompt: str
+    original_response: str
+    variant_response: str
+    consistency_score: float             # 0.0–1.0, from the judge LLM
+    passed: bool
+    disagreement_type: Optional[str] = None   # none | conclusion | action | tone_only
+    reasoning: Optional[str] = None
+    cot_text: Optional[str] = None            # only for cot_alignment probes
+    cot_alignment_flag: Optional[bool] = None # only for cot_alignment probes
+
+class AuditRunResponse(BaseModel):
+    id: Union[int, str]
+    agent_id: Union[int, str]
+    user_id: Union[int, str]
+    status: str                          # pending | generating_probes | running_probes | scoring | completed | failed
+    seed_prompt: str
+    probe_categories: list[str]
+    probes_per_category: int
+    judge_agent_id: Optional[Union[int, str]] = None
+    results: Optional[list[AuditProbeResult]] = None
+    score: Optional[float] = None
+    category_scores: Optional[dict[str, float]] = None
+    triggered_optimization_run_id: Optional[Union[int, str]] = None
+    error: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class AuditRunListResponse(BaseModel):
+    runs: list[AuditRunResponse]
+
+class TriggerAuditRequest(BaseModel):
+    agent_id: Union[int, str]
+    seed_prompt: str
+    probe_categories: list[str] = ["paraphrase", "order", "adversarial", "repeat", "cot_alignment"]
+    probes_per_category: int = 5
+    judge_agent_id: Optional[Union[int, str]] = None
 
 
 # ============================================================================

@@ -43,6 +43,7 @@ from routers.memory_router import router as memory_router
 from routers.traces_router import router as traces_router
 from routers.versions_router import router as versions_router
 from routers.eval_router import router as eval_router
+from routers.auditor_router import router as auditor_router
 from routers.optimizer_router import router as optimizer_router
 from routers.settings_router import router as settings_router
 from routers.sandbox_router import router as sandbox_router
@@ -612,6 +613,32 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Create audit_runs table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS audit_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    seed_prompt TEXT NOT NULL,
+                    probe_categories_json TEXT NOT NULL,
+                    probes_per_category INTEGER DEFAULT 5,
+                    judge_agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+                    agent_config_snapshot TEXT,
+                    results_json TEXT,
+                    score REAL,
+                    category_scores_json TEXT,
+                    triggered_optimization_run_id INTEGER REFERENCES optimization_runs(id) ON DELETE SET NULL,
+                    error TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
         # Create app_settings table if missing
         try:
             conn.execute(sqlalchemy.text("""
@@ -1139,6 +1166,7 @@ app.include_router(memory_router)
 app.include_router(traces_router)
 app.include_router(versions_router)
 app.include_router(eval_router)
+app.include_router(auditor_router)
 app.include_router(optimizer_router)
 app.include_router(settings_router)
 app.include_router(sandbox_router)

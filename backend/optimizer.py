@@ -176,6 +176,31 @@ def _build_eval_context_text(eval_runs: list[dict]) -> str:
     return "\n".join(parts)
 
 
+_AUDIT_FAILURE_THRESHOLD = 0.6  # matches auditor_engine.py's _CONSISTENCY_THRESHOLD
+
+
+def _build_audit_context_text(audit_results: list[dict]) -> str:
+    """Format a behavioral consistency audit's low-scoring probe results into
+    a readable block for the failure-analysis LLM — same shape/purpose as
+    _build_eval_context_text, for AuditRun.results_json entries (see
+    auditor_engine.py). Only probes below the consistency threshold are
+    included, since passing probes aren't failure signal."""
+    parts: list[str] = []
+    for r in audit_results:
+        if r.get("consistency_score", 1.0) >= _AUDIT_FAILURE_THRESHOLD:
+            continue
+        parts.append(f"=== Inconsistent response [{r.get('category', '?')}] (score={r.get('consistency_score')}) ===")
+        parts.append(f"Original prompt: {_truncate(r.get('original_prompt', ''), 300)}")
+        parts.append(f"  Original response: {_truncate(r.get('original_response', ''), 300)}")
+        parts.append(f"Variant prompt:  {_truncate(r.get('variant_prompt', ''), 300)}")
+        parts.append(f"  Variant response:  {_truncate(r.get('variant_response', ''), 300)}")
+        if r.get("reasoning"):
+            parts.append(f"  Judge reasoning: {_truncate(r.get('reasoning', ''), 300)}")
+        if r.get("cot_alignment_flag"):
+            parts.append(f"  CoT/action mismatch: {_truncate(r.get('reasoning', ''), 300)}")
+    return "\n".join(parts)
+
+
 def _create_provider_from_record(provider_record, agent_model_id: str | None = None):
     """Create an LLM provider from either a SQLAlchemy ORM object or a Mongo dict.
 
@@ -289,11 +314,13 @@ async def _run_optimization_sqlite(
     eval_suite_id: Optional[int],
     min_traces: int,
     max_traces: int,
+    audit_run_id: Optional[int] = None,
 ):
     """Full optimization pipeline for SQLite.  Runs as a background task."""
     from database import SessionLocal
     from models import Agent, Session as ChatSession, Message, OptimizationRun, LLMProvider
     from models import EvalRun as EvalRunModel
+    from models import AuditRun
     from eval_engine import run_eval_suite_sqlite
 
     db = SessionLocal()
@@ -352,8 +379,16 @@ async def _run_optimization_sqlite(
                 })
             eval_context_text = _build_eval_context_text(eval_runs_data)
 
-        # Require min_traces only when no eval data is available
-        if len(sessions) < min_traces and not eval_context_text:
+        # Fetch audit run results if an audit is selected (see auditor_engine.py)
+        audit_context_text = ""
+        if audit_run_id:
+            audit_run = db.query(AuditRun).filter(AuditRun.id == audit_run_id).first()
+            if audit_run and audit_run.results_json:
+                audit_results = json.loads(audit_run.results_json)
+                audit_context_text = _build_audit_context_text(audit_results)
+
+        # Require min_traces only when no eval/audit data is available
+        if len(sessions) < min_traces and not eval_context_text and not audit_context_text:
             _update(run_id, status="failed",
                     error_message=f"Not enough traces: found {len(sessions)}, need {min_traces}",
                     completed_at=datetime.now(timezone.utc))
@@ -381,6 +416,8 @@ async def _run_optimization_sqlite(
             analysis_parts.append(f"Conversation traces:\n{trace_text}")
         if eval_context_text:
             analysis_parts.append(f"Eval run results (use these as primary failure signal):\n{eval_context_text}")
+        if audit_context_text:
+            analysis_parts.append(f"Behavioral consistency audit findings (use these as failure signal — inconsistent responses to equivalent inputs):\n{audit_context_text}")
         analysis_user = "\n\n".join(analysis_parts)
         try:
             patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent.model_id)
@@ -523,12 +560,14 @@ async def _run_optimization_mongo(
     eval_suite_id: Optional[str],
     min_traces: int,
     max_traces: int,
+    audit_run_id: Optional[str] = None,
 ):
     """Full optimization pipeline for MongoDB. Runs as a background task."""
     from database_mongo import get_database
     from models_mongo import (
         AgentCollection, SessionCollection, MessageCollection,
         OptimizationRunCollection, LLMProviderCollection, EvalRunCollection,
+        AuditRunCollection,
     )
     from eval_engine import run_eval_suite_mongo
 
@@ -584,8 +623,16 @@ async def _run_optimization_mongo(
                 })
             eval_context_text = _build_eval_context_text(eval_runs_data)
 
-        # Require min_traces only when no eval data is available
-        if len(all_sessions) < min_traces and not eval_context_text:
+        # Fetch audit run results if an audit is selected (see auditor_engine.py)
+        audit_context_text = ""
+        if audit_run_id:
+            audit_run = await AuditRunCollection.find_by_id(mongo_db, audit_run_id)
+            if audit_run and audit_run.get("results_json"):
+                audit_results = json.loads(audit_run["results_json"])
+                audit_context_text = _build_audit_context_text(audit_results)
+
+        # Require min_traces only when no eval/audit data is available
+        if len(all_sessions) < min_traces and not eval_context_text and not audit_context_text:
             await _update(run_id, status="failed",
                           error_message=f"Not enough traces: found {len(all_sessions)}, need {min_traces}",
                           completed_at=datetime.now(timezone.utc))
@@ -613,6 +660,8 @@ async def _run_optimization_mongo(
             analysis_parts.append(f"Conversation traces:\n{trace_text}")
         if eval_context_text:
             analysis_parts.append(f"Eval run results (use these as primary failure signal):\n{eval_context_text}")
+        if audit_context_text:
+            analysis_parts.append(f"Behavioral consistency audit findings (use these as failure signal — inconsistent responses to equivalent inputs):\n{audit_context_text}")
         analysis_user = "\n\n".join(analysis_parts)
         try:
             patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent_model_id)
@@ -742,6 +791,7 @@ def start_optimization_sqlite(
     eval_suite_id: Optional[int],
     min_traces: int,
     max_traces: int,
+    audit_run_id: Optional[int] = None,
 ):
     """Fire-and-forget: schedule the SQLite pipeline as an asyncio task."""
     asyncio.create_task(_run_optimization_sqlite(
@@ -751,6 +801,7 @@ def start_optimization_sqlite(
         eval_suite_id=eval_suite_id,
         min_traces=min_traces,
         max_traces=max_traces,
+        audit_run_id=audit_run_id,
     ))
 
 
@@ -761,6 +812,7 @@ def start_optimization_mongo(
     eval_suite_id: Optional[str],
     min_traces: int,
     max_traces: int,
+    audit_run_id: Optional[str] = None,
 ):
     """Fire-and-forget: schedule the Mongo pipeline as an asyncio task."""
     asyncio.create_task(_run_optimization_mongo(
@@ -770,4 +822,5 @@ def start_optimization_mongo(
         eval_suite_id=eval_suite_id,
         min_traces=min_traces,
         max_traces=max_traces,
+        audit_run_id=audit_run_id,
     ))
