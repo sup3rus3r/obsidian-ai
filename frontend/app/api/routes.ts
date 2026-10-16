@@ -199,6 +199,15 @@ export const AppRoutes = {
     CancelAuditRun           : (runId: string) => `/api/auditor/runs/${runId}/cancel`,
     TriggerOptimizationFromAudit: (runId: string) => `/api/auditor/runs/${runId}/trigger-optimization`,
 
+    // Local Model Inspection (phase 2 of model auditing)
+    InspectorStatus           : () => "/api/inspector/status",
+    TriggerInspection         : () => "/api/inspector/trigger",
+    ListAgentInspectionRuns   : (agentId: string) => `/api/inspector/agents/${agentId}`,
+    GetInspectionRun          : (runId: string) => `/api/inspector/runs/${runId}`,
+    DeleteInspectionRun       : (runId: string) => `/api/inspector/runs/${runId}`,
+    CancelInspectionRun       : (runId: string) => `/api/inspector/runs/${runId}/cancel`,
+    TriggerOptimizationFromInspection: (runId: string) => `/api/inspector/runs/${runId}/trigger-optimization`,
+
     // Platform Settings
     GetOptimizerSettings    : () => "/api/settings/optimizer",
     UpdateOptimizerSettings : () => "/api/settings/optimizer",

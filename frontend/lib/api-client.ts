@@ -50,6 +50,9 @@ import type {
   RejectOptimizationRequest,
   AuditRun,
   TriggerAuditRequest,
+  InspectionRun,
+  TriggerInspectionRequest,
+  InspectorStatus,
   SessionTrace,
   WorkflowRunTrace,
   SandboxStatus,
@@ -946,6 +949,39 @@ class ApiClient {
 
   async triggerOptimizationFromAudit(runId: string): Promise<OptimizationRun> {
     return this.request<OptimizationRun>(AppRoutes.TriggerOptimizationFromAudit(runId), { method: "POST" })
+  }
+
+  // ============= Local Model Inspection =============
+  async getInspectorStatus(): Promise<InspectorStatus> {
+    return this.request<InspectorStatus>(AppRoutes.InspectorStatus())
+  }
+
+  async triggerInspection(body: TriggerInspectionRequest): Promise<InspectionRun> {
+    return this.request<InspectionRun>(AppRoutes.TriggerInspection(), {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+  }
+
+  async listAgentInspectionRuns(agentId: string): Promise<InspectionRun[]> {
+    const result = await this.request<{ runs: InspectionRun[] }>(AppRoutes.ListAgentInspectionRuns(agentId))
+    return result.runs || []
+  }
+
+  async getInspectionRun(runId: string): Promise<InspectionRun> {
+    return this.request<InspectionRun>(AppRoutes.GetInspectionRun(runId))
+  }
+
+  async deleteInspectionRun(runId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteInspectionRun(runId), { method: "DELETE" })
+  }
+
+  async cancelInspectionRun(runId: string): Promise<InspectionRun> {
+    return this.request<InspectionRun>(AppRoutes.CancelInspectionRun(runId), { method: "POST" })
+  }
+
+  async triggerOptimizationFromInspection(runId: string): Promise<OptimizationRun> {
+    return this.request<OptimizationRun>(AppRoutes.TriggerOptimizationFromInspection(runId), { method: "POST" })
   }
 
   // ============= Traces =============

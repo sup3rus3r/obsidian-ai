@@ -133,6 +133,10 @@ async def trigger_optimization(
             from models_mongo import AuditRunCollection
             await AuditRunCollection.update_status(mongo_db, str(body.audit_run_id), {"triggered_optimization_run_id": run_id})
 
+        if body.inspection_run_id:
+            from models_mongo import InspectionRunCollection
+            await InspectionRunCollection.update_status(mongo_db, str(body.inspection_run_id), {"triggered_optimization_run_id": run_id})
+
         start_optimization_mongo(
             run_id=run_id,
             agent_id=str(body.agent_id),
@@ -141,6 +145,7 @@ async def trigger_optimization(
             min_traces=body.min_traces,
             max_traces=body.max_traces,
             audit_run_id=str(body.audit_run_id) if body.audit_run_id else None,
+            inspection_run_id=str(body.inspection_run_id) if body.inspection_run_id else None,
         )
         return _doc_to_response(doc)
 
@@ -170,6 +175,13 @@ async def trigger_optimization(
             audit_run.triggered_optimization_run_id = run.id
             db.commit()
 
+    if body.inspection_run_id:
+        from models import InspectionRun
+        inspection_run = db.query(InspectionRun).filter(InspectionRun.id == int(body.inspection_run_id)).first()
+        if inspection_run:
+            inspection_run.triggered_optimization_run_id = run.id
+            db.commit()
+
     start_optimization_sqlite(
         run_id=run.id,
         agent_id=int(body.agent_id),
@@ -178,6 +190,7 @@ async def trigger_optimization(
         min_traces=body.min_traces,
         max_traces=body.max_traces,
         audit_run_id=int(body.audit_run_id) if body.audit_run_id else None,
+        inspection_run_id=int(body.inspection_run_id) if body.inspection_run_id else None,
     )
     return _run_to_response(run)
 

@@ -19,6 +19,7 @@ import {
   BookOpen,
   FlaskConical,
   ShieldCheck,
+  Microscope,
   BarChart2,
   MessageCircle,
   Key,
@@ -75,6 +76,7 @@ const vaultItems: NavItem[] = [
 const toolItems: NavItem[] = [
   { label: "Evals",        icon: FlaskConical,  path: Routes.EVALS,         chip: CHIP_TOOLS },
   { label: "Audits",       icon: ShieldCheck,   path: Routes.AUDITS,        chip: CHIP_TOOLS },
+  { label: "Inspect",      icon: Microscope,    path: Routes.INSPECT,       chip: CHIP_TOOLS },
   { label: "Observability",icon: BarChart2,     path: Routes.OBSERVABILITY, chip: CHIP_TOOLS },
   { label: "Channels",     icon: MessageCircle, path: Routes.CHANNELS,      chip: CHIP_TOOLS },
 ]

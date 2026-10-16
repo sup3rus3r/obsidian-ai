@@ -21,6 +21,7 @@ export const Routes = {
   KNOWLEDGE   : '/knowledge',
   EVALS           : '/evals',
   AUDITS          : '/audits',
+  INSPECT         : '/inspect',
   OBSERVABILITY   : '/observability',
   SETTINGS        : '/settings',
   CHANNELS        : '/channels',
@@ -79,6 +80,12 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Audits',
     allowedRoles: ['admin', 'user'],
     description: 'Behavioral consistency audits for agents',
+  },
+  {
+    path: Routes.INSPECT,
+    label: 'Inspect',
+    allowedRoles: ['admin', 'user'],
+    description: 'Local-model activation/attention/logit-lens inspection',
   },
   {
     path: Routes.OBSERVABILITY,

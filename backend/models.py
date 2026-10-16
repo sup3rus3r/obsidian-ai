@@ -565,6 +565,46 @@ class AuditRun(Base):
     completed_at        = Column(DateTime(timezone=True), nullable=True)
 
 
+class InspectionRun(Base):
+    """A local-model interpretability inspection run — activation/attention
+    capture + raw logit-lens probing against a raw HF checkpoint, run via the
+    separate inspector_service (own process/venv, NOT in-process, NOT via
+    Ollama — see backend/inspector_service/README.md). This is NOT solving
+    interpretability: see inspector_engine.py's module docstring and the
+    Inspector page's limits banner for what these numbers can and cannot
+    validly claim (attention weight != causation, logit lens is one specific
+    linear projection with known basis-drift limitations, single-neuron
+    activations are not presumed interpretable features, a single prompt's
+    run is not a general statement about the model)."""
+    __tablename__ = "inspection_runs"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    agent_id            = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id             = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status              = Column(String, default="pending")
+    # pending | loading_model | capturing | processing | completed | failed | cancelled
+
+    prompt              = Column(Text, nullable=False)
+    hf_model_id         = Column(String, nullable=False)   # user-supplied HF repo id/path — NOT the agent's provider model_id
+    capture_config_json = Column(Text, nullable=True)      # JSON: {layers, capture_attention, capture_residual, logit_lens_topk, max_seq_len}
+
+    # Summary data — small enough to inline, same convention as AuditRun.results_json.
+    # JSON: {token_count, truncated, per_layer: [{layer, residual_norm,
+    #        logit_lens_top_tokens, attention_entropy_by_head, num_heads}]}
+    summary_json        = Column(Text, nullable=True)
+
+    # Full-resolution tensors (only for explicitly-requested layers) are too
+    # large for a TEXT column — stored as a safetensors blob via file_storage.py,
+    # same pattern as FileAttachment.storage_path, not inlined.
+    artifact_storage_path = Column(String, nullable=True)
+
+    triggered_optimization_run_id = Column(Integer, ForeignKey("optimization_runs.id", ondelete="SET NULL"), nullable=True)
+
+    error               = Column(Text, nullable=True)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at        = Column(DateTime(timezone=True), nullable=True)
+
+
 class AppSetting(Base):
     """Global platform settings stored as key/value pairs.
 

@@ -187,12 +187,14 @@ function RunResultsPanel({ run, onClose, onSendToOptimizer, onCancel }: { run: A
             </div>
           ))}
         </div>
-        {lowScore && run.status === "completed" && (
+        {run.status === "completed" && (
           <div className="border-t border-border shrink-0 px-4 py-3 flex items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              This audit found inconsistencies — send these findings to the optimizer as failure signal.
+              {lowScore
+                ? "This audit found inconsistencies — send these findings to the optimizer as failure signal."
+                : "Send this audit's findings to the optimizer as failure signal, even though the overall score passed."}
             </p>
-            <Button size="sm" onClick={() => onSendToOptimizer(run)}>
+            <Button size="sm" variant={lowScore ? "default" : "outline"} onClick={() => onSendToOptimizer(run)}>
               <Wand2 className="h-3.5 w-3.5 mr-1.5" />
               Send to Optimizer
             </Button>

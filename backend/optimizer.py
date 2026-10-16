@@ -201,6 +201,49 @@ def _build_audit_context_text(audit_results: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def _build_inspection_context_text(summary: dict) -> str:
+    """Format a local-model inspection's per-layer summary (logit-lens
+    projections, attention entropy, residual norms — see inspector_engine.py
+    and models.py's InspectionRun) into a readable block for the
+    failure-analysis LLM.
+
+    STRICT FRAMING REQUIREMENT, not optional: this text must describe
+    projections and attention weights only — e.g. "layer N's logit-lens top
+    prediction diverged from the final answer" — and must never attribute
+    belief, knowledge, or intent to the model (e.g. never "the model secretly
+    believed X"). A raw-logit-lens projection or an attention weight is a
+    numerical artifact of one specific probing technique on one forward pass;
+    it does not license any claim about what the model "actually thought."
+    This mirrors grade_cot_alignment's docstring in auditor_engine.py, which
+    already self-limits to flagging textual disagreement, never claiming
+    insight into the model's true causal process — inspection data is
+    noisier evidence than even a model's own stated reasoning, so it gets at
+    least as strict a framing boundary, not a looser one."""
+    per_layer = summary.get("per_layer", [])
+    if not per_layer:
+        return ""
+    parts: list[str] = [
+        "The following are raw logit-lens projections and attention statistics from one "
+        "forward pass on one prompt — describe them as projections/attention weights only, "
+        "never as what the model 'believed' or 'intended'."
+    ]
+    final_tokens = per_layer[-1].get("logit_lens_top_tokens") if per_layer else None
+    final_top = final_tokens[0]["token"] if final_tokens else None
+    for layer in per_layer:
+        top_tokens = layer.get("logit_lens_top_tokens") or []
+        top = top_tokens[0]["token"] if top_tokens else None
+        line = f"Layer {layer.get('layer')}: logit-lens top projection = {top!r}"
+        if final_top and top and top != final_top:
+            line += f" (differs from the final layer's top projection {final_top!r})"
+        if layer.get("residual_norm") is not None:
+            line += f", residual norm = {layer['residual_norm']:.2f}"
+        if layer.get("attention_entropy_by_head"):
+            avg_entropy = sum(layer["attention_entropy_by_head"]) / len(layer["attention_entropy_by_head"])
+            line += f", mean attention entropy = {avg_entropy:.2f}"
+        parts.append(line)
+    return "\n".join(parts)
+
+
 def _create_provider_from_record(provider_record, agent_model_id: str | None = None):
     """Create an LLM provider from either a SQLAlchemy ORM object or a Mongo dict.
 
@@ -315,12 +358,13 @@ async def _run_optimization_sqlite(
     min_traces: int,
     max_traces: int,
     audit_run_id: Optional[int] = None,
+    inspection_run_id: Optional[int] = None,
 ):
     """Full optimization pipeline for SQLite.  Runs as a background task."""
     from database import SessionLocal
     from models import Agent, Session as ChatSession, Message, OptimizationRun, LLMProvider
     from models import EvalRun as EvalRunModel
-    from models import AuditRun
+    from models import AuditRun, InspectionRun
     from eval_engine import run_eval_suite_sqlite
 
     db = SessionLocal()
@@ -387,8 +431,16 @@ async def _run_optimization_sqlite(
                 audit_results = json.loads(audit_run.results_json)
                 audit_context_text = _build_audit_context_text(audit_results)
 
-        # Require min_traces only when no eval/audit data is available
-        if len(sessions) < min_traces and not eval_context_text and not audit_context_text:
+        # Fetch inspection run summary if an inspection is selected (see inspector_engine.py)
+        inspection_context_text = ""
+        if inspection_run_id:
+            inspection_run = db.query(InspectionRun).filter(InspectionRun.id == inspection_run_id).first()
+            if inspection_run and inspection_run.summary_json:
+                inspection_summary = json.loads(inspection_run.summary_json)
+                inspection_context_text = _build_inspection_context_text(inspection_summary)
+
+        # Require min_traces only when no eval/audit/inspection data is available
+        if len(sessions) < min_traces and not eval_context_text and not audit_context_text and not inspection_context_text:
             _update(run_id, status="failed",
                     error_message=f"Not enough traces: found {len(sessions)}, need {min_traces}",
                     completed_at=datetime.now(timezone.utc))
@@ -418,6 +470,8 @@ async def _run_optimization_sqlite(
             analysis_parts.append(f"Eval run results (use these as primary failure signal):\n{eval_context_text}")
         if audit_context_text:
             analysis_parts.append(f"Behavioral consistency audit findings (use these as failure signal — inconsistent responses to equivalent inputs):\n{audit_context_text}")
+        if inspection_context_text:
+            analysis_parts.append(f"Local model inspection findings (raw logit-lens projections and attention statistics — describe these as projections/attention weights only, never as what the model 'believed' or 'intended'):\n{inspection_context_text}")
         analysis_user = "\n\n".join(analysis_parts)
         try:
             patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent.model_id)
@@ -561,13 +615,14 @@ async def _run_optimization_mongo(
     min_traces: int,
     max_traces: int,
     audit_run_id: Optional[str] = None,
+    inspection_run_id: Optional[str] = None,
 ):
     """Full optimization pipeline for MongoDB. Runs as a background task."""
     from database_mongo import get_database
     from models_mongo import (
         AgentCollection, SessionCollection, MessageCollection,
         OptimizationRunCollection, LLMProviderCollection, EvalRunCollection,
-        AuditRunCollection,
+        AuditRunCollection, InspectionRunCollection,
     )
     from eval_engine import run_eval_suite_mongo
 
@@ -631,8 +686,16 @@ async def _run_optimization_mongo(
                 audit_results = json.loads(audit_run["results_json"])
                 audit_context_text = _build_audit_context_text(audit_results)
 
-        # Require min_traces only when no eval/audit data is available
-        if len(all_sessions) < min_traces and not eval_context_text and not audit_context_text:
+        # Fetch inspection run summary if an inspection is selected (see inspector_engine.py)
+        inspection_context_text = ""
+        if inspection_run_id:
+            inspection_run = await InspectionRunCollection.find_by_id(mongo_db, inspection_run_id)
+            if inspection_run and inspection_run.get("summary_json"):
+                inspection_summary = json.loads(inspection_run["summary_json"])
+                inspection_context_text = _build_inspection_context_text(inspection_summary)
+
+        # Require min_traces only when no eval/audit/inspection data is available
+        if len(all_sessions) < min_traces and not eval_context_text and not audit_context_text and not inspection_context_text:
             await _update(run_id, status="failed",
                           error_message=f"Not enough traces: found {len(all_sessions)}, need {min_traces}",
                           completed_at=datetime.now(timezone.utc))
@@ -662,6 +725,8 @@ async def _run_optimization_mongo(
             analysis_parts.append(f"Eval run results (use these as primary failure signal):\n{eval_context_text}")
         if audit_context_text:
             analysis_parts.append(f"Behavioral consistency audit findings (use these as failure signal — inconsistent responses to equivalent inputs):\n{audit_context_text}")
+        if inspection_context_text:
+            analysis_parts.append(f"Local model inspection findings (raw logit-lens projections and attention statistics — describe these as projections/attention weights only, never as what the model 'believed' or 'intended'):\n{inspection_context_text}")
         analysis_user = "\n\n".join(analysis_parts)
         try:
             patterns_raw = await _call_llm_json(provider, _FAILURE_ANALYSIS_SYSTEM, analysis_user, agent_model_id=agent_model_id)
@@ -792,6 +857,7 @@ def start_optimization_sqlite(
     min_traces: int,
     max_traces: int,
     audit_run_id: Optional[int] = None,
+    inspection_run_id: Optional[int] = None,
 ):
     """Fire-and-forget: schedule the SQLite pipeline as an asyncio task."""
     asyncio.create_task(_run_optimization_sqlite(
@@ -802,6 +868,7 @@ def start_optimization_sqlite(
         min_traces=min_traces,
         max_traces=max_traces,
         audit_run_id=audit_run_id,
+        inspection_run_id=inspection_run_id,
     ))
 
 
@@ -813,6 +880,7 @@ def start_optimization_mongo(
     min_traces: int,
     max_traces: int,
     audit_run_id: Optional[str] = None,
+    inspection_run_id: Optional[str] = None,
 ):
     """Fire-and-forget: schedule the Mongo pipeline as an asyncio task."""
     asyncio.create_task(_run_optimization_mongo(
@@ -823,4 +891,5 @@ def start_optimization_mongo(
         min_traces=min_traces,
         max_traces=max_traces,
         audit_run_id=audit_run_id,
+        inspection_run_id=inspection_run_id,
     ))

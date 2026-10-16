@@ -1109,6 +1109,7 @@ class TriggerOptimizationRequest(BaseModel):
     agent_id: Union[int, str]
     eval_suite_id: Optional[Union[int, str]] = None   # if set, runs eval to validate the proposal
     audit_run_id: Optional[Union[int, str]] = None    # if set, feeds audit findings as extra failure-signal context
+    inspection_run_id: Optional[Union[int, str]] = None   # if set, feeds inspection findings as extra failure-signal context (projections/attention only — never belief/intent claims, see optimizer.py's _build_inspection_context_text)
     min_traces: int = 5
     max_traces: int = 50
 
@@ -1165,6 +1166,65 @@ class TriggerAuditRequest(BaseModel):
     probe_categories: list[str] = ["paraphrase", "order", "adversarial", "repeat", "cot_alignment"]
     probes_per_category: int = 5
     judge_agent_id: Optional[Union[int, str]] = None
+
+
+# ============================================================================
+# Local Model Inspection Schemas (phase 2 of model auditing)
+# ============================================================================
+# Real activation/attention/logit-lens inspection of a LOCAL model's real HF
+# weights, via the separate inspector_service — not interpretability, not
+# available for cloud-provider agents (their weights are never reachable).
+# See backend/inspector_engine.py and models.py's InspectionRun docstring.
+
+class InspectionLayerSummary(BaseModel):
+    layer: int
+    residual_norm: Optional[float] = None
+    logit_lens_top_tokens: Optional[list[dict]] = None   # [{token, probability}]
+    attention_entropy_by_head: Optional[list[float]] = None
+    num_heads: Optional[int] = None
+
+class InspectionSummary(BaseModel):
+    token_count: int
+    truncated: bool
+    per_layer: list[InspectionLayerSummary]
+
+class InspectionCaptureConfig(BaseModel):
+    layers: Optional[list[int]] = None   # None = all layers, summary stats only (no full-resolution tensors)
+    capture_attention: bool = True
+    capture_residual: bool = True
+    logit_lens_topk: int = 5
+    max_seq_len: int = 256
+
+class InspectionRunResponse(BaseModel):
+    id: Union[int, str]
+    agent_id: Union[int, str]
+    user_id: Union[int, str]
+    status: str   # pending | loading_model | capturing | processing | completed | failed | cancelled
+    prompt: str
+    hf_model_id: str
+    capture_config: Optional[InspectionCaptureConfig] = None
+    summary: Optional[InspectionSummary] = None
+    has_artifact: bool = False
+    triggered_optimization_run_id: Optional[Union[int, str]] = None
+    error: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class InspectionRunListResponse(BaseModel):
+    runs: list[InspectionRunResponse]
+
+class TriggerInspectionRequest(BaseModel):
+    agent_id: Union[int, str]
+    hf_model_id: str
+    prompt: str
+    capture_config: InspectionCaptureConfig = InspectionCaptureConfig()
+
+class InspectorStatusResponse(BaseModel):
+    reachable: bool
+    model_loaded: Optional[str] = None
 
 
 # ============================================================================

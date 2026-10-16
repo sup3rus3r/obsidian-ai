@@ -899,6 +899,76 @@ export interface TriggerAuditRequest {
   judge_agent_id?: string
 }
 
+// ─── Local Model Inspection (phase 2 of model auditing) ────────────────────
+// Real activation/attention/logit-lens inspection of a LOCAL model's actual
+// HF weights, via a separate standalone service — NOT interpretability
+// solved, NOT available for cloud-provider agents (their weights are never
+// reachable). See the Inspector page's limits banner.
+
+export type InspectionStatus =
+  | "pending"
+  | "loading_model"
+  | "capturing"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export interface InspectionLogitLensToken {
+  token: string
+  probability: number
+}
+
+export interface InspectionLayerSummary {
+  layer: number
+  residual_norm: number | null
+  logit_lens_top_tokens: InspectionLogitLensToken[] | null
+  attention_entropy_by_head: number[] | null
+  num_heads: number | null
+}
+
+export interface InspectionSummary {
+  token_count: number
+  truncated: boolean
+  per_layer: InspectionLayerSummary[]
+}
+
+export interface InspectionCaptureConfig {
+  layers?: number[] | null
+  capture_attention?: boolean
+  capture_residual?: boolean
+  logit_lens_topk?: number
+  max_seq_len?: number
+}
+
+export interface InspectionRun {
+  id: number | string
+  agent_id: number | string
+  user_id: number | string
+  status: InspectionStatus
+  prompt: string
+  hf_model_id: string
+  capture_config: InspectionCaptureConfig | null
+  summary: InspectionSummary | null
+  has_artifact: boolean
+  triggered_optimization_run_id: number | string | null
+  error: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+export interface TriggerInspectionRequest {
+  agent_id: string
+  hf_model_id: string
+  prompt: string
+  capture_config?: InspectionCaptureConfig
+}
+
+export interface InspectorStatus {
+  reachable: boolean
+  model_loaded: string | null
+}
+
 // ─── Analytics ──────────────────────────────────────────────────────────────
 
 export interface TokenBucket {
