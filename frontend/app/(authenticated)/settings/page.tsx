@@ -41,7 +41,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="max-w-3xl space-y-6">
+      <div className="space-y-6">
         <RoleManagementCard session={session} update={update} />
         <ChangePasswordCard session={session} />
         <TwoFactorCard session={session} />
