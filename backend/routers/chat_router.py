@@ -2515,9 +2515,15 @@ def _get_context_limit(model_id: str, provider_config: dict | None = None) -> in
     (the only reliable source for local/custom servers like LM Studio/Ollama,
     where the user picks the context size at load time and we have no way to
     query it), then the static name-substring guess table for known hosted
-    models, then a conservative fallback for anything unrecognized — 100k was
-    too generous a default for unknown/local models and let compaction never
-    trigger before the real server-side context was exceeded."""
+    models, then a conservative fallback for anything unrecognized.
+
+    The fallback was previously 8,000 — far too small for most modern local
+    models (a 7B+ class model today commonly supports 32K+ natively), which
+    caused the context-usage percentage to read wildly high (100%+) and
+    compaction to fire far earlier than actually necessary for a model that
+    had plenty of headroom left. 32,000 is a more realistic floor for
+    unrecognized local models; it's still just a guess — the accurate fix is
+    setting an explicit context_length on the provider (checked above first)."""
     if provider_config:
         explicit = provider_config.get("context_length")
         if explicit:
@@ -2530,7 +2536,7 @@ def _get_context_limit(model_id: str, provider_config: dict | None = None) -> in
     for key, limit in _MODEL_CONTEXT_LIMITS.items():
         if key in model_lower:
             return limit
-    return 8_000  # conservative fallback for unrecognized/local models
+    return 32_000  # fallback for unrecognized/local models
 
 
 async def _resolve_context_limit(llm, provider_record=None) -> int:
@@ -2557,7 +2563,7 @@ async def _resolve_context_limit(llm, provider_record=None) -> int:
     return _get_context_limit(model_id, provider_config)
 
 
-async def _compact_context_if_needed(messages: list, llm, system_prompt: str | None, db, session_id: int, provider_record=None) -> dict | None:
+async def _compact_context_if_needed(messages: list, llm, system_prompt: str | None, db, session_id, provider_record=None, is_mongo: bool = False) -> dict | None:
     """Check if context is near the limit and compact if needed.
 
     Summarizes older messages into a single system summary, keeping the most
@@ -2565,6 +2571,11 @@ async def _compact_context_if_needed(messages: list, llm, system_prompt: str | N
 
     Returns an SSE event dict if compaction occurred, else None.
     Modifies `messages` in-place.
+
+    is_mongo selects how the compaction record is persisted (`db` is a plain
+    SQLAlchemy Session for SQLite, a Motor database for Mongo — the two are
+    not interchangeable, this previously silently no-op'd/errored when Mongo
+    callers passed their db object into the SQL-only save path below).
     """
     # Need at least keep_recent + some older messages to bother compacting
     if len(messages) <= _COMPACTION_KEEP_RECENT + 2:
@@ -2611,14 +2622,22 @@ async def _compact_context_if_needed(messages: list, llm, system_prompt: str | N
     # Save compaction record to DB
     if db is not None:
         try:
-            compaction_msg = Message(
-                session_id=session_id,
-                role="system",
-                content=f"[Context compacted — {len(older)} messages summarized]\n\n{summary_text}",
-                metadata_json=json.dumps({"compaction": True, "messages_summarized": len(older)}),
-            )
-            db.add(compaction_msg)
-            db.commit()
+            if is_mongo:
+                await MessageCollection.create(db, {
+                    "session_id": session_id,
+                    "role": "system",
+                    "content": f"[Context compacted — {len(older)} messages summarized]\n\n{summary_text}",
+                    "metadata_json": json.dumps({"compaction": True, "messages_summarized": len(older)}),
+                })
+            else:
+                compaction_msg = Message(
+                    session_id=session_id,
+                    role="system",
+                    content=f"[Context compacted — {len(older)} messages summarized]\n\n{summary_text}",
+                    metadata_json=json.dumps({"compaction": True, "messages_summarized": len(older)}),
+                )
+                db.add(compaction_msg)
+                db.commit()
         except Exception as e:
             logger.warning(f"Failed to save compaction record: {e}")
 
@@ -4834,6 +4853,14 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
 
+    # Context compaction check before streaming — this was missing entirely on
+    # the Mongo path (present on the SQLite _stream_response since this feature
+    # shipped), meaning Mongo-backed sessions never compacted and could grow
+    # past 100% of the estimated context limit with no safety net.
+    compaction_event = await _compact_context_if_needed(messages, llm, system_prompt, mongo_db, session_id, provider_record, is_mongo=True)
+    if compaction_event:
+        yield compaction_event
+
     # Build tool name → DB record map for HITL checks
     _tool_hitl_map_mongo: dict[str, object] = {}
     if agent:
@@ -5309,6 +5336,12 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     native_tools = _inject_create_tool_schema(native_tools, agent)
+
+    # Context compaction check before streaming — see the identical comment in
+    # _stream_response_mongo: this was missing entirely on the Mongo+MCP path.
+    compaction_event = await _compact_context_if_needed(messages, llm, system_prompt, mongo_db, session_id, provider_record, is_mongo=True)
+    if compaction_event:
+        yield compaction_event
 
     # Build tool name → DB record map for HITL checks
     _tool_hitl_map_mcp_mongo: dict[str, object] = {}
