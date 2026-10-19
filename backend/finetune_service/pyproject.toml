@@ -1,0 +1,27 @@
+[project]
+name = "finetune-service"
+version = "0.1.0"
+description = "Standalone LoRA/QLoRA fine-tuning service for Obsidian AI's local_wsl2 compute backend. Deliberately isolated from the main backend's venv — heavy ML training deps (torch, bitsandbytes, trl) and GPU memory pressure never touch the main app's process. Communicates with the main backend over a small local HTTP API only; has no database, no LLM-provider abstraction, and no auth beyond trusting localhost (same trust model as inspector_service)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.128.0",
+    # CUDA build required — same index pin approach as inspector_service/pyproject.toml.
+    "torch==2.6.0+cu124",
+    "transformers>=4.57.3",
+    "peft>=0.14.0",
+    "trl>=0.13.0",
+    "bitsandbytes>=0.45.0",
+    "accelerate>=1.2.0",
+    "datasets>=3.2.0",
+    "safetensors>=0.4.5",
+    "uvicorn>=0.34.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]

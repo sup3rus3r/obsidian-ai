@@ -45,6 +45,7 @@ from routers.versions_router import router as versions_router
 from routers.eval_router import router as eval_router
 from routers.auditor_router import router as auditor_router
 from routers.inspector_router import router as inspector_router
+from routers.finetune_router import router as finetune_router
 from routers.optimizer_router import router as optimizer_router
 from routers.settings_router import router as settings_router
 from routers.sandbox_router import router as sandbox_router
@@ -663,6 +664,49 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Create finetune_runs table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS finetune_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    compute_backend TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    base_hf_model_id TEXT NOT NULL,
+                    source_provider_id INTEGER REFERENCES llm_providers(id) ON DELETE SET NULL,
+                    dataset_source_type TEXT NOT NULL,
+                    dataset_session_ids_json TEXT,
+                    dataset_storage_path TEXT,
+                    dataset_row_count INTEGER,
+                    dataset_filename TEXT,
+                    hyperparams_json TEXT NOT NULL,
+                    runpod_job_id TEXT,
+                    runpod_estimated_cost_usd REAL,
+                    runpod_actual_cost_usd REAL,
+                    wsl2_job_id TEXT,
+                    progress_json TEXT,
+                    adapter_storage_path TEXT,
+                    adapter_size_bytes INTEGER,
+                    export_to_ollama BOOLEAN DEFAULT 0,
+                    merged_gguf_storage_path TEXT,
+                    merged_gguf_size_bytes INTEGER,
+                    gguf_quantization TEXT,
+                    ollama_model_tag TEXT,
+                    created_provider_id INTEGER REFERENCES llm_providers(id) ON DELETE SET NULL,
+                    created_agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+                    error TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    started_training_at DATETIME,
+                    completed_at DATETIME,
+                    auto_register_provider BOOLEAN DEFAULT 1,
+                    auto_register_agent BOOLEAN DEFAULT 1
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
         # Create app_settings table if missing
         try:
             conn.execute(sqlalchemy.text("""
@@ -1043,6 +1087,64 @@ async def _load_pending_async_jobs():
         logging.getLogger(__name__).error(f"Failed to load pending async jobs: {e}")
 
 
+_FINETUNE_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+
+
+async def _load_pending_finetune_runs():
+    """Re-register the interval poll for every non-terminal FineTuneRun on
+    startup, same restart-survival reasoning as _load_pending_async_jobs:
+    APScheduler's on-the-fly IntervalTrigger jobs don't survive a process
+    restart on their own, so every in-flight fine-tune run (local_wsl2 or
+    runpod) needs its poll job re-added here or it would silently stop
+    being checked forever."""
+    from scheduler import scheduler as _sched
+    from apscheduler.triggers.interval import IntervalTrigger
+    try:
+        if DATABASE_TYPE == "mongo":
+            from finetune_poller import poll_finetune_run_mongo
+            from models_mongo import FineTuneRunCollection
+            mongo_db = get_database()
+            collection = mongo_db[FineTuneRunCollection.collection_name]
+            cursor = collection.find({"status": {"$nin": list(_FINETUNE_TERMINAL_STATUSES)}})
+            runs = await cursor.to_list(length=200)
+            for r in runs:
+                run_id = str(r["_id"])
+                try:
+                    _sched.add_job(
+                        poll_finetune_run_mongo,
+                        trigger=IntervalTrigger(seconds=20),
+                        args=[run_id],
+                        id=f"finetune_run_{run_id}",
+                        replace_existing=True,
+                    )
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Could not restore finetune run {run_id}: {e}")
+        else:
+            from finetune_poller import poll_finetune_run_sqlite
+            from models import FineTuneRun
+            db = get_db_sync()
+            try:
+                runs = db.query(FineTuneRun).filter(FineTuneRun.status.notin_(_FINETUNE_TERMINAL_STATUSES)).all()
+                for r in runs:
+                    try:
+                        _sched.add_job(
+                            poll_finetune_run_sqlite,
+                            trigger=IntervalTrigger(seconds=20),
+                            args=[r.id],
+                            id=f"finetune_run_{r.id}",
+                            replace_existing=True,
+                        )
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(f"Could not restore finetune run {r.id}: {e}")
+            finally:
+                db.close()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to load pending finetune runs: {e}")
+
+
 def get_db_sync():
     """Return a raw SQLAlchemy session (not a FastAPI dependency)."""
     from database import SessionLocal
@@ -1116,6 +1218,7 @@ async def lifespan(app: FastAPI):
     configure_scheduler()
     await _load_active_schedules()
     await _load_pending_async_jobs()
+    await _load_pending_finetune_runs()
 
     # ── Maintenance jobs (module-level functions so APScheduler can pickle them) ─
     from apscheduler.triggers.cron import CronTrigger as _CronTrigger
@@ -1192,6 +1295,7 @@ app.include_router(versions_router)
 app.include_router(eval_router)
 app.include_router(auditor_router)
 app.include_router(inspector_router)
+app.include_router(finetune_router)
 app.include_router(optimizer_router)
 app.include_router(settings_router)
 app.include_router(sandbox_router)

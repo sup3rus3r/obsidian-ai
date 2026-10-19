@@ -53,6 +53,10 @@ import type {
   InspectionRun,
   TriggerInspectionRequest,
   InspectorStatus,
+  FineTuneRun,
+  TriggerFineTuneRequest,
+  FineTuneCostEstimate,
+  FineTuneServiceStatus,
   SessionTrace,
   WorkflowRunTrace,
   SandboxStatus,
@@ -982,6 +986,77 @@ class ApiClient {
 
   async triggerOptimizationFromInspection(runId: string): Promise<OptimizationRun> {
     return this.request<OptimizationRun>(AppRoutes.TriggerOptimizationFromInspection(runId), { method: "POST" })
+  }
+
+  // ============= LoRA Fine-Tuning =============
+  async getFinetuneServiceStatus(): Promise<FineTuneServiceStatus> {
+    return this.request<FineTuneServiceStatus>(AppRoutes.FinetuneStatus())
+  }
+
+  async triggerFinetune(body: TriggerFineTuneRequest): Promise<FineTuneRun> {
+    return this.request<FineTuneRun>(AppRoutes.TriggerFinetune(), {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+  }
+
+  async estimateFinetuneCost(params: {
+    base_hf_model_id: string
+    dataset_row_count?: number
+    hyperparams?: TriggerFineTuneRequest["hyperparams"]
+    compute_backend: TriggerFineTuneRequest["compute_backend"]
+    export_to_ollama?: boolean
+  }): Promise<FineTuneCostEstimate> {
+    return this.request<FineTuneCostEstimate>(AppRoutes.EstimateFinetuneCost(), {
+      method: "POST",
+      body: JSON.stringify(params),
+    })
+  }
+
+  async listAgentFinetuneRuns(agentId: string): Promise<FineTuneRun[]> {
+    const result = await this.request<{ runs: FineTuneRun[] }>(AppRoutes.ListAgentFinetuneRuns(agentId))
+    return result.runs || []
+  }
+
+  async getFinetuneRun(runId: string): Promise<FineTuneRun> {
+    return this.request<FineTuneRun>(AppRoutes.GetFinetuneRun(runId))
+  }
+
+  async deleteFinetuneRun(runId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteFinetuneRun(runId), { method: "DELETE" })
+  }
+
+  async cancelFinetuneRun(runId: string): Promise<void> {
+    await this.request<void>(AppRoutes.CancelFinetuneRun(runId), { method: "POST" })
+  }
+
+  async retryFinetuneExport(runId: string): Promise<FineTuneRun> {
+    return this.request<FineTuneRun>(AppRoutes.RetryFinetuneExport(runId), { method: "POST" })
+  }
+
+  getFinetuneAdapterDownloadUrl(runId: string): string {
+    return AppRoutes.GetFinetuneAdapterDownload(runId)
+  }
+
+  async downloadFinetuneAdapter(runId: string, name: string): Promise<void> {
+    const headers: Record<string, string> = {}
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`
+    }
+    const response = await fetch(AppRoutes.GetFinetuneAdapterDownload(runId), { headers })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Download failed" }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${name.replace(/[^a-z0-9\-_ ]/gi, "_")}-adapter.zip`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
   }
 
   // ============= Traces =============

@@ -22,6 +22,7 @@ export const Routes = {
   EVALS           : '/evals',
   AUDITS          : '/audits',
   INSPECT         : '/inspect',
+  FINETUNE        : '/finetune',
   OBSERVABILITY   : '/observability',
   SETTINGS        : '/settings',
   CHANNELS        : '/channels',
@@ -86,6 +87,12 @@ export const ProtectedRoutes: RouteConfig[] = [
     label: 'Inspect',
     allowedRoles: ['admin', 'user'],
     description: 'Local-model activation/attention/logit-lens inspection',
+  },
+  {
+    path: Routes.FINETUNE,
+    label: 'Fine-Tune',
+    allowedRoles: ['admin', 'user'],
+    description: 'LoRA fine-tuning for local models, on RunPod or a local GPU',
   },
   {
     path: Routes.OBSERVABILITY,

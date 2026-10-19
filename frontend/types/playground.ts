@@ -969,6 +969,111 @@ export interface InspectorStatus {
   model_loaded: string | null
 }
 
+// ─── LoRA Fine-Tuning ───────────────────────────────────────────────────────
+// Triggers a LoRA fine-tune job against a local HF checkpoint, either on a
+// RunPod cloud GPU endpoint or a local WSL2 GPU, via a separate standalone
+// service — see the Fine-Tune page's limits banner.
+
+export type FineTuneComputeBackend = "runpod" | "local_wsl2"
+
+export type FineTuneStatus =
+  | "pending"
+  | "preparing_dataset"
+  | "submitting"
+  | "provisioning"
+  | "training"
+  | "merging"
+  | "converting_gguf"
+  | "quantizing"
+  | "registering"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export interface FineTuneHyperparams {
+  lora_r?: number
+  lora_alpha?: number
+  lora_dropout?: number
+  target_modules?: string[]
+  learning_rate?: number
+  num_epochs?: number
+  per_device_batch_size?: number
+  gradient_accumulation_steps?: number
+  max_seq_len?: number
+  quantization?: "4bit" | "8bit" | "none"
+  seed?: number
+}
+
+export type FineTuneDatasetSourceType = "session_export" | "uploaded_file"
+
+export interface FineTuneDatasetSource {
+  type: FineTuneDatasetSourceType
+  session_ids?: (number | string)[] | null
+  file_data?: string | null
+  filename?: string | null
+}
+
+export interface FineTuneProgress {
+  current_step: number | null
+  total_steps: number | null
+  current_epoch: number | null
+  total_epochs: number | null
+  loss: number | null
+  eta_seconds: number | null
+}
+
+export interface FineTuneRun {
+  id: number | string
+  agent_id: number | string
+  user_id: number | string
+  compute_backend: FineTuneComputeBackend
+  status: FineTuneStatus
+  base_hf_model_id: string
+  dataset_source_type: FineTuneDatasetSourceType
+  dataset_row_count: number | null
+  dataset_filename: string | null
+  hyperparams: FineTuneHyperparams | null
+  runpod_estimated_cost_usd: number | null
+  runpod_actual_cost_usd: number | null
+  progress: FineTuneProgress | null
+  adapter_size_bytes: number | null
+  export_to_ollama: boolean
+  merged_gguf_size_bytes: number | null
+  gguf_quantization: string | null
+  ollama_model_tag: string | null
+  created_provider_id: number | string | null
+  created_agent_id: number | string | null
+  error: string | null
+  created_at: string
+  started_training_at: string | null
+  completed_at: string | null
+}
+
+export interface TriggerFineTuneRequest {
+  agent_id: string
+  base_hf_model_id: string
+  compute_backend: FineTuneComputeBackend
+  dataset: FineTuneDatasetSource
+  hyperparams?: FineTuneHyperparams
+  export_to_ollama?: boolean
+  gguf_quantization?: string
+  auto_register_provider?: boolean
+  auto_register_agent?: boolean
+}
+
+export interface FineTuneCostEstimate {
+  estimated_usd: number | null
+  estimated_minutes: number
+  disk_cost_gb: number | null
+  caveat: string
+}
+
+export interface FineTuneServiceStatus {
+  reachable: boolean
+  gpu_available?: boolean
+  vram_free_gb?: number | null
+}
+
 // ─── Analytics ──────────────────────────────────────────────────────────────
 
 export interface TokenBucket {

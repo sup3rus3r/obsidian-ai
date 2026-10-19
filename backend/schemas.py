@@ -1228,6 +1228,87 @@ class InspectorStatusResponse(BaseModel):
 
 
 # ============================================================================
+# LoRA Fine-Tuning Schemas
+# ============================================================================
+
+class FineTuneHyperparams(BaseModel):
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    target_modules: list[str] = ["q_proj", "v_proj"]
+    learning_rate: float = 2e-4
+    num_epochs: int = 3
+    per_device_batch_size: int = 1
+    gradient_accumulation_steps: int = 8
+    max_seq_len: int = 1024
+    quantization: str = "4bit"   # "4bit" | "8bit" | "none"
+    seed: int = 42
+
+class FineTuneDatasetSource(BaseModel):
+    type: str   # "session_export" | "uploaded_file"
+    session_ids: Optional[list[Union[int, str]]] = None
+    file_data: Optional[str] = None   # base64 data-URI, if uploaded_file
+    filename: Optional[str] = None
+
+class TriggerFineTuneRequest(BaseModel):
+    agent_id: Union[int, str]
+    base_hf_model_id: str
+    compute_backend: str   # "runpod" | "local_wsl2"
+    dataset: FineTuneDatasetSource
+    hyperparams: FineTuneHyperparams = FineTuneHyperparams()
+    export_to_ollama: bool = False
+    gguf_quantization: Optional[str] = "Q4_K_M"
+    auto_register_provider: bool = True
+    auto_register_agent: bool = True
+
+class FineTuneProgress(BaseModel):
+    current_step: Optional[int] = None
+    total_steps: Optional[int] = None
+    current_epoch: Optional[int] = None
+    total_epochs: Optional[int] = None
+    loss: Optional[float] = None
+    eta_seconds: Optional[int] = None
+
+class FineTuneRunResponse(BaseModel):
+    id: Union[int, str]
+    agent_id: Union[int, str]
+    user_id: Union[int, str]
+    compute_backend: str
+    status: str
+    base_hf_model_id: str
+    dataset_source_type: str
+    dataset_row_count: Optional[int] = None
+    dataset_filename: Optional[str] = None
+    hyperparams: Optional[FineTuneHyperparams] = None
+    runpod_estimated_cost_usd: Optional[float] = None
+    runpod_actual_cost_usd: Optional[float] = None
+    progress: Optional[FineTuneProgress] = None
+    adapter_size_bytes: Optional[int] = None
+    export_to_ollama: bool = False
+    merged_gguf_size_bytes: Optional[int] = None
+    gguf_quantization: Optional[str] = None
+    ollama_model_tag: Optional[str] = None
+    created_provider_id: Optional[Union[int, str]] = None
+    created_agent_id: Optional[Union[int, str]] = None
+    error: Optional[str] = None
+    created_at: datetime
+    started_training_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class FineTuneRunListResponse(BaseModel):
+    runs: list[FineTuneRunResponse]
+
+class FineTuneCostEstimateResponse(BaseModel):
+    estimated_usd: Optional[float] = None   # null for local_wsl2
+    estimated_minutes: float
+    disk_cost_gb: Optional[float] = None     # only meaningful if export_to_ollama
+    caveat: str
+
+
+# ============================================================================
 # Prompt Vault Schemas
 # ============================================================================
 

@@ -605,6 +605,77 @@ class InspectionRun(Base):
     completed_at        = Column(DateTime(timezone=True), nullable=True)
 
 
+class FineTuneRun(Base):
+    """A LoRA/QLoRA fine-tuning run for a local model. Two compute backends
+    share this one row shape — see compute_backend and the status value set
+    below, which differ per backend. Training itself never runs in this
+    process: 'local_wsl2' delegates to finetune_service running inside WSL2
+    (own venv, same user-started lifecycle as Ollama/inspector_service — see
+    backend/finetune_service/README.md), 'runpod' delegates to a RunPod
+    serverless endpoint via runpod_client.py. This row is the only source of
+    truth for progress/cancellation; both backends are polled on an interval
+    via finetune_poller.py and must survive a server restart."""
+    __tablename__ = "finetune_runs"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    agent_id            = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id             = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    compute_backend     = Column(String, nullable=False)   # "runpod" | "local_wsl2"
+    status              = Column(String, default="pending")
+    # pending | preparing_dataset | submitting | provisioning | training |
+    # merging | converting_gguf | quantizing | registering | completed |
+    # failed | cancelled
+    # ("provisioning" is runpod-only cold start; merging/converting_gguf/
+    # quantizing are skipped entirely if export_to_ollama=False)
+
+    base_hf_model_id    = Column(String, nullable=False)   # HF repo id/path of the base model being fine-tuned
+    source_provider_id  = Column(Integer, ForeignKey("llm_providers.id", ondelete="SET NULL"), nullable=True)
+
+    # --- Dataset ---
+    dataset_source_type = Column(String, nullable=False)   # "session_export" | "uploaded_file"
+    dataset_session_ids_json = Column(Text, nullable=True)  # JSON list of Session.id used, if session_export
+    dataset_storage_path = Column(String, nullable=True)    # FileStorageService path/GridFS id of the normalized ChatML JSONL
+    dataset_row_count    = Column(Integer, nullable=True)
+    dataset_filename     = Column(String, nullable=True)    # original uploaded filename, if uploaded_file
+
+    # --- Hyperparameters (JSON blob, same convention as capture_config_json) ---
+    hyperparams_json    = Column(Text, nullable=False)
+    # JSON: {lora_r, lora_alpha, lora_dropout, target_modules, learning_rate,
+    #        num_epochs, per_device_batch_size, gradient_accumulation_steps,
+    #        max_seq_len, quantization ("4bit"|"8bit"|"none"), seed}
+
+    # --- Backend-specific job tracking ---
+    runpod_job_id        = Column(String, nullable=True)   # RunPod endpoint job id (runpod backend)
+    runpod_estimated_cost_usd = Column(Float, nullable=True)  # pre-run estimate shown to user
+    runpod_actual_cost_usd    = Column(Float, nullable=True)  # computed from runtime * $/hr on completion
+    wsl2_job_id           = Column(String, nullable=True)   # finetune_service's own job id (local_wsl2 backend)
+
+    # --- Progress (polled, small enough to inline) ---
+    progress_json        = Column(Text, nullable=True)
+    # JSON: {current_step, total_steps, current_epoch, total_epochs, loss, eta_seconds}
+
+    # --- Output artifacts ---
+    adapter_storage_path  = Column(String, nullable=True)  # LoRA adapter safetensors (+ adapter_config.json), zipped
+    adapter_size_bytes    = Column(Integer, nullable=True)
+    export_to_ollama      = Column(Boolean, default=False) # whether the merge->GGUF->quantize->ollama pipeline runs at all
+    merged_gguf_storage_path = Column(String, nullable=True)  # only set if export_to_ollama
+    merged_gguf_size_bytes   = Column(Integer, nullable=True) # surfaced to user as the "disk cost" of exporting
+    gguf_quantization      = Column(String, nullable=True) # e.g. "Q4_K_M" — user-chosen quant level
+    ollama_model_tag        = Column(String, nullable=True) # e.g. "obsidian-ft-run42:latest"
+
+    # --- Auto-registration result ---
+    created_provider_id   = Column(Integer, ForeignKey("llm_providers.id", ondelete="SET NULL"), nullable=True)
+    created_agent_id       = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    auto_register_provider = Column(Boolean, nullable=True, default=True)  # whether a trained model auto-registers as a provider
+    auto_register_agent    = Column(Boolean, nullable=True, default=True)  # whether a new Agent is auto-created pointing at it
+
+    error                = Column(Text, nullable=True)
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+    started_training_at  = Column(DateTime(timezone=True), nullable=True)  # for actual-cost computation on runpod
+    completed_at         = Column(DateTime(timezone=True), nullable=True)
+
+
 class AppSetting(Base):
     """Global platform settings stored as key/value pairs.
 

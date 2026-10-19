@@ -208,6 +208,17 @@ export const AppRoutes = {
     CancelInspectionRun       : (runId: string) => `/api/inspector/runs/${runId}/cancel`,
     TriggerOptimizationFromInspection: (runId: string) => `/api/inspector/runs/${runId}/trigger-optimization`,
 
+    // LoRA Fine-Tuning
+    FinetuneStatus            : () => "/api/finetune/status",
+    TriggerFinetune           : () => "/api/finetune/trigger",
+    EstimateFinetuneCost      : () => "/api/finetune/estimate-cost",
+    ListAgentFinetuneRuns     : (agentId: string) => `/api/finetune/agents/${agentId}`,
+    GetFinetuneRun            : (runId: string) => `/api/finetune/runs/${runId}`,
+    DeleteFinetuneRun         : (runId: string) => `/api/finetune/runs/${runId}`,
+    CancelFinetuneRun         : (runId: string) => `/api/finetune/runs/${runId}/cancel`,
+    GetFinetuneAdapterDownload: (runId: string) => `/api/finetune/runs/${runId}/adapter`,
+    RetryFinetuneExport       : (runId: string) => `/api/finetune/runs/${runId}/retry-export`,
+
     // Platform Settings
     GetOptimizerSettings    : () => "/api/settings/optimizer",
     UpdateOptimizerSettings : () => "/api/settings/optimizer",
