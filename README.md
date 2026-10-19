@@ -60,6 +60,9 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
   - [Agent Import / Export](#agent-import--export)
   - [Docker Sandbox](#docker-sandbox)
   - [Public Agent API](#public-agent-api)
+  - [Behavioral Consistency Auditor](#behavioral-consistency-auditor)
+  - [Local Model Inspection](#local-model-inspection)
+  - [LoRA Fine-Tuning](#lora-fine-tuning)
   - [Dual Database Support](#dual-database-support)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
@@ -565,6 +568,86 @@ curl -X POST https://your-backend-or-tunnel-url/api/v1/agent/chat \
 
 ---
 
+### Behavioral Consistency Auditor
+
+Black-box auditing that stress-tests an agent for behavioral consistency - without needing access to model internals, so it works against any provider, cloud or local. Generates probe variants of a seed prompt (paraphrases, reordered instructions, adversarial framings), runs them all against the agent, and scores how consistent the responses are.
+
+- **Works on any model** - Cloud providers (OpenAI, Anthropic, Google, OpenRouter) and local models alike, since it only observes outputs, not weights
+- **Configurable probe categories** - Toggle paraphrase, instruction-order, and adversarial probe generation independently, with a configurable number of probes per category
+- **LLM-judge pairwise scoring** - A judge agent (any configured agent) scores each probe response against the baseline for consistency, plus a chain-of-thought-vs-action alignment check
+- **Per-category and overall scores** - Results break down by probe category, not just a single blended number
+- **Parallelized execution** - All probes run concurrently rather than sequentially, so a full audit completes in roughly the time of one probe batch instead of dozens of sequential LLM calls
+- **Cancellable** - Stop a running audit at any stage boundary; partial results are kept, not discarded
+- **Optimizer integration** - Send a completed audit's findings straight into the Prompt Auto-Optimizer as failure-analysis context
+
+**Honest framing, by design** - a disagreement between an agent's stated reasoning and its action is flagged as exactly that: a textual disagreement. It is never presented as insight into what the model "actually believes" or "intends" - grounded in published research on chain-of-thought faithfulness.
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|--------------|
+| `/auditor/trigger` | POST | Start a new audit run |
+| `/auditor/agents/{id}` | GET | List audit runs for an agent |
+| `/auditor/runs/{id}` | GET / DELETE | Get or delete an audit run |
+| `/auditor/runs/{id}/cancel` | POST | Cancel a running audit |
+| `/auditor/runs/{id}/trigger-optimization` | POST | Send audit findings to the Prompt Auto-Optimizer |
+
+---
+
+### Local Model Inspection
+
+A genuine internals-level deep dive for locally-servable models - real activation capture, attention-pattern inspection, and logit-lens probing against the raw Hugging Face checkpoint, powered by [nnsight](https://nnsight.net/). Runs as a separate standalone service (its own process and dependencies - torch, nnsight - never loaded into the main backend) so the heavy ML stack stays isolated from the rest of the platform.
+
+- **Real model internals** - Per-layer residual-stream norms, attention entropy by head, and logit-lens projections ("what the model would have predicted at this layer") captured via actual forward-pass hooks, not an approximation
+- **No provider-type gating** - Any agent can be submitted for inspection; you supply the actual Hugging Face repo id/path yourself (pre-filled when the agent's model ID already looks like one). An unreachable or cloud-hosted model simply fails to load - that failure is the real and only gate
+- **Standalone service architecture** - `inspector_service/` runs as its own process (own venv, own FastAPI app) that you start yourself, the same way you'd run Ollama; the main backend only detects and reports reachability, never auto-starts or manages it
+- **Configurable capture** - Choose which layers to capture in full resolution, toggle attention/residual capture, set a max sequence length and logit-lens top-k
+- **Cancellable** - Stop a running inspection mid-capture
+- **Optimizer integration** - Send a completed inspection's findings into the Prompt Auto-Optimizer
+
+results describe projections and attention weights, explicitly never a model's "beliefs," "knowledge," or "intent." A single prompt's run is not a general statement about the model, attention weight is not causation, and logit lens is one specific linear projection with known limitations - grounded in published interpretability research on superposition and representation drift.
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|--------------|
+| `/inspector/status` | GET | Check whether the standalone inspector service is reachable |
+| `/inspector/trigger` | POST | Start a new inspection run |
+| `/inspector/agents/{id}` | GET | List inspection runs for an agent |
+| `/inspector/runs/{id}` | GET / DELETE | Get or delete an inspection run |
+| `/inspector/runs/{id}/cancel` | POST | Cancel a running inspection |
+| `/inspector/runs/{id}/trigger-optimization` | POST | Send inspection findings to the Prompt Auto-Optimizer |
+
+---
+
+### LoRA Fine-Tuning
+
+Fine-tune a local model with LoRA/QLoRA directly from the platform, using either a RunPod serverless GPU or your own local GPU via WSL2. Closes the loop with the Auditor and Inspector features - a model flagged by either can be retrained here instead of only prompt-tuned.
+
+- **Two compute backends** - RunPod (serverless, billed per job) or local GPU inside WSL2 - both tracked through the same run record and polled on an interval that survives a server restart
+- **Dataset from your own data** - Export existing chat sessions as training data, or upload a JSONL/CSV file; everything is normalized to ChatML format before training
+- **Standard LoRA/QLoRA stack** - `transformers` + `peft` + `trl` + `bitsandbytes`, 4-bit/8-bit/full-precision quantization options, configurable rank/alpha/dropout/learning rate/epochs
+- **Standalone training service** - Like the Local Model Inspector, training runs in its own process (`finetune_service/`) that you start yourself inside WSL2 - the main backend never launches or manages it directly
+- **Optional Ollama export** - Merge the trained adapter into the base model, convert to GGUF, quantize, and register with a local Ollama install, since Ollama no longer supports loading a bare LoRA adapter directly. This produces a full second copy of the model on disk - the UI surfaces that disk cost up front, before you commit to a run
+- **Auto-registration** - On successful export, the fine-tuned model is automatically registered as a new LLM provider (and optionally a new agent copying the source agent's system prompt), ready to use immediately
+- **Cost transparency** - RunPod runs show an estimated cost before starting and the actual measured cost on completion, side by side - never just an estimate that's never reconciled against reality
+- **Cancellable** - Stop a running fine-tune at any stage; the external job (WSL2 process or RunPod job) is actually stopped, not just marked cancelled in the database
+
+**New API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|--------------|
+| `/finetune/status` | GET | Check whether the standalone fine-tuning service is reachable |
+| `/finetune/trigger` | POST | Start a new fine-tuning run |
+| `/finetune/estimate-cost` | POST | Get a pre-flight time/cost estimate before starting |
+| `/finetune/agents/{id}` | GET | List fine-tuning runs for an agent |
+| `/finetune/runs/{id}` | GET / DELETE | Get or delete a fine-tuning run |
+| `/finetune/runs/{id}/cancel` | POST | Cancel a running fine-tune |
+| `/finetune/runs/{id}/adapter` | GET | Download the trained LoRA adapter |
+| `/finetune/runs/{id}/retry-export` | POST | Re-run just the merge/GGUF/Ollama export step |
+
+---
+
 ### Dual Database Support
 
 Run with zero-config SQLite out of the box, or switch to MongoDB for production deployments. Every endpoint supports both databases with automatic branching.
@@ -964,6 +1047,16 @@ The backend exposes a RESTful API with interactive documentation:
 | **Optimizer** | `/optimizer/runs/{id}` | GET | Poll optimization run status |
 | **Optimizer** | `/optimizer/runs/{id}/accept` | POST | Accept the proposed prompt |
 | **Optimizer** | `/optimizer/runs/{id}/reject` | POST | Reject the proposed prompt |
+| **Auditor** | `/auditor/trigger` | POST | Start a behavioral consistency audit |
+| **Auditor** | `/auditor/agents/{id}` | GET | List audit runs for an agent |
+| **Auditor** | `/auditor/runs/{id}` | GET / DELETE | Get or delete an audit run |
+| **Inspector** | `/inspector/status` | GET | Check standalone inspector service reachability |
+| **Inspector** | `/inspector/trigger` | POST | Start a local-model internals inspection |
+| **Inspector** | `/inspector/agents/{id}` | GET | List inspection runs for an agent |
+| **Fine-Tuning** | `/finetune/status` | GET | Check standalone fine-tuning service reachability |
+| **Fine-Tuning** | `/finetune/trigger` | POST | Start a LoRA fine-tuning run |
+| **Fine-Tuning** | `/finetune/estimate-cost` | POST | Get a pre-flight time/cost estimate |
+| **Fine-Tuning** | `/finetune/agents/{id}` | GET | List fine-tuning runs for an agent |
 | **Secrets** | `/secrets` | GET | List user secrets (encrypted) |
 | **Secrets** | `/secrets` | POST | Create a new secret |
 | **Files** | `/files/upload` | POST | Upload a file attachment |
@@ -1164,6 +1257,22 @@ obsidian-ai/
 ## Updates
 
 Recent additions shipped to the platform.
+
+---
+
+### 🟢 Behavioral Auditor, Local Model Inspection & LoRA Fine-Tuning
+
+> **Find out why a model does what it does, then actually fix it - all from inside the platform.**
+
+Three features that work together as a diagnose-and-fix loop for local models (with the first working on any provider):
+
+- **[Behavioral Consistency Auditor](#behavioral-consistency-auditor)** - black-box probing (paraphrase/reorder/adversarial variants, LLM-judge scoring, parallelized execution, cancellable) that works against any model, cloud or local
+- **[Local Model Inspection](#local-model-inspection)** - real activation/attention/logit-lens capture against a model's actual weights via [nnsight](https://nnsight.net/), running as a standalone service you start yourself
+- **[LoRA Fine-Tuning](#lora-fine-tuning)** - QLoRA fine-tuning on RunPod or your own local GPU via WSL2, with optional merge-to-GGUF Ollama export and automatic provider/agent registration on completion
+
+Both the Inspector and Fine-Tuning services are deliberately isolated from the main backend - their heavy ML dependencies (torch, nnsight, peft, trl, bitsandbytes) never load into the main process, and neither is auto-started; you run them the same way you'd run Ollama. Audit and Inspection findings can both be sent directly into the Prompt Auto-Optimizer as failure-analysis context, and a model a fine-tune improves is auto-registered as a ready-to-use provider and agent.
+
+All three apply the same honest-framing standard already established for this platform's audit/trace tooling: consistency scores and internals data are reported as exactly what they are (textual disagreement, a linear projection, an entropy measure) - never overclaimed as insight into a model's beliefs or intent.
 
 ---
 
