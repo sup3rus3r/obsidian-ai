@@ -12,6 +12,7 @@ from schemas import (
     MessageResponse, MessageListResponse,
 )
 from auth import get_current_user, TokenData
+from secret_placeholder import resolve_secret_placeholders, contains_secret_placeholder
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
@@ -183,7 +184,11 @@ async def get_session_messages(
         if not session or session.get("user_id") != current_user.user_id:
             raise HTTPException(status_code=404, detail="Session not found")
         messages = await MessageCollection.find_by_session(mongo_db, session_id, limit=limit, offset=offset)
-        return MessageListResponse(messages=[_message_to_response(m, is_mongo=True) for m in messages])
+        responses = [_message_to_response(m, is_mongo=True) for m in messages]
+        for r in responses:
+            if r.role == "assistant" and r.agent_id and r.content and contains_secret_placeholder(r.content):
+                r.content, _ = await resolve_secret_placeholders(r.content, r.agent_id, current_user.user_id, mongo_db, is_mongo=True)
+        return MessageListResponse(messages=responses)
 
     session = db.query(SessionModel).filter(
         SessionModel.id == int(session_id),
@@ -195,7 +200,11 @@ async def get_session_messages(
     messages = db.query(Message).filter(
         Message.session_id == int(session_id),
     ).order_by(Message.created_at.asc()).offset(offset).limit(limit).all()
-    return MessageListResponse(messages=[_message_to_response(m) for m in messages])
+    responses = [_message_to_response(m) for m in messages]
+    for r in responses:
+        if r.role == "assistant" and r.agent_id and r.content and contains_secret_placeholder(r.content):
+            r.content, _ = await resolve_secret_placeholders(r.content, int(r.agent_id), int(current_user.user_id), db)
+    return MessageListResponse(messages=responses)
 
 
 @router.delete("/{session_id}")

@@ -173,13 +173,58 @@ export type StreamEvent =
   | { type: "error"; error: string }
   | { type: "done" }
 
+export type SecretType = "generic" | "credit_card" | "login"
+
+export interface SecretFieldSchema {
+  label: string
+  sensitive: boolean
+}
+
+// Mirrors backend/secret_types.py's SECRET_TYPE_SCHEMAS exactly — lets the UI
+// render the right fields per type without a network round-trip.
+export const SECRET_TYPE_SCHEMAS: Record<SecretType, Record<string, SecretFieldSchema>> = {
+  generic: {
+    value: { label: "Value", sensitive: true },
+  },
+  credit_card: {
+    number: { label: "Card Number", sensitive: true },
+    expiry: { label: "Expiry (MM/YY)", sensitive: false },
+    cvv: { label: "CVV", sensitive: true },
+    cardholder_name: { label: "Cardholder Name", sensitive: false },
+  },
+  login: {
+    username: { label: "Username", sensitive: false },
+    password: { label: "Password", sensitive: true },
+  },
+}
+
 export interface Secret {
   id: string
   name: string
+  secret_type: SecretType
+  fields: Record<string, string>
   masked_value: string
   description?: string
   created_at: string
   updated_at?: string
+}
+
+export interface CreateSecretRequest {
+  name: string
+  description?: string
+  secret_type: SecretType
+  fields: Record<string, string>
+}
+
+export interface UpdateSecretRequest {
+  name?: string
+  description?: string
+  secret_type?: SecretType
+  fields?: Record<string, string>
+}
+
+export interface SecretAccess {
+  agent_ids: string[]
 }
 
 export interface CreateProviderRequest {

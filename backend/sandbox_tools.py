@@ -335,13 +335,39 @@ SANDBOX_TOOL_SCHEMAS = [
 # Tool executors
 # ---------------------------------------------------------------------------
 
-async def execute_sandbox_tool(tool_name: str, arguments_str: str, container_id: str) -> str:
-    """Dispatch a sandbox_* tool call to the container and return the result string."""
+async def execute_sandbox_tool(tool_name: str, arguments_str: str, container_id: str, agent=None, db=None, is_mongo: bool = False) -> str:
+    """Dispatch a sandbox_* tool call to the container and return the result
+    string, with secret-placeholder resolution on the way in (step 4B) and
+    exact-value redaction on the way out (step 5) — see secret_placeholder.py's
+    module docstring for why building a shell command string is a safe
+    injection point (no further code evaluation of the secret happens after
+    this), and resolve_secret_placeholders/redact_resolved_values for the
+    mechanism. The LLM never sees the real value, only the placeholder it
+    wrote and, if the container's output happened to echo it back, a
+    [SECRET_REDACTED] marker in its place."""
+    from secret_placeholder import resolve_secret_placeholders, contains_secret_placeholder, redact_resolved_values
+
     try:
         args = json.loads(arguments_str) if arguments_str else {}
     except json.JSONDecodeError:
         args = {}
 
+    resolved_secrets: list[str] = []
+    if agent is not None and db is not None:
+        _agent_id = agent.get("_id") if isinstance(agent, dict) else agent.id
+        if not isinstance(_agent_id, (int, str)):
+            _agent_id = str(_agent_id)
+        _user_id = agent.get("user_id") if isinstance(agent, dict) else agent.user_id
+        for _k, _v in list(args.items()):
+            if isinstance(_v, str) and contains_secret_placeholder(_v):
+                args[_k], _vals = await resolve_secret_placeholders(_v, _agent_id, _user_id, db, is_mongo=is_mongo)
+                resolved_secrets.extend(_vals)
+
+    result = await _execute_sandbox_tool_inner(tool_name, args, container_id)
+    return redact_resolved_values(result, resolved_secrets) if resolved_secrets else result
+
+
+async def _execute_sandbox_tool_inner(tool_name: str, args: dict, container_id: str) -> str:
     if tool_name == "sandbox_bash":
         command = args.get("command", "")
         timeout = min(max(int(args.get("timeout", 30)), 1), 600)

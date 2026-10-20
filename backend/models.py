@@ -293,16 +293,36 @@ class WorkflowSchedule(Base):
 
 
 class UserSecret(Base):
-    """User-managed secrets (generic key-value pairs, encrypted at rest)."""
+    """User-managed secrets, encrypted at rest. secret_type picks a field
+    schema (see secret_types.py) — encrypted_value is a JSON object mapping
+    each of that type's field names to an independently-Fernet-encrypted
+    string, e.g. {"number": "gAAAAA...", "cvv": "gAAAAA..."} for credit_card,
+    or {"value": "gAAAAA..."} for the original generic single-value shape.
+    A secret existing here grants no tool-call access on its own — see
+    AgentSecretAccess."""
     __tablename__ = "user_secrets"
 
     id              = Column(Integer, primary_key=True, index=True)
     user_id         = Column(Integer, ForeignKey("users.id"), nullable=False)
     name            = Column(String, nullable=False)
-    encrypted_value = Column(String, nullable=False)
+    secret_type     = Column(String, default="generic", nullable=False)   # generic | credit_card | login
+    encrypted_value = Column(Text, nullable=False)
     description     = Column(Text, nullable=True)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class AgentSecretAccess(Base):
+    """Per-agent allowlist: which secrets an agent may reference via the
+    {{secrets.<name>.<field>}} placeholder syntax (secret_placeholder.py).
+    A real join table, not a JSON array on Agent, because this is a security
+    boundary (fails closed if absent) rather than a UI convenience list."""
+    __tablename__ = "agent_secret_access"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    agent_id    = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    secret_id   = Column(Integer, ForeignKey("user_secrets.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class VaultFile(Base):

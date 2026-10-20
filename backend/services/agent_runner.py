@@ -329,9 +329,9 @@ async def _run_headless_sqlite(session_id: int, agent_id: int, db) -> str | None
             if is_builtin_tool(tc.name):
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
-                result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid) if _sandbox_cid else json.dumps({"error": "Sandbox not running"})
+                result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid, agent=agent, db=db) if _sandbox_cid else json.dumps({"error": "Sandbox not running"})
             else:
-                result = await _execute_tool(tc.name, tc.arguments, db)
+                result = await _execute_tool(tc.name, tc.arguments, db, agent=agent)
 
             messages.append(LLMMessage(
                 role="user",
@@ -529,9 +529,9 @@ async def _run_headless_mongo(
             if is_builtin_tool(tc.name):
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
-                result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid) if _sandbox_cid else json.dumps({"error": "Sandbox not running"})
+                result = await execute_sandbox_tool(tc.name, tc.arguments, _sandbox_cid, agent=agent, db=mongo_db, is_mongo=True) if _sandbox_cid else json.dumps({"error": "Sandbox not running"})
             else:
-                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db, user_id=_user_id, session_id=session_id)
+                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db, agent=agent)
 
             messages.append(LLMMessage(
                 role="user",

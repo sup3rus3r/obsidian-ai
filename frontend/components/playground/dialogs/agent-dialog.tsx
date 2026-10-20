@@ -23,9 +23,10 @@ import {
 import Link from "next/link"
 import { apiClient } from "@/lib/api-client"
 import { usePlaygroundStore } from "@/stores/playground-store"
-import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite, PromptVaultEntry, Skill, VaultFile } from "@/types/playground"
-import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, ShieldCheck, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap, Download, Upload, Pencil, Check, FileText } from "lucide-react"
+import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite, PromptVaultEntry, Skill, VaultFile, Secret } from "@/types/playground"
+import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, ShieldCheck, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap, Download, Upload, Pencil, Check, FileText, KeyRound } from "lucide-react"
 import { AppRoutes } from "@/app/api/routes"
+import { Routes } from "@/config/routes"
 
 // ─── Privacy Mode helpers ────────────────────────────────────────────────────
 
@@ -267,6 +268,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [privacyEntities, setPrivacyEntities] = useState<string[]>(PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
   const [privacyStrategy, setPrivacyStrategy] = useState<"redact" | "mask">("redact")
   const [privacyDenyList, setPrivacyDenyList] = useState("")
+  const [accessibleSecrets, setAccessibleSecrets] = useState<Secret[]>([])
+  const [loadingSecretAccess, setLoadingSecretAccess] = useState(false)
   const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([])
   const [availableMCPServers, setAvailableMCPServers] = useState<MCPServer[]>([])
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([])
@@ -322,6 +325,25 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
 
     // Load eval suites for optimizer selector
     apiClient.listEvalSuites().then(setEvalSuites).catch(() => {})
+
+    if (agent) {
+      setLoadingSecretAccess(true)
+      apiClient.listSecrets()
+        .then(async (allSecrets) => {
+          const results = await Promise.all(
+            allSecrets.map((s) =>
+              apiClient.getSecretAccess(s.id).then((access) => ({ secret: s, access })).catch(() => null),
+            ),
+          )
+          const granted = results
+            .filter((r): r is { secret: Secret; access: { agent_ids: string[] } } => !!r)
+            .filter((r) => r.access.agent_ids.includes(agent.id))
+            .map((r) => r.secret)
+          setAccessibleSecrets(granted)
+        })
+        .catch(() => {})
+        .finally(() => setLoadingSecretAccess(false))
+    }
 
     if (agent) {
       setName(agent.name)
@@ -1429,6 +1451,44 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               </div>
             )}
           </div>
+
+          {/* Secret Access Section (edit mode only, read-only — managed from the Secrets Vault) */}
+          {isEditing && (
+            <div className="grid gap-2">
+              <Label className="flex items-center gap-1.5">
+                <KeyRound className="h-3.5 w-3.5 text-amber-500" />
+                Secret Access
+              </Label>
+              <p className="text-xs text-muted-foreground -mt-1">
+                Vaulted secrets this agent can resolve via {"{{secrets.<name>.<field>}}"}. Access is granted per-secret
+                from the Secrets Vault, not here, so there's a single place that controls each allowlist.
+              </p>
+              {loadingSecretAccess ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground p-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Checking secret access...
+                </div>
+              ) : accessibleSecrets.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic">No secrets granted to this agent yet.</p>
+              ) : (
+                <div className="space-y-1 max-h-32 overflow-y-auto rounded-md border border-border p-2">
+                  {accessibleSecrets.map((s) => (
+                    <div key={s.id} className="flex items-center gap-2 p-1.5 text-xs">
+                      <KeyRound className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="font-medium truncate">{s.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Link
+                href={Routes.SECRETS}
+                className="text-xs text-primary hover:underline flex items-center gap-1 w-fit"
+              >
+                Manage access in Secrets Vault
+                <ExternalLink className="h-3 w-3" />
+              </Link>
+            </div>
+          )}
 
           {/* Version History Section (edit mode only) */}
           {isEditing && (

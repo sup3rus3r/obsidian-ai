@@ -20,6 +20,7 @@ from llm.provider_factory import create_provider_from_config
 from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
 from file_storage import FileStorageService
 from pii_redactor import redact_text, PrivacyModeConfig
+from secret_placeholder import resolve_secret_placeholders, contains_secret_placeholder, redact_resolved_values, StreamingSecretResolver, build_secret_access_injection_sqlite, build_secret_access_injection_mongo
 from rag_service import RAGService
 from sandbox_tools import (
     SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool,
@@ -434,7 +435,7 @@ async def _process_artifact_patches(full_content: str, past_messages, container_
 _HEARTBEAT_INTERVAL_S = 3.0
 
 
-async def _run_sandbox_tool_with_heartbeat(tool_name: str, arguments_str: str, container_id: str, tool_call_id: str):
+async def _run_sandbox_tool_with_heartbeat(tool_name: str, arguments_str: str, container_id: str, tool_call_id: str, agent=None, db=None, is_mongo: bool = False):
     """
     Run execute_sandbox_tool while yielding periodic 'tool_call' SSE heartbeat
     events (status still "running", with elapsed_seconds) so a long sandbox
@@ -449,7 +450,7 @@ async def _run_sandbox_tool_with_heartbeat(tool_name: str, arguments_str: str, c
             else:
                 yield item  # forward heartbeat SSE event
     """
-    task = asyncio.ensure_future(execute_sandbox_tool(tool_name, arguments_str, container_id))
+    task = asyncio.ensure_future(execute_sandbox_tool(tool_name, arguments_str, container_id, agent=agent, db=db, is_mongo=is_mongo))
     start = time.time()
     while not task.done():
         try:
@@ -538,6 +539,7 @@ def _artifact_tag_for_persistence(artifact_id: str, title: str, atype: str, cont
 async def _run_sandboxed_tool_with_events(
     tool_name: str, arguments_str: str, tool_call_id: str, sandbox_container_id: str,
     agent_for_sandbox, scope: str, on_event: Callable[[dict], None] | None,
+    db=None, is_mongo: bool = False,
 ) -> str:
     """
     Run a sandbox tool call with the exact same heartbeat/artifact-sync/preview
@@ -558,7 +560,7 @@ async def _run_sandboxed_tool_with_events(
     })
 
     result = None
-    async for _item in _run_sandbox_tool_with_heartbeat(tool_name, arguments_str, sandbox_container_id, tool_call_id):
+    async for _item in _run_sandbox_tool_with_heartbeat(tool_name, arguments_str, sandbox_container_id, tool_call_id, agent=agent_for_sandbox, db=db, is_mongo=is_mongo):
         if isinstance(_item, str):
             result = _item
         else:
@@ -1301,7 +1303,7 @@ def _scan_content_for_elements(full_content: str, prev_len: int, edit_target: tu
     return events
 
 
-async def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
+async def _execute_tool(tool_name: str, arguments_str: str, db, agent=None) -> str:
     """Look up a tool by name and execute it, returning the result string."""
     try:
         arguments = json.loads(arguments_str) if arguments_str else {}
@@ -1328,7 +1330,19 @@ async def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
         config = json.loads(tool_def.handler_config) if tool_def.handler_config else {}
         url = config.get("url", "")
         method = config.get("method", "POST").upper()
-        headers = config.get("headers", {})
+        headers = dict(config.get("headers", {}))
+        _resolved_secrets: list[str] = []
+        if agent is not None:
+            url, _url_secrets = await resolve_secret_placeholders(url, agent.id, agent.user_id, db)
+            _resolved_secrets.extend(_url_secrets)
+            for k, v in list(headers.items()):
+                if isinstance(v, str) and contains_secret_placeholder(v):
+                    headers[k], _h_secrets = await resolve_secret_placeholders(v, agent.id, agent.user_id, db)
+                    _resolved_secrets.extend(_h_secrets)
+            for k, v in list(arguments.items()):
+                if isinstance(v, str) and contains_secret_placeholder(v):
+                    arguments[k], _a_secrets = await resolve_secret_placeholders(v, agent.id, agent.user_id, db)
+                    _resolved_secrets.extend(_a_secrets)
         if not url:
             return json.dumps({"error": "No URL configured for this tool"})
         try:
@@ -1337,14 +1351,15 @@ async def _execute_tool(tool_name: str, arguments_str: str, db) -> str:
                     resp = await client.get(url, params=arguments, headers=headers)
                 else:
                     resp = await client.request(method, url, json=arguments, headers=headers)
-                return resp.text
+                result_text = resp.text
         except Exception as e:
             return json.dumps({"error": f"HTTP request failed: {e}"})
+        return redact_resolved_values(result_text, _resolved_secrets)
 
     return json.dumps({"error": f"Unsupported handler type: {tool_def.handler_type}"})
 
 
-async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> str:
+async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db, agent=None) -> str:
     """Look up a tool by name in MongoDB and execute it."""
     try:
         arguments = json.loads(arguments_str) if arguments_str else {}
@@ -1379,7 +1394,21 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
         import httpx
         url = config.get("url", "")
         method = config.get("method", "POST").upper()
-        headers = config.get("headers", {})
+        headers = dict(config.get("headers", {}))
+        _resolved_secrets: list[str] = []
+        if agent is not None:
+            _agent_id = str(agent.get("_id")) if isinstance(agent, dict) else str(agent.id)
+            _user_id = (agent.get("user_id") if isinstance(agent, dict) else agent.user_id)
+            url, _url_secrets = await resolve_secret_placeholders(url, _agent_id, _user_id, mongo_db, is_mongo=True)
+            _resolved_secrets.extend(_url_secrets)
+            for k, v in list(headers.items()):
+                if isinstance(v, str) and contains_secret_placeholder(v):
+                    headers[k], _h_secrets = await resolve_secret_placeholders(v, _agent_id, _user_id, mongo_db, is_mongo=True)
+                    _resolved_secrets.extend(_h_secrets)
+            for k, v in list(arguments.items()):
+                if isinstance(v, str) and contains_secret_placeholder(v):
+                    arguments[k], _a_secrets = await resolve_secret_placeholders(v, _agent_id, _user_id, mongo_db, is_mongo=True)
+                    _resolved_secrets.extend(_a_secrets)
         if not url:
             return json.dumps({"error": "No URL configured for this tool"})
         try:
@@ -1388,9 +1417,10 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db) -> s
                     resp = await client.get(url, params=arguments, headers=headers)
                 else:
                     resp = await client.request(method, url, json=arguments, headers=headers)
-                return resp.text
+                result_text = resp.text
         except Exception as e:
             return json.dumps({"error": f"HTTP request failed: {e}"})
+        return redact_resolved_values(result_text, _resolved_secrets)
 
     return json.dumps({"error": f"Unsupported handler type: {handler_type}"})
 
@@ -1500,7 +1530,7 @@ def _merge_tools(native_tools: list[dict] | None, mcp_tools: list[dict]) -> list
 
 async def _execute_mcp_or_native_tool(
     tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], db,
-    sandbox_container_id: str | None = None,
+    sandbox_container_id: str | None = None, agent=None,
 ) -> str:
     """Route a tool call to either a builtin, sandbox, MCP server, or native tool handler."""
     if is_builtin_tool(tc_name):
@@ -1508,7 +1538,7 @@ async def _execute_mcp_or_native_tool(
     if is_sandbox_tool(tc_name):
         if not sandbox_container_id:
             return json.dumps({"error": "Sandbox is not running for this agent"})
-        return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id)
+        return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id, agent=agent, db=db)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
         server_name, original_tool_name = parsed
@@ -1522,12 +1552,12 @@ async def _execute_mcp_or_native_tool(
         else:
             return json.dumps({"error": f"MCP server '{server_name}' not connected"})
     else:
-        return await _execute_tool(tc_name, tc_arguments, db)
+        return await _execute_tool(tc_name, tc_arguments, db, agent=agent)
 
 
 async def _execute_mcp_or_native_tool_mongo(
     tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], mongo_db,
-    sandbox_container_id: str | None = None,
+    sandbox_container_id: str | None = None, agent=None,
 ) -> str:
     """Route a tool call to either a builtin, sandbox, MCP server, or native tool handler (MongoDB)."""
     if is_builtin_tool(tc_name):
@@ -1535,7 +1565,7 @@ async def _execute_mcp_or_native_tool_mongo(
     if is_sandbox_tool(tc_name):
         if not sandbox_container_id:
             return json.dumps({"error": "Sandbox is not running for this agent"})
-        return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id)
+        return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id, agent=agent, db=mongo_db, is_mongo=True)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
         server_name, original_tool_name = parsed
@@ -1549,7 +1579,7 @@ async def _execute_mcp_or_native_tool_mongo(
         else:
             return json.dumps({"error": f"MCP server '{server_name}' not connected"})
     else:
-        return await _execute_tool_mongo(tc_name, tc_arguments, mongo_db)
+        return await _execute_tool_mongo(tc_name, tc_arguments, mongo_db, agent=agent)
 
 
 async def _connect_mcp_servers(stack: AsyncExitStack, mcp_server_configs: list[dict]) -> tuple[dict[str, MCPConnection], list[dict]]:
@@ -2347,7 +2377,8 @@ def _resolve_agent_chat_context(session, request: ChatRequest, db: DBSession, cu
                 VaultFile.user_id == int(current_user.user_id),
             ).all()
             _vault_injection = _build_vault_injection(_vault_files)
-    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "") + _build_artifact_context(past_messages) + _skills_injection + _vault_injection
+    _secrets_injection = build_secret_access_injection_sqlite(agent.id, int(current_user.user_id), db)
+    system_prompt = (agent.system_prompt or "") + _build_memory_injection(_agent_memories) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active else "") + _build_artifact_context(past_messages) + _skills_injection + _vault_injection + _secrets_injection
     tools = _build_tools_for_llm(agent, db)
     # Inject sandbox tools if agent has an active sandbox container
     if _sandbox_active:
@@ -2770,6 +2801,11 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
     """Generator yielding SSE events for streaming response, with tool execution loop."""
     full_content = ""
     reasoning_parts = []
+    # Resolves {{secrets.name.field}} in the model's OWN reply text, only in
+    # what's streamed to the browser — full_content (persisted + replayed back
+    # to the LLM as history) always keeps the literal placeholder. See
+    # secret_placeholder.py's StreamingSecretResolver docstring.
+    _secret_resolver = StreamingSecretResolver(agent_id, getattr(agent, "user_id", None), db) if agent else None
     tool_calls_collected = []  # accumulate tool calls from the current round
     token_usage = {}  # accumulates usage across all tool rounds
     # Sandbox-synced artifact tags, collected across ALL rounds (full_content gets
@@ -2831,10 +2867,12 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 if chunk.type == "content":
                     prev_len = len(full_content)
                     full_content += chunk.content
-                    yield {
-                        "event": "content_delta",
-                        "data": json.dumps({"content": chunk.content}),
-                    }
+                    _out = await _secret_resolver.feed(chunk.content) if _secret_resolver else chunk.content
+                    if _out:
+                        yield {
+                            "event": "content_delta",
+                            "data": json.dumps({"content": _out}),
+                        }
                     for ev in _scan_content_for_elements(full_content, prev_len, edit_target=edit_target):
                         yield ev
                 elif chunk.type == "reasoning":
@@ -2875,6 +2913,11 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         "data": json.dumps({"error": chunk.error}),
                     }
                     return
+
+            if _secret_resolver:
+                _tail = await _secret_resolver.flush()
+                if _tail:
+                    yield {"event": "content_delta", "data": json.dumps({"content": _tail})}
 
             _tc.record_llm_span(
                 model_name=(agent.model_id if agent else None) or provider_record.model_id,
@@ -3158,7 +3201,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     result = await execute_builtin_tool(tc.name, tc.arguments)
                 elif is_sandbox_tool(tc.name):
                     if _sandbox_cid:
-                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id):
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id, agent=agent, db=db):
                             if isinstance(_item, str):
                                 result = _item
                             else:
@@ -3168,7 +3211,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                 elif is_async_job_tool(tc.name):
                     result = await execute_schedule_async_check(tc.arguments, session_id, agent_id, mcp_server_configs, "sqlite", db)
                 else:
-                    result = await _execute_tool(tc.name, tc.arguments, db)
+                    result = await _execute_tool(tc.name, tc.arguments, db, agent=agent)
                 _tc.record_tool_span(
                     tool_name=tc.name,
                     arguments_str=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
@@ -3296,11 +3339,15 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
         for ev in _finalize_events:
             yield ev
 
+        _display_content = full_content
+        if _secret_resolver:
+            _display_content, _ = await resolve_secret_placeholders(full_content, agent_id, agent.user_id, db)
+
         msg_response = {
             "id": str(assistant_msg.id),
             "session_id": str(session_id),
             "role": "assistant",
-            "content": full_content,
+            "content": _display_content,
             "agent_id": str(agent_id),
             "reasoning": json.loads(reasoning_json) if reasoning_json else None,
             "metadata": metadata,
@@ -3351,6 +3398,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
     token_usage = {}
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
+    _secret_resolver = StreamingSecretResolver(agent_id, getattr(agent, "user_id", None), db) if agent else None
 
     # Context compaction check before streaming
     compaction_event = await _compact_context_if_needed(messages, llm, system_prompt, db, session_id, provider_record)
@@ -3398,7 +3446,9 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     if chunk.type == "content":
                         prev_len = len(full_content)
                         full_content += chunk.content
-                        yield {"event": "content_delta", "data": json.dumps({"content": chunk.content})}
+                        _out = await _secret_resolver.feed(chunk.content) if _secret_resolver else chunk.content
+                        if _out:
+                            yield {"event": "content_delta", "data": json.dumps({"content": _out})}
                         for ev in _scan_content_for_elements(full_content, prev_len, edit_target=edit_target):
                             yield ev
                     elif chunk.type == "reasoning":
@@ -3433,6 +3483,11 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     elif chunk.type == "error":
                         yield {"event": "error", "data": json.dumps({"error": chunk.error})}
                         return
+
+                if _secret_resolver:
+                    _tail = await _secret_resolver.flush()
+                    if _tail:
+                        yield {"event": "content_delta", "data": json.dumps({"content": _tail})}
 
                 _tc.record_llm_span(
                     model_name=(agent.model_id if agent else None) or provider_record.model_id,
@@ -3667,13 +3722,13 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                     _tool_start = time.time()
                     _sandbox_cid = sandbox_container_id_override or (getattr(agent, "sandbox_container_id", None) if agent else None)
                     if is_sandbox_tool(tc.name) and _sandbox_cid:
-                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id):
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id, agent=agent, db=db):
                             if isinstance(_item, str):
                                 result = _item
                             else:
                                 yield _item
                     else:
-                        result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db, sandbox_container_id=_sandbox_cid)
+                        result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db, sandbox_container_id=_sandbox_cid, agent=agent)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     _tc.record_tool_span(
                         tool_name=tc.name,
@@ -3779,9 +3834,13 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
             for ev in _finalize_events:
                 yield ev
 
+            _display_content = full_content
+            if _secret_resolver:
+                _display_content, _ = await resolve_secret_placeholders(full_content, agent_id, agent.user_id, db)
+
             msg_response = {
                 "id": str(assistant_msg.id), "session_id": str(session_id), "role": "assistant",
-                "content": full_content, "agent_id": str(agent_id),
+                "content": _display_content, "agent_id": str(agent_id),
                 "reasoning": json.loads(reasoning_json) if reasoning_json else None,
                 "metadata": metadata, "created_at": assistant_msg.created_at.isoformat() if assistant_msg.created_at else None,
             }
@@ -3885,11 +3944,11 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
                 if sandbox_container_id:
-                    result = await _run_sandboxed_tool_with_events(tc.name, tc.arguments, tc.id, sandbox_container_id, agent_for_sandbox, "agents", on_event)
+                    result = await _run_sandboxed_tool_with_events(tc.name, tc.arguments, tc.id, sandbox_container_id, agent_for_sandbox, "agents", on_event, db=db)
                 else:
                     result = json.dumps({"error": "Sandbox is not running for this agent"})
             else:
-                result = await _execute_tool(tc.name, tc.arguments, db)
+                result = await _execute_tool(tc.name, tc.arguments, db, agent=agent)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     # Final call without tools to force a text response
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
@@ -3929,11 +3988,11 @@ async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None,
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
                 if sandbox_container_id:
-                    result = await _run_sandboxed_tool_with_events(tc.name, tc.arguments, tc.id, sandbox_container_id, agent_for_sandbox, "teams", on_event)
+                    result = await _run_sandboxed_tool_with_events(tc.name, tc.arguments, tc.id, sandbox_container_id, agent_for_sandbox, "teams", on_event, db=mongo_db, is_mongo=True)
                 else:
                     result = json.dumps({"error": "Sandbox is not running for this agent"})
             else:
-                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
+                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db, agent=agent)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
     return final.content or ""
@@ -4733,7 +4792,8 @@ async def _resolve_agent_chat_context_mongo(session, request: ChatRequest, mongo
         if _vault_ids_mongo:
             _vault_files_mongo = await VaultFileCollection.find_by_ids(mongo_db, [str(v) for v in _vault_ids_mongo], _user_id_str)
             _vault_injection_mongo = _build_vault_injection_dicts(_vault_files_mongo)
-    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active_mongo else "") + _build_artifact_context(past_messages) + _skills_injection_mongo + _vault_injection_mongo
+    _secrets_injection_mongo = await build_secret_access_injection_mongo(str(agent["_id"]), _user_id_str, mongo_db)
+    system_prompt = (agent.get("system_prompt") or "") + _build_memory_injection_dicts(_agent_memories_mongo) + _ARTIFACT_SYSTEM_HINT + (_SANDBOX_SYSTEM_HINT if _sandbox_active_mongo else "") + _build_artifact_context(past_messages) + _skills_injection_mongo + _vault_injection_mongo + _secrets_injection_mongo
     tools = await _build_tools_for_llm_mongo(agent, mongo_db)
     # Inject sandbox tools if agent has an active sandbox container
     if _sandbox_active_mongo:
@@ -4910,6 +4970,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
     token_usage = {}
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
+    _secret_resolver = StreamingSecretResolver(agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True) if agent else None
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -4993,7 +5054,9 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 if chunk.type == "content":
                     prev_len = len(full_content)
                     full_content += chunk.content
-                    yield {"event": "content_delta", "data": json.dumps({"content": chunk.content})}
+                    _out = await _secret_resolver.feed(chunk.content) if _secret_resolver else chunk.content
+                    if _out:
+                        yield {"event": "content_delta", "data": json.dumps({"content": _out})}
                     for ev in _scan_content_for_elements(full_content, prev_len, edit_target=edit_target):
                         yield ev
                 elif chunk.type == "reasoning":
@@ -5027,6 +5090,11 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 elif chunk.type == "error":
                     yield {"event": "error", "data": json.dumps({"error": chunk.error})}
                     return
+
+            if _secret_resolver:
+                _tail = await _secret_resolver.flush()
+                if _tail:
+                    yield {"event": "content_delta", "data": json.dumps({"content": _tail})}
 
             await _record_llm_span_mongo(
                 usage=token_usage,
@@ -5243,7 +5311,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                     result = await execute_builtin_tool(tc.name, tc.arguments)
                 elif is_sandbox_tool(tc.name):
                     if _sandbox_cid:
-                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id):
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid, tc.id, agent=agent, db=mongo_db, is_mongo=True):
                             if isinstance(_item, str):
                                 result = _item
                             else:
@@ -5253,7 +5321,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 elif is_async_job_tool(tc.name):
                     result = await execute_schedule_async_check(tc.arguments, session_id, agent_id, mcp_server_configs, "mongo", mongo_db)
                 else:
-                    result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db)
+                    result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db, agent=agent)
                 await _record_tool_span_mongo(
                     tool_name=tc.name,
                     arguments_str=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
@@ -5358,9 +5426,13 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
         for ev in _finalize_events:
             yield ev
 
+        _display_content = full_content
+        if _secret_resolver:
+            _display_content, _ = await resolve_secret_placeholders(full_content, agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True)
+
         msg_response = {
             "id": str(msg["_id"]), "session_id": session_id, "role": "assistant",
-            "content": full_content, "agent_id": agent_id,
+            "content": _display_content, "agent_id": agent_id,
             "reasoning": json.loads(reasoning_json) if reasoning_json else None,
             "metadata": metadata, "created_at": msg["created_at"].isoformat() if msg.get("created_at") else None,
         }
@@ -5395,6 +5467,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
     token_usage = {}
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
+    _secret_resolver = StreamingSecretResolver(agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True) if agent else None
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     native_tools = _inject_create_tool_schema(native_tools, agent)
@@ -5478,7 +5551,9 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                     if chunk.type == "content":
                         prev_len = len(full_content)
                         full_content += chunk.content
-                        yield {"event": "content_delta", "data": json.dumps({"content": chunk.content})}
+                        _out = await _secret_resolver.feed(chunk.content) if _secret_resolver else chunk.content
+                        if _out:
+                            yield {"event": "content_delta", "data": json.dumps({"content": _out})}
                         for ev in _scan_content_for_elements(full_content, prev_len, edit_target=edit_target):
                             yield ev
                     elif chunk.type == "reasoning":
@@ -5512,6 +5587,11 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                     elif chunk.type == "error":
                         yield {"event": "error", "data": json.dumps({"error": chunk.error})}
                         return
+
+                if _secret_resolver:
+                    _tail = await _secret_resolver.flush()
+                    if _tail:
+                        yield {"event": "content_delta", "data": json.dumps({"content": _tail})}
 
                 await _record_llm_span_mcp_mongo(
                     usage=token_usage,
@@ -5726,13 +5806,13 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                     _tool_start = time.time()
                     _sandbox_cid_mongo = sandbox_container_id_override or (agent.get("sandbox_container_id") if agent else None)
                     if is_sandbox_tool(tc.name) and _sandbox_cid_mongo:
-                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid_mongo, tc.id):
+                        async for _item in _run_sandbox_tool_with_heartbeat(tc.name, tc.arguments, _sandbox_cid_mongo, tc.id, agent=agent, db=mongo_db, is_mongo=True):
                             if isinstance(_item, str):
                                 result = _item
                             else:
                                 yield _item
                     else:
-                        result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db, sandbox_container_id=_sandbox_cid_mongo)
+                        result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db, sandbox_container_id=_sandbox_cid_mongo, agent=agent)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     await _record_tool_span_mcp_mongo(
                         tool_name=tc.name,
@@ -5836,9 +5916,13 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
             for ev in _finalize_events:
                 yield ev
 
+            _display_content = full_content
+            if _secret_resolver:
+                _display_content, _ = await resolve_secret_placeholders(full_content, agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True)
+
             msg_response = {
                 "id": str(msg["_id"]), "session_id": session_id, "role": "assistant",
-                "content": full_content, "agent_id": agent_id,
+                "content": _display_content, "agent_id": agent_id,
                 "reasoning": json.loads(reasoning_json) if reasoning_json else None,
                 "metadata": metadata, "created_at": msg["created_at"].isoformat() if msg.get("created_at") else None,
             }

@@ -699,6 +699,7 @@ class UserSecretCollection:
         collection = db[cls.collection_name]
         data.setdefault("created_at", datetime.utcnow())
         data.setdefault("updated_at", datetime.utcnow())
+        data.setdefault("secret_type", "generic")
         result = await collection.insert_one(data)
         data["_id"] = result.inserted_id
         return data
@@ -720,6 +721,54 @@ class UserSecretCollection:
             {"_id": ObjectId(secret_id), "user_id": user_id}
         )
         return result.deleted_count > 0
+
+
+class AgentSecretAccessCollection:
+    """Per-agent allowlist mirror of models.py's AgentSecretAccess — see its
+    docstring for the fails-closed security rationale."""
+    collection_name = "agent_secret_access"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("agent_id")
+        await collection.create_index("secret_id")
+
+    @classmethod
+    async def find_by_agent(cls, db, agent_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"agent_id": agent_id})
+        return await cursor.to_list(length=200)
+
+    @classmethod
+    async def find_by_secret(cls, db, secret_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"secret_id": secret_id})
+        return await cursor.to_list(length=200)
+
+    @classmethod
+    async def agent_has_access(cls, db, agent_id: str, secret_id: str) -> bool:
+        collection = db[cls.collection_name]
+        doc = await collection.find_one({"agent_id": agent_id, "secret_id": secret_id})
+        return doc is not None
+
+    @classmethod
+    async def set_access(cls, db, secret_id: str, agent_ids: list[str]) -> None:
+        """Replace the full allowlist for one secret in a single call, same
+        convention as how Agent.knowledge_base_ids_json is replaced wholesale
+        on save."""
+        collection = db[cls.collection_name]
+        await collection.delete_many({"secret_id": secret_id})
+        if agent_ids:
+            await collection.insert_many([
+                {"agent_id": aid, "secret_id": secret_id, "created_at": datetime.utcnow()}
+                for aid in agent_ids
+            ])
+
+    @classmethod
+    async def delete_by_secret(cls, db, secret_id: str) -> None:
+        collection = db[cls.collection_name]
+        await collection.delete_many({"secret_id": secret_id})
 
 
 class PromptVaultCollection:

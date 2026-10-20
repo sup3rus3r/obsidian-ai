@@ -647,7 +647,9 @@ class SecretUpdate(BaseModel):
 class SecretResponse(BaseModel):
     id: str
     name: str
-    masked_value: str
+    secret_type: str = "generic"
+    fields: dict[str, str] = {}   # field -> masked or clear value, per secret_types.SECRET_TYPE_SCHEMAS
+    masked_value: str             # kept for backward compatibility with older frontend builds
     description: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -657,6 +659,15 @@ class SecretResponse(BaseModel):
 
 class SecretListResponse(BaseModel):
     secrets: list[SecretResponse]
+
+class SecretAccessResponse(BaseModel):
+    agent_ids: list[str]
+
+class SecretAccessRequest(BaseModel):
+    agent_ids: list[str]
+
+class SecretRevealResponse(BaseModel):
+    fields: dict[str, str]   # every field, real decrypted values — only ever returned on explicit reveal
 
 
 # ============================================================================

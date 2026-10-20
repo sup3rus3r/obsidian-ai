@@ -140,6 +140,31 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Add secret_type to user_secrets if missing (defaults existing rows to
+        # "generic" — encrypted_value's JSON reshape to {"value": ...} is handled
+        # at read-time by secrets_router.py, not here, so no data migration needed)
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE user_secrets ADD COLUMN secret_type TEXT NOT NULL DEFAULT 'generic'"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Create agent_secret_access table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS agent_secret_access (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    secret_id INTEGER NOT NULL REFERENCES user_secrets(id) ON DELETE CASCADE,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
         # Add attachments_json to messages if missing
         try:
             conn.execute(sqlalchemy.text(

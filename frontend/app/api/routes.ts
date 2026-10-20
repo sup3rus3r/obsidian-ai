@@ -93,6 +93,9 @@ export const AppRoutes = {
     CreateSecret        : () => "/api/secrets",
     UpdateSecret        : (id: string) => `/api/secrets/${id}`,
     DeleteSecret        : (id: string) => `/api/secrets/${id}`,
+    GetSecretAccess     : (id: string) => `/api/secrets/${id}/access`,
+    SetSecretAccess     : (id: string) => `/api/secrets/${id}/access`,
+    RevealSecret        : (id: string) => `/api/secrets/${id}/reveal`,
 
     // Files
     GetFile             : (id: string) => `/api/files/${id}`,

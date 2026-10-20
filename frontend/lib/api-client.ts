@@ -72,6 +72,8 @@ import type {
   AsyncJobItem,
   Skill,
   VaultFile,
+  Secret,
+  SecretAccess,
 } from "@/types/playground"
 
 interface ApiResponse<T> {
@@ -1216,6 +1218,49 @@ class ApiClient {
   async getGlobalPendingHITL(): Promise<HITLApprovalItem[]> {
     const result = await this.request<{ approvals: HITLApprovalItem[] }>(AppRoutes.HITLGlobalPending())
     return result.approvals || []
+  }
+
+  // ============= Secrets Vault =============
+  async listSecrets(): Promise<Secret[]> {
+    const result = await this.request<ListResponse<Secret>>(AppRoutes.ListSecrets())
+    return result.secrets || []
+  }
+
+  async createSecret(encrypted: string): Promise<Secret> {
+    return this.request<Secret>(AppRoutes.CreateSecret(), {
+      method: "POST",
+      body: JSON.stringify({ encrypted }),
+    })
+  }
+
+  async updateSecret(id: string, encrypted: string): Promise<Secret> {
+    return this.request<Secret>(AppRoutes.UpdateSecret(id), {
+      method: "PUT",
+      body: JSON.stringify({ encrypted }),
+    })
+  }
+
+  async deleteSecret(id: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteSecret(id), {
+      method: "DELETE",
+    })
+  }
+
+  async getSecretAccess(id: string): Promise<SecretAccess> {
+    return this.request<SecretAccess>(AppRoutes.GetSecretAccess(id))
+  }
+
+  async setSecretAccess(id: string, agentIds: string[]): Promise<SecretAccess> {
+    return this.request<SecretAccess>(AppRoutes.SetSecretAccess(id), {
+      method: "PUT",
+      body: JSON.stringify({ agent_ids: agentIds }),
+    })
+  }
+
+  async revealSecret(id: string): Promise<{ fields: Record<string, string> }> {
+    return this.request<{ fields: Record<string, string> }>(AppRoutes.RevealSecret(id), {
+      method: "POST",
+    })
   }
 
   // ============= Global Async Jobs =============

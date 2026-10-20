@@ -602,6 +602,13 @@ export function ToolDialog({ open, onOpenChange, initialTool }: ToolDialogProps)
                   rows={7}
                   className="font-mono text-xs resize-none"
                 />
+                {handlerType === "http" && (
+                  <p className="text-xs text-muted-foreground">
+                    You can reference a vaulted secret with {"{{secrets.name.field}}"} (e.g. {"{{secrets.my_card.number}}"}) —
+                    it resolves to the real value only when this tool executes, never visible to the model. Only
+                    agents granted access to that secret can use it (manage access from the Secrets Vault).
+                  </p>
+                )}
               </div>
 
               {/* Requires human confirmation toggle */}
