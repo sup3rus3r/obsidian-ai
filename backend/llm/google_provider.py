@@ -18,8 +18,44 @@ class GoogleProvider(BaseLLMProvider):
         )
 
     def _build_contents(self, messages: list[LLMMessage]) -> list[dict]:
+        """An assistant LLMMessage with tool_calls becomes a functionCall part
+        per call, and the N "[Tool X returned: ...]" feedback messages
+        chat_router.py appends immediately after it become real
+        functionResponse parts — paired by position, same reasoning as
+        anthropic_provider.py's _build_messages (see its docstring). Without
+        this, Gemini never sees that it made these calls at all."""
         contents = []
-        for m in messages:
+        i = 0
+        n = len(messages)
+        while i < n:
+            m = messages[i]
+
+            if m.role == "assistant" and m.tool_calls:
+                parts = []
+                if isinstance(m.content, str) and m.content.strip():
+                    parts.append({"text": m.content})
+                for tc in m.tool_calls:
+                    try:
+                        args = json.loads(tc.arguments) if tc.arguments else {}
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    parts.append({"functionCall": {"name": tc.name, "args": args}})
+                contents.append({"role": "model", "parts": parts})
+
+                response_parts = []
+                j = i + 1
+                for tc in m.tool_calls:
+                    if j < n and messages[j].role in ("user", "tool"):
+                        result_text = messages[j].text_content
+                        response_parts.append({
+                            "functionResponse": {"name": tc.name, "response": {"result": result_text}},
+                        })
+                        j += 1
+                if response_parts:
+                    contents.append({"role": "user", "parts": response_parts})
+                i = j
+                continue
+
             role = "user" if m.role == "user" else "model"
             if isinstance(m.content, list):
                 parts = []
@@ -35,6 +71,7 @@ class GoogleProvider(BaseLLMProvider):
                 contents.append({"role": role, "parts": parts})
             else:
                 contents.append({"role": role, "parts": [{"text": m.content}]})
+            i += 1
         return contents
 
     def _convert_tools(self, tools: list[dict]) -> list[dict]:

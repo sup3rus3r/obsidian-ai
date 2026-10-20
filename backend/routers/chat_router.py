@@ -22,7 +22,6 @@ from file_storage import FileStorageService
 from pii_redactor import redact_text, PrivacyModeConfig
 from secret_placeholder import resolve_secret_placeholders, contains_secret_placeholder, redact_resolved_values, StreamingSecretResolver, build_secret_access_injection_sqlite, build_secret_access_injection_mongo
 from tool_category_config import ToolCategoryConfig, is_any_category_tool, execute_category_tool
-from tool_loop_guard import ToolLoopGuard, REPEAT_WARNING_THRESHOLD
 from rag_service import RAGService
 from sandbox_tools import (
     SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool,
@@ -2819,7 +2818,6 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
     # to the LLM as history) always keeps the literal placeholder. See
     # secret_placeholder.py's StreamingSecretResolver docstring.
     _secret_resolver = StreamingSecretResolver(agent_id, getattr(agent, "user_id", None), db) if agent else None
-    _loop_guard = ToolLoopGuard()
     tool_calls_collected = []  # accumulate tool calls from the current round
     token_usage = {}  # accumulates usage across all tool rounds
     # Sandbox-synced artifact tags, collected across ALL rounds (full_content gets
@@ -2966,8 +2964,15 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     _unique_tool_calls.append(_tc_item)
             tool_calls_collected = _unique_tool_calls
 
-            # Add empty assistant message then user messages with tool results
-            messages.append(LLMMessage(role="assistant", content=""))
+            # Record the assistant's own tool-call turn in history — without
+            # tool_calls populated here, the model has no structured record
+            # that IT made these calls (only the synthetic "[Tool X returned:
+            # ...]" user-role feedback below), which confuses providers that
+            # expect a matching tool_use/assistant turn (Anthropic, Google)
+            # into treating the tool result as an unexplained claim rather
+            # than its own prior action — observed live as the model denying
+            # it had called any tool and re-doing the same action in a loop.
+            messages.append(LLMMessage(role="assistant", content=full_content, tool_calls=list(tool_calls_collected)))
 
             for tc in tool_calls_collected:
                 # --- Tool proposal: intercept create_tool virtual calls ---
@@ -3286,11 +3291,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
 
                 # Feed result back as user message (compatible with all providers)
                 _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent))
-                _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
-                _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
-                if _repeat_count >= REPEAT_WARNING_THRESHOLD:
-                    _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
-                messages.append(LLMMessage(role="user", content=_feedback))
+                messages.append(LLMMessage(
+                    role="user",
+                    content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
+                ))
 
             # Clear content for the next LLM round (the final text reply)
             full_content = ""
@@ -3416,7 +3420,6 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
     _secret_resolver = StreamingSecretResolver(agent_id, getattr(agent, "user_id", None), db) if agent else None
-    _loop_guard = ToolLoopGuard()
 
     # Context compaction check before streaming
     compaction_event = await _compact_context_if_needed(messages, llm, system_prompt, db, session_id, provider_record)
@@ -3525,8 +3528,10 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                 # Notify frontend about the tool round
                 yield {"event": "tool_round", "data": json.dumps({"round": _round + 1, "max_rounds": MAX_TOOL_ROUNDS})}
 
-                # Add empty assistant message then user messages with tool results
-                messages.append(LLMMessage(role="assistant", content=""))
+                # Record the assistant's own tool-call turn in history — see
+                # the identical comment in _stream_response for why this
+                # must not be an empty message.
+                messages.append(LLMMessage(role="assistant", content=full_content, tool_calls=list(tool_calls_collected)))
 
                 for tc in tool_calls_collected:
                     # --- Tool proposal: intercept create_tool virtual calls ---
@@ -3796,11 +3801,10 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
 
                     # Feed result back as user message (compatible with all providers)
                     _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent))
-                    _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
-                    _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
-                    if _repeat_count >= REPEAT_WARNING_THRESHOLD:
-                        _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
-                    messages.append(LLMMessage(role="user", content=_feedback))
+                    messages.append(LLMMessage(
+                        role="user",
+                        content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
+                    ))
 
                 full_content = ""
 
@@ -5001,7 +5005,6 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
     _secret_resolver = StreamingSecretResolver(agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True) if agent else None
-    _loop_guard = ToolLoopGuard()
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -5140,7 +5143,10 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
 
             yield {"event": "tool_round", "data": json.dumps({"round": _round + 1, "max_rounds": MAX_TOOL_ROUNDS})}
 
-            messages.append(LLMMessage(role="assistant", content=""))
+            # Record the assistant's own tool-call turn in history — see the
+            # identical comment in _stream_response for why this must not
+            # be an empty message.
+            messages.append(LLMMessage(role="assistant", content=full_content, tool_calls=list(tool_calls_collected)))
 
             for tc in tool_calls_collected:
                 # --- Tool proposal: intercept create_tool virtual calls ---
@@ -5401,11 +5407,10 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                     yield ev
 
                 _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent, is_mongo=True))
-                _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
-                _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
-                if _repeat_count >= REPEAT_WARNING_THRESHOLD:
-                    _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
-                messages.append(LLMMessage(role="user", content=_feedback))
+                messages.append(LLMMessage(
+                    role="user",
+                    content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
+                ))
 
             full_content = ""
 
@@ -5502,7 +5507,6 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
     _secret_resolver = StreamingSecretResolver(agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True) if agent else None
-    _loop_guard = ToolLoopGuard()
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     native_tools = _inject_create_tool_schema(native_tools, agent)
@@ -5642,8 +5646,10 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                 # Notify frontend about the tool round
                 yield {"event": "tool_round", "data": json.dumps({"round": _round + 1, "max_rounds": MAX_TOOL_ROUNDS})}
 
-                # Add empty assistant message then user messages with tool results
-                messages.append(LLMMessage(role="assistant", content=""))
+                # Record the assistant's own tool-call turn in history — see
+                # the identical comment in _stream_response for why this
+                # must not be an empty message.
+                messages.append(LLMMessage(role="assistant", content=full_content, tool_calls=list(tool_calls_collected)))
 
                 for tc in tool_calls_collected:
                     # --- Tool proposal: intercept create_tool virtual calls ---
@@ -5893,11 +5899,10 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
 
                     # Feed result back as user message (compatible with all providers)
                     _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent, is_mongo=True))
-                    _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
-                    _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
-                    if _repeat_count >= REPEAT_WARNING_THRESHOLD:
-                        _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
-                    messages.append(LLMMessage(role="user", content=_feedback))
+                    messages.append(LLMMessage(
+                        role="user",
+                        content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
+                    ))
 
                 full_content = ""
 

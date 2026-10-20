@@ -63,18 +63,64 @@ class AnthropicProvider(BaseLLMProvider):
     def _build_messages(self, messages: list[LLMMessage]) -> list[dict]:
         """Build messages for Anthropic, merging consecutive same-role messages
         since Anthropic requires alternating user/assistant roles.
-        Tool role messages are converted to user messages with the result as content."""
+
+        An assistant LLMMessage with tool_calls becomes a tool_use block per
+        call (not just its text), and the N "[Tool X returned: ...]" user
+        feedback messages chat_router.py appends immediately after it become
+        real tool_result blocks referencing that tool_use's id — paired by
+        position, since the caller always emits exactly one feedback message
+        per call, in the same order, right after the assistant's tool-call
+        turn (see chat_router.py's comment at each "Record the assistant's
+        own tool-call turn" site). Without this, Anthropic never sees that
+        it made these calls at all — just unexplained user-role text
+        claiming a tool result happened, which the model has no reason to
+        trust as its own prior action (observed live: it denied calling
+        anything and re-did the same action in a loop)."""
         result = []
-        for m in messages:
-            # Convert tool role to user role for Anthropic compatibility
+        i = 0
+        n = len(messages)
+        while i < n:
+            m = messages[i]
+
+            if m.role == "assistant" and m.tool_calls:
+                content = []
+                if isinstance(m.content, str) and m.content.strip():
+                    content.append({"type": "text", "text": m.content})
+                elif isinstance(m.content, list):
+                    content.extend(self._to_anthropic_content(m.content) or [])
+                for tc in m.tool_calls:
+                    try:
+                        tool_input = json.loads(tc.arguments) if tc.arguments else {}
+                    except (json.JSONDecodeError, TypeError):
+                        tool_input = {}
+                    content.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tool_input})
+                result.append({"role": "assistant", "content": content})
+
+                tool_result_blocks = []
+                j = i + 1
+                for tc in m.tool_calls:
+                    if j < n and messages[j].role in ("user", "tool"):
+                        result_text = messages[j].text_content
+                        tool_result_blocks.append({
+                            "type": "tool_result", "tool_use_id": tc.id,
+                            "content": result_text,
+                        })
+                        j += 1
+                if tool_result_blocks:
+                    result.append({"role": "user", "content": tool_result_blocks})
+                i = j
+                continue
+
             role = "user" if m.role == "tool" else m.role
             content = self._to_anthropic_content(m.content)
             if not content:
+                i += 1
                 continue
             if result and result[-1]["role"] == role:
                 result[-1]["content"] = self._merge_content(result[-1]["content"], content)
             else:
                 result.append({"role": role, "content": content})
+            i += 1
         return result
 
     def _convert_tools(self, tools: list[dict]) -> list[dict]:
