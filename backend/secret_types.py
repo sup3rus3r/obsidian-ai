@@ -2,6 +2,8 @@
 to validate a secret's fields payload and decide which fields to mask in
 list responses, and by the frontend to render the right form per type."""
 
+import json
+
 SECRET_TYPE_SCHEMAS: dict[str, dict[str, dict]] = {
     "generic": {
         "value": {"label": "Value", "sensitive": True},
@@ -30,3 +32,31 @@ def validate_fields(secret_type: str, fields: dict) -> None:
     unknown = [f for f in fields if f not in schema]
     if unknown:
         raise ValueError(f"Unknown field(s) for {secret_type}: {', '.join(unknown)}")
+
+
+def decrypt_fields(secret_type: str, encrypted_value_raw: str) -> dict[str, str]:
+    """Decrypt every field for a secret, tolerating the pre-typed legacy shape
+    (encrypted_value was a single Fernet ciphertext, not a JSON blob). Every
+    consumer of UserSecret.encrypted_value must go through this, not
+    decrypt_api_key directly — the raw column is a JSON blob of
+    {field: fernet_ciphertext}, not a bare Fernet token."""
+    from encryption import decrypt_api_key
+
+    schema = SECRET_TYPE_SCHEMAS.get(secret_type, SECRET_TYPE_SCHEMAS["generic"])
+    try:
+        blob = json.loads(encrypted_value_raw)
+        if not isinstance(blob, dict):
+            raise ValueError
+    except (json.JSONDecodeError, ValueError, TypeError):
+        blob = {"value": encrypted_value_raw}
+
+    decrypted = {}
+    for field in schema:
+        ciphertext = blob.get(field)
+        if not ciphertext:
+            continue
+        try:
+            decrypted[field] = decrypt_api_key(ciphertext)
+        except Exception:
+            continue
+    return decrypted

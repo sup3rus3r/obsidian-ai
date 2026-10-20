@@ -17,7 +17,7 @@ from schemas import (
 from auth import get_current_user, TokenData
 from encryption import encrypt_api_key, decrypt_api_key
 from crypto_utils import decrypt_payload
-from secret_types import SECRET_TYPE_SCHEMAS, validate_fields
+from secret_types import SECRET_TYPE_SCHEMAS, validate_fields, decrypt_fields
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
@@ -33,28 +33,7 @@ def _mask_value(value: str) -> str:
     return f"{value[:3]}...{value[-3:]}"
 
 
-def _decrypt_fields(secret_type: str, encrypted_value_raw: str) -> dict[str, str]:
-    """Decrypt every field for a secret, tolerating the pre-typed legacy shape
-    (encrypted_value was a single Fernet ciphertext, not a JSON blob)."""
-    schema = SECRET_TYPE_SCHEMAS.get(secret_type, SECRET_TYPE_SCHEMAS["generic"])
-    try:
-        blob = json.loads(encrypted_value_raw)
-        if not isinstance(blob, dict):
-            raise ValueError
-    except (json.JSONDecodeError, ValueError, TypeError):
-        # Legacy row: encrypted_value is a bare Fernet ciphertext for "value".
-        blob = {"value": encrypted_value_raw}
-
-    decrypted = {}
-    for field in schema:
-        ciphertext = blob.get(field)
-        if not ciphertext:
-            continue
-        try:
-            decrypted[field] = decrypt_api_key(ciphertext)
-        except Exception:
-            continue
-    return decrypted
+_decrypt_fields = decrypt_fields  # shared with providers_router.py's _resolve_secret
 
 
 def _masked_fields_response(secret_type: str, decrypted: dict[str, str]) -> dict[str, str]:

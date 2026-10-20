@@ -15,6 +15,7 @@ from schemas import (
 )
 from auth import get_current_user, TokenData, require_permission
 from encryption import encrypt_api_key, decrypt_api_key
+from secret_types import decrypt_fields
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
@@ -67,6 +68,18 @@ def _provider_to_response(provider, is_mongo=False) -> LLMProviderResponse:
     )
 
 
+def _single_decrypted_value(secret_type: str, encrypted_value_raw: str) -> str:
+    """A provider's api_key is one string — resolve to the "value" field for
+    generic secrets (the only type that makes sense for an API key), falling
+    back to whatever single field the type does have."""
+    fields = decrypt_fields(secret_type, encrypted_value_raw)
+    if "value" in fields:
+        return fields["value"]
+    if not fields:
+        raise HTTPException(status_code=400, detail="Secret has no usable value for a provider API key")
+    return next(iter(fields.values()))
+
+
 async def _resolve_secret(secret_id: str, user_id: str, db: Session = None):
     """Resolve a secret_id to its decrypted value. Returns (encrypted_key, secret_id_int)."""
     if DATABASE_TYPE == "mongo":
@@ -74,7 +87,7 @@ async def _resolve_secret(secret_id: str, user_id: str, db: Session = None):
         secret = await UserSecretCollection.find_by_id(mongo_db, secret_id)
         if not secret or secret.get("user_id") != user_id:
             raise HTTPException(status_code=404, detail="Secret not found")
-        decrypted = decrypt_api_key(secret["encrypted_value"])
+        decrypted = _single_decrypted_value(secret.get("secret_type", "generic"), secret["encrypted_value"])
         return encrypt_api_key(decrypted), secret_id
     else:
         secret = db.query(UserSecret).filter(
@@ -83,7 +96,7 @@ async def _resolve_secret(secret_id: str, user_id: str, db: Session = None):
         ).first()
         if not secret:
             raise HTTPException(status_code=404, detail="Secret not found")
-        decrypted = decrypt_api_key(secret.encrypted_value)
+        decrypted = _single_decrypted_value(secret.secret_type or "generic", secret.encrypted_value)
         return encrypt_api_key(decrypted), int(secret_id)
 
 
