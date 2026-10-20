@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { apiClient } from "@/lib/api-client"
 import type {
   Agent,
+  Session,
   FineTuneRun,
   FineTuneComputeBackend,
   FineTuneHyperparams,
@@ -13,7 +14,6 @@ import type {
 import { Routes } from "@/config/routes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -249,7 +249,9 @@ export default function FinetunePage() {
   const [baseHfModelId, setBaseHfModelId] = useState("")
 
   const [datasetType, setDatasetType] = useState<FineTuneDatasetSourceType>("session_export")
-  const [sessionIdsText, setSessionIdsText] = useState("")
+  const [agentSessions, setAgentSessions] = useState<Session[]>([])
+  const [loadingSessions, setLoadingSessions] = useState(false)
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set())
   const [uploadedFileData, setUploadedFileData] = useState<string | null>(null)
   const [uploadedFilename, setUploadedFilename] = useState<string | null>(null)
   const [datasetRowCount, setDatasetRowCount] = useState<number | undefined>(undefined)
@@ -288,6 +290,13 @@ export default function FinetunePage() {
       .then(setRuns)
       .catch(() => setRuns([]))
       .finally(() => setLoadingRuns(false))
+
+    setSelectedSessionIds(new Set())
+    setLoadingSessions(true)
+    apiClient.listSessionsFiltered("agent", selectedAgentId)
+      .then(setAgentSessions)
+      .catch(() => setAgentSessions([]))
+      .finally(() => setLoadingSessions(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAgentId])
 
@@ -345,15 +354,18 @@ export default function FinetunePage() {
     reader.readAsDataURL(file)
   }
 
-  const parseSessionIds = (): (number | string)[] =>
-    sessionIdsText
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
+  const toggleSession = (id: string) => {
+    setSelectedSessionIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const canTrigger = () => {
     if (!selectedAgentId || !baseHfModelId.trim()) return false
-    if (datasetType === "session_export") return parseSessionIds().length > 0
+    if (datasetType === "session_export") return selectedSessionIds.size > 0
     return !!uploadedFileData
   }
 
@@ -366,7 +378,7 @@ export default function FinetunePage() {
         base_hf_model_id: baseHfModelId.trim(),
         compute_backend: computeBackend,
         dataset: datasetType === "session_export"
-          ? { type: "session_export", session_ids: parseSessionIds() }
+          ? { type: "session_export", session_ids: Array.from(selectedSessionIds) }
           : { type: "uploaded_file", file_data: uploadedFileData, filename: uploadedFilename },
         hyperparams,
         export_to_ollama: exportToOllama,
@@ -494,16 +506,57 @@ export default function FinetunePage() {
               </TabsList>
               <TabsContent value="session_export" className="space-y-2 pt-2">
                 <p className="text-[11px] text-muted-foreground">
-                  {/* TODO: replace this with a proper session multi-select once a
-                      "list sessions by agent" endpoint is confirmed to exist. */}
-                  Enter comma-separated session IDs to export as training data for this agent.
+                  Select the conversations to export as training data for this agent.
                 </p>
-                <Textarea
-                  value={sessionIdsText}
-                  onChange={(e) => setSessionIdsText(e.target.value)}
-                  placeholder="e.g. 12, 13, 47"
-                  className="min-h-16.5 text-sm font-mono"
-                />
+                {!selectedAgentId ? (
+                  <p className="text-xs text-muted-foreground italic">Select an agent first.</p>
+                ) : loadingSessions ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading sessions…
+                  </div>
+                ) : agentSessions.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">This agent has no conversation sessions yet.</p>
+                ) : (
+                  <>
+                    <div className="max-h-48 overflow-y-auto rounded-md border border-border divide-y divide-border">
+                      {agentSessions.map((s) => (
+                        <label
+                          key={s.id}
+                          className="flex items-center gap-2 px-2.5 py-1.5 text-xs cursor-pointer hover:bg-muted/50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedSessionIds.has(s.id)}
+                            onChange={() => toggleSession(s.id)}
+                            className="h-3.5 w-3.5"
+                          />
+                          <span className="flex-1 truncate">{s.title || `Session ${s.id}`}</span>
+                          <span className="text-muted-foreground shrink-0">{formatDate(s.created_at)}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>{selectedSessionIds.size} selected</span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className="underline hover:text-foreground"
+                          onClick={() => setSelectedSessionIds(new Set(agentSessions.map((s) => s.id)))}
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          className="underline hover:text-foreground"
+                          onClick={() => setSelectedSessionIds(new Set())}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </TabsContent>
               <TabsContent value="uploaded_file" className="space-y-2 pt-2">
                 <Input
