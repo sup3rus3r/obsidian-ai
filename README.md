@@ -50,9 +50,11 @@ Build, deploy, and orchestrate AI agents, multi-agent teams, and automated workf
   - [Prompt Auto-Optimizer](#prompt-auto-optimizer)
   - [Prompt Vault](#prompt-vault)
   - [Skills Vault](#skills-vault)
+  - [Markdown Vault](#markdown-vault)
   - [WhatsApp Channel Integration](#whatsapp-channel-integration)
   - [Automatic Context Management](#automatic-context-management)
   - [Session History & Execution Traces](#session-history--execution-traces)
+  - [Observability & Analytics](#observability--analytics)
   - [Scheduled Workflows](#scheduled-workflows)
   - [Secrets Vault](#secrets-vault)
   - [Security & Authentication](#security--authentication)
@@ -126,6 +128,7 @@ Create AI agents with custom system prompts, model selection, tool attachments, 
 - **Dynamic tool creation** - Enable agents to propose and create new tools mid-conversation
 - **Human-in-the-loop overrides** - Define per-agent tool approval requirements independently of tool-level flags
 - **Import / Export** - Share agent configurations as portable JSON files across instances
+- **Privacy Mode** - Redact structured PII (emails, phone numbers, SSNs, credit cards, IPs, crypto addresses) from messages and tool results before they reach the LLM provider, with a custom deny-list for anything else you want caught
 
 ---
 
@@ -375,6 +378,17 @@ Reusable **Skills** - named instruction bundles injected into an agent's system 
 
 ---
 
+### Markdown Vault
+
+A dedicated space for Obsidian-style Markdown notes, separate from the Prompt and Skills vaults. Write notes once and reuse them across agents in one of two ways.
+
+- **Full CRUD note editor** - Create, organize into folders, edit, and delete Markdown files from a dedicated vault page
+- **Inject into system prompt** - Attach a note to an agent so its full content is concatenated onto the system prompt on every turn, keeping the agent current with whatever the note contains
+- **Use as knowledge base content** - Alternatively, copy a note's content into a knowledge base as a one-time indexed document instead of injecting it live
+- **Both databases** - Works identically with SQLite and MongoDB
+
+---
+
 ### WhatsApp Channel Integration
 
 Connect any agent to a WhatsApp account via QR code scan. No Meta Business account, no API fees, no webhooks required.
@@ -432,6 +446,19 @@ Every agent session and scheduled workflow run records a full execution trace - 
 
 ---
 
+### Observability & Analytics
+
+A dedicated dashboard built on top of execution traces, giving you a platform-wide view of usage, cost, and performance instead of session-by-session inspection.
+
+- **Overview stats** - Total sessions, LLM calls, tool calls, input/output tokens, total cost, average latency, and error rate over a configurable date range
+- **Tokens over time** - Daily token and cost breakdown, including cache read/creation tokens where a provider reports them
+- **Latency by model** - p50, p95, and average response time per model, so you can see which models are actually slow in practice
+- **Tool usage stats** - Call count, error count, error rate, and average duration per tool
+- **Cost by agent** - Spend and token usage broken down per agent, so you can see which agents are actually costing you money
+- **Accurate cost tracking** - Per-model USD pricing covers all current-generation models across Anthropic, OpenAI, Google, and xAI (via the OpenAI-compatible custom endpoint path)
+
+---
+
 ### Scheduled Workflows
 
 Run workflows automatically on a server-side cron schedule - no browser required. Scheduled runs are identical to manual runs: a `WorkflowRun` record is created, each step executes sequentially, and results appear in the workflow's run history.
@@ -448,12 +475,17 @@ Run workflows automatically on a server-side cron schedule - no browser required
 
 ### Secrets Vault
 
-Store API keys, tokens, and sensitive credentials in an encrypted vault. Secrets are encrypted at rest and can be referenced when configuring providers - no need to paste raw API keys.
+Store credentials in an encrypted vault and let agents use the real values in tool calls, sandbox commands, or chat replies without the model ever seeing them. Each field is encrypted independently at rest, and a secret only resolves for agents you explicitly grant access to.
 
-- **Fernet encryption at rest** - All secret values are encrypted before storage
+- **Typed secrets** - Generic (single value), Credit Card (number, expiry, CVV, cardholder name), and Login (username, password), each with its own field schema; sensitive fields are masked in every list response
+- **Per-agent access control** - A secret grants no access on its own; you choose which agents can use it from the vault page, and that grant can be changed or revoked at any time
+- **Action-time placeholder resolution** - An agent references a secret with `{{secrets.<name>.<field>}}` in a tool call, sandbox command, or its own reply text. The real value is substituted only at the point of use (an outbound HTTP request, a sandbox shell command, or the text rendered in your chat) - the model only ever sees the placeholder, never the decrypted value
+- **System prompt awareness** - An agent with granted secrets is told what it has access to and the exact placeholder syntax to use, so it can actually reference them without guessing or fabricating a value
+- **Streaming-safe** - A placeholder split across multiple streamed response chunks is held back and resolved as one unit, so a half-written placeholder is never shown before it resolves
+- **Leak protection** - If a tool's result happens to echo a resolved value back (for example an API response reflecting a submitted field), that value is redacted out of the trace and out of what gets fed back to the model on the next turn
+- **On-demand reveal** - View or copy a secret's real values from the vault page at any time; values are decrypted server-side only for that one request, never included in the normal list response
+- **Fernet encryption at rest** - Every field is encrypted independently before storage
 - **AES encryption in transit** - Secrets are transmitted via encrypted payloads
-- **Reference in providers** - Use stored secrets when adding LLM providers instead of entering keys directly
-- **CRUD management** - Create, view, update, and delete secrets from the settings page
 
 ---
 
@@ -1057,8 +1089,17 @@ The backend exposes a RESTful API with interactive documentation:
 | **Fine-Tuning** | `/finetune/trigger` | POST | Start a LoRA fine-tuning run |
 | **Fine-Tuning** | `/finetune/estimate-cost` | POST | Get a pre-flight time/cost estimate |
 | **Fine-Tuning** | `/finetune/agents/{id}` | GET | List fine-tuning runs for an agent |
-| **Secrets** | `/secrets` | GET | List user secrets (encrypted) |
+| **Secrets** | `/secrets` | GET | List user secrets (typed, sensitive fields masked) |
 | **Secrets** | `/secrets` | POST | Create a new secret |
+| **Secrets** | `/secrets/{id}/access` | GET / PUT | Get or set which agents can use a secret |
+| **Secrets** | `/secrets/{id}/reveal` | POST | Decrypt and return a secret's real field values |
+| **Vault** | `/vault` | GET / POST | List or create Markdown vault notes |
+| **Vault** | `/vault/{id}` | GET / PUT / DELETE | Get, update, or delete a vault note |
+| **Analytics** | `/analytics/overview` | GET | Get platform-wide usage overview |
+| **Analytics** | `/analytics/tokens` | GET | Get daily token/cost breakdown |
+| **Analytics** | `/analytics/latency` | GET | Get latency percentiles by model |
+| **Analytics** | `/analytics/tools` | GET | Get per-tool call/error/duration stats |
+| **Analytics** | `/analytics/cost` | GET | Get cost breakdown by agent |
 | **Files** | `/files/upload` | POST | Upload a file attachment |
 | **Dashboard** | `/dashboard/stats` | GET | Get dashboard statistics |
 | **Admin** | `/admin/users` | GET | List all users (admin only) |
@@ -1260,7 +1301,7 @@ Recent additions shipped to the platform.
 
 ---
 
-### 🟢 Behavioral Auditor, Local Model Inspection & LoRA Fine-Tuning
+### Behavioral Auditor, Local Model Inspection & LoRA Fine-Tuning
 
 > **Find out why a model does what it does, then actually fix it - all from inside the platform.**
 
@@ -1276,7 +1317,7 @@ All three apply the same honest-framing standard already established for this pl
 
 ---
 
-### 🟢 Public Agent API
+### Public Agent API
 
 > **Expose any agent as a standalone API endpoint - with its tools, sandbox, and memory intact - for use in other apps and platforms.**
 
@@ -1300,7 +1341,7 @@ Previously, the only way to talk to an agent was through the in-app chat (JWT-au
 
 ---
 
-### 🟢 Current-Generation Model Support, Skills Vault & Reliability Fixes
+### Current-Generation Model Support, Skills Vault & Reliability Fixes
 
 A maintenance and feature pass bringing the platform up to date with the latest Anthropic, OpenAI, and Google model lineups, plus a new Skills vault for Claude agents and several backend reliability fixes.
 
@@ -1336,7 +1377,7 @@ A new Vaults section for reusable **Skills** - named instruction bundles that ge
 
 ---
 
-### 🟢 WhatsApp Channel Integration
+### WhatsApp Channel Integration
 
 > **Agents can now receive and reply to WhatsApp messages in real time - no Meta Business account, no API fees, no webhooks.**
 
@@ -1409,7 +1450,7 @@ Agents and teams can now be assigned an isolated Docker container for safe, pers
 
 ---
 
-### 🟢 Prompt Vault
+### Prompt Vault
 
 A dedicated prompt library for storing, organizing, and reusing system prompts across agents.
 
@@ -1431,7 +1472,7 @@ A dedicated prompt library for storing, organizing, and reusing system prompts a
 
 ---
 
-### 🟢 Qwen3-TTS & Voice Cloning for WhatsApp
+### Qwen3-TTS & Voice Cloning for WhatsApp
 
 The WhatsApp voice reply engine has been upgraded from Pocket TTS to a full multi-backend TTS pipeline with support for high-quality neural synthesis and per-user voice cloning.
 
