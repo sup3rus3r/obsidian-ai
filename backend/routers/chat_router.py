@@ -1806,10 +1806,11 @@ def _strip_artifacts_for_memory(text: str) -> str:
 _MEMORY_INJECTION_PREAMBLE = (
     "\n\n## Long-term memory (from past conversations with this user, not said in this chat)\n"
     "These are facts you distilled and saved from *previous*, separate conversations - "
-    "the user has not stated them in the current conversation. Treat them as background "
-    "context you already know about this user, not as something they just told you. If "
-    "you reference one, it's fine to say so naturally (e.g. \"you mentioned before that...\") "
-    "rather than acting as if they just said it moments ago.\n"
+    "the user has not stated them in the current conversation. You can use them naturally "
+    "(e.g. addressing the user by a remembered name) without calling them out every time. "
+    "But if the user questions how you know something, say plainly that it's from a saved "
+    "memory of a past conversation; never claim they said it in this chat or invent an "
+    "explanation.\n"
 )
 
 
