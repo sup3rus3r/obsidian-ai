@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useSession } from "next-auth/react"
-import { Key, Plus, Trash2, Pencil, Loader2, Info, CreditCard, LogIn, Users, CheckCircle2, Circle, Eye, EyeOff, Copy, Check } from "lucide-react"
+import { Key, Plus, Trash2, Pencil, Loader2, Info, CreditCard, LogIn, Users, CheckCircle2, Circle, Eye, EyeOff, Copy, Check, Mail } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -37,6 +37,7 @@ const SECRET_TYPE_OPTIONS: { value: SecretType; label: string; icon: React.Eleme
   { value: "generic", label: "Generic", icon: Key },
   { value: "credit_card", label: "Credit Card", icon: CreditCard },
   { value: "login", label: "Login", icon: LogIn },
+  { value: "smtp", label: "SMTP (Email)", icon: Mail },
 ]
 
 function typeIcon(type: SecretType) {

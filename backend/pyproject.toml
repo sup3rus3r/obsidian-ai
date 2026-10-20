@@ -40,6 +40,8 @@ dependencies = [
     "torchaudio==2.6.0+cu124",
     "scipy>=1.10.0",
     "transformers>=4.57.3",
+    "beautifulsoup4>=4.12.0",
+    "feedparser>=6.0.0",
 ]
 
 [project.optional-dependencies]

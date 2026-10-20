@@ -46,15 +46,27 @@ interface PrivacyModeConfig {
   deny_list: string[]
 }
 
+interface ToolCategoriesConfig {
+  data_files: boolean
+  web_extended: boolean
+  productivity: boolean
+}
+
 function buildAgentConfig(
   existingConfig: Record<string, unknown> | undefined,
   privacyMode: PrivacyModeConfig,
+  toolCategories: ToolCategoriesConfig,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = { ...(existingConfig || {}) }
   if (privacyMode.enabled) {
     base.privacy_mode = privacyMode
   } else {
     delete base.privacy_mode
+  }
+  if (toolCategories.data_files || toolCategories.web_extended || toolCategories.productivity) {
+    base.tool_categories = toolCategories
+  } else {
+    delete base.tool_categories
   }
   return base
 }
@@ -268,6 +280,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [privacyEntities, setPrivacyEntities] = useState<string[]>(PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
   const [privacyStrategy, setPrivacyStrategy] = useState<"redact" | "mask">("redact")
   const [privacyDenyList, setPrivacyDenyList] = useState("")
+  const [dataFilesTools, setDataFilesTools] = useState(false)
+  const [webExtendedTools, setWebExtendedTools] = useState(false)
+  const [productivityTools, setProductivityTools] = useState(false)
   const [accessibleSecrets, setAccessibleSecrets] = useState<Secret[]>([])
   const [loadingSecretAccess, setLoadingSecretAccess] = useState(false)
   const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([])
@@ -367,6 +382,10 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setPrivacyEntities(existingPrivacyMode?.entities ?? PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
       setPrivacyStrategy(existingPrivacyMode?.strategy ?? "redact")
       setPrivacyDenyList((existingPrivacyMode?.deny_list ?? []).join("\n"))
+      const existingToolCategories = agent.config?.tool_categories as Partial<ToolCategoriesConfig> | undefined
+      setDataFilesTools(existingToolCategories?.data_files ?? false)
+      setWebExtendedTools(existingToolCategories?.web_extended ?? false)
+      setProductivityTools(existingToolCategories?.productivity ?? false)
       apiClient.listAgentMemories(agent.id).then(setMemories).catch(() => {})
       setVersions([])
       setVersionsOpen(false)
@@ -392,6 +411,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setPrivacyEntities(PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
       setPrivacyStrategy("redact")
       setPrivacyDenyList("")
+      setDataFilesTools(false)
+      setWebExtendedTools(false)
+      setProductivityTools(false)
     }
     return () => {
       if (optPollTimer) clearInterval(optPollTimer)
@@ -407,6 +429,11 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       entities: privacyEntities,
       strategy: privacyStrategy,
       deny_list: privacyDenyList.split("\n").map((l) => l.trim()).filter((l) => l.length > 0),
+    }
+    const toolCategories: ToolCategoriesConfig = {
+      data_files: dataFilesTools,
+      web_extended: webExtendedTools,
+      productivity: productivityTools,
     }
     try {
       if (isEditing && agent) {
@@ -426,7 +453,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           allow_tool_creation: allowToolCreation,
           memory_enabled: memoryEnabled,
           sandbox_enabled: sandboxEnabled,
-          config: buildAgentConfig(agent.config, privacyMode),
+          config: buildAgentConfig(agent.config, privacyMode, toolCategories),
         })
         setAgents(agents.map((a) => (a.id === updated.id ? updated : a)))
         onSaved?.(updated)
@@ -447,7 +474,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           allow_tool_creation: allowToolCreation,
           memory_enabled: memoryEnabled,
           sandbox_enabled: sandboxEnabled,
-          config: buildAgentConfig(undefined, privacyMode),
+          config: buildAgentConfig(undefined, privacyMode, toolCategories),
         })
         setAgents([...agents, newAgent])
         setSelectedAgent(newAgent.id)
@@ -558,6 +585,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     setPrivacyEntities(PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
     setPrivacyStrategy("redact")
     setPrivacyDenyList("")
+    setDataFilesTools(false)
+    setWebExtendedTools(false)
+    setProductivityTools(false)
     setError("")
     setMemories([])
     setVersions([])
@@ -1489,6 +1519,84 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               </Link>
             </div>
           )}
+
+          {/* Tool Categories Section */}
+          <div className="grid gap-3">
+            <Label className="flex items-center gap-1.5">
+              <Wrench className="h-3.5 w-3.5 text-cyan-500" />
+              Tool Categories
+            </Label>
+            <p className="text-xs text-muted-foreground -mt-1">
+              Opt-in bundles of extra tools for this agent. All are off by default.
+            </p>
+
+            <div className="grid gap-2">
+              <button
+                type="button"
+                onClick={() => setDataFilesTools((v) => !v)}
+                className="w-full flex items-center gap-2 p-2 rounded text-xs hover:bg-muted/50 transition-colors text-left border border-border"
+              >
+                {dataFilesTools ? (
+                  <CheckCircle2 className="h-4 w-4 text-cyan-500 shrink-0" />
+                ) : (
+                  <Circle className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className={dataFilesTools ? "text-cyan-600 dark:text-cyan-400 font-medium" : "text-foreground font-medium"}>
+                    Data & File Tools
+                  </div>
+                  <div className="text-muted-foreground">
+                    Let this agent read and analyze files uploaded in this chat (CSV, JSON, text, PDF, Word).
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setWebExtendedTools((v) => !v)}
+                className="w-full flex items-center gap-2 p-2 rounded text-xs hover:bg-muted/50 transition-colors text-left border border-border"
+              >
+                {webExtendedTools ? (
+                  <CheckCircle2 className="h-4 w-4 text-cyan-500 shrink-0" />
+                ) : (
+                  <Circle className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className={webExtendedTools ? "text-cyan-600 dark:text-cyan-400 font-medium" : "text-foreground font-medium"}>
+                    Extended Web Tools
+                  </div>
+                  <div className="text-muted-foreground">
+                    Structured web scraping, RSS feeds, a calculator, unit conversion, and currency exchange rates.
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setProductivityTools((v) => !v)}
+                className="w-full flex items-center gap-2 p-2 rounded text-xs hover:bg-muted/50 transition-colors text-left border border-border"
+              >
+                {productivityTools ? (
+                  <CheckCircle2 className="h-4 w-4 text-cyan-500 shrink-0" />
+                ) : (
+                  <Circle className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className={productivityTools ? "text-cyan-600 dark:text-cyan-400 font-medium" : "text-foreground font-medium"}>
+                    Productivity Tools
+                  </div>
+                  <div className="text-muted-foreground">
+                    Send email, generate calendar invites (.ics), and generate reminder notes. Reminders are notes to save, not scheduled alerts.
+                  </div>
+                  {productivityTools && isEditing && !accessibleSecrets.some((s) => s.secret_type === "smtp") && (
+                    <div className="text-amber-500/80 mt-1">
+                      Grant an SMTP secret below to enable sending email.
+                    </div>
+                  )}
+                </div>
+              </button>
+            </div>
+          </div>
 
           {/* Version History Section (edit mode only) */}
           {isEditing && (

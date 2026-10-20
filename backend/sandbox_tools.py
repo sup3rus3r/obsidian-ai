@@ -13,6 +13,8 @@ import json
 import sys
 import httpx
 
+from sandbox_git_tools import SANDBOX_GIT_TOOL_SCHEMAS, execute_sandbox_git_tool
+
 
 def _double_slash(path: str) -> str:
     """Convert /path to //path to prevent Git Bash MSYS path mangling on Windows."""
@@ -328,7 +330,7 @@ SANDBOX_TOOL_SCHEMAS = [
             },
         },
     },
-]
+] + SANDBOX_GIT_TOOL_SCHEMAS
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +537,9 @@ async def _execute_sandbox_tool_inner(tool_name: str, args: dict, container_id: 
         if mode == "screenshot":
             return json.dumps({"image_base64": out.strip(), "mime_type": "image/png"})
         return out.strip()
+
+    elif tool_name == "sandbox_git":
+        return await execute_sandbox_git_tool(args, container_id)
 
     return json.dumps({"error": f"Unknown sandbox tool: {tool_name}"})
 

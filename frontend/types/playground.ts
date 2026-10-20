@@ -173,7 +173,7 @@ export type StreamEvent =
   | { type: "error"; error: string }
   | { type: "done" }
 
-export type SecretType = "generic" | "credit_card" | "login"
+export type SecretType = "generic" | "credit_card" | "login" | "smtp"
 
 export interface SecretFieldSchema {
   label: string
@@ -195,6 +195,14 @@ export const SECRET_TYPE_SCHEMAS: Record<SecretType, Record<string, SecretFieldS
   login: {
     username: { label: "Username", sensitive: false },
     password: { label: "Password", sensitive: true },
+  },
+  smtp: {
+    host: { label: "SMTP Host", sensitive: false },
+    port: { label: "Port", sensitive: false },
+    username: { label: "Username", sensitive: false },
+    password: { label: "Password", sensitive: true },
+    from_address: { label: "From Address", sensitive: false },
+    use_tls: { label: "Use TLS (true/false)", sensitive: false },
   },
 }
 

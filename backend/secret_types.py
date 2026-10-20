@@ -18,6 +18,14 @@ SECRET_TYPE_SCHEMAS: dict[str, dict[str, dict]] = {
         "username": {"label": "Username", "sensitive": False},
         "password": {"label": "Password", "sensitive": True},
     },
+    "smtp": {
+        "host": {"label": "SMTP Host", "sensitive": False},
+        "port": {"label": "Port", "sensitive": False},
+        "username": {"label": "Username", "sensitive": False},
+        "password": {"label": "Password", "sensitive": True},
+        "from_address": {"label": "From Address", "sensitive": False},
+        "use_tls": {"label": "Use TLS (true/false)", "sensitive": False},
+    },
 }
 
 

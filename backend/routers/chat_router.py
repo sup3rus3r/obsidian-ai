@@ -21,6 +21,8 @@ from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
 from file_storage import FileStorageService
 from pii_redactor import redact_text, PrivacyModeConfig
 from secret_placeholder import resolve_secret_placeholders, contains_secret_placeholder, redact_resolved_values, StreamingSecretResolver, build_secret_access_injection_sqlite, build_secret_access_injection_mongo
+from tool_category_config import ToolCategoryConfig, is_any_category_tool, execute_category_tool
+from tool_loop_guard import ToolLoopGuard, REPEAT_WARNING_THRESHOLD
 from rag_service import RAGService
 from sandbox_tools import (
     SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool,
@@ -1427,8 +1429,16 @@ async def _execute_tool_mongo(tool_name: str, arguments_str: str, mongo_db, agen
 
 def _build_tools_for_llm(agent, db) -> list[dict] | None:
     """Retrieve agent's tool definitions and format them for the LLM (OpenAI-compatible format).
-    Built-in tools (web_search, fetch_url) are always included."""
+    Built-in tools (web_search, fetch_url) are always included. Category tools
+    (data_files/web_extended/productivity) are opt-in per agent via
+    Agent.config_json's tool_categories key — see tool_category_config.py."""
     tools: list[dict] = list(BUILTIN_TOOL_SCHEMAS)
+
+    _cat_config = ToolCategoryConfig.from_agent_config(
+        json.loads(agent.config_json) if agent.config_json else None
+    )
+    for _schema_list in _cat_config.enabled_schema_lists():
+        tools.extend(_schema_list)
 
     if agent.tools_json:
         try:
@@ -1442,8 +1452,7 @@ def _build_tools_for_llm(agent, db) -> list[dict] | None:
                 ToolDefinition.is_active == True,
             ).all()
 
-            builtin_names = {t["function"]["name"] for t in BUILTIN_TOOL_SCHEMAS}
-            seen_names = set(builtin_names)
+            seen_names = {t["function"]["name"] for t in tools}
             for td in tool_defs:
                 if td.name in seen_names:
                     continue  # skip builtins-shadowing and duplicate-named tool defs (keep first occurrence)
@@ -1530,15 +1539,17 @@ def _merge_tools(native_tools: list[dict] | None, mcp_tools: list[dict]) -> list
 
 async def _execute_mcp_or_native_tool(
     tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], db,
-    sandbox_container_id: str | None = None, agent=None,
+    sandbox_container_id: str | None = None, agent=None, session_id=None,
 ) -> str:
-    """Route a tool call to either a builtin, sandbox, MCP server, or native tool handler."""
+    """Route a tool call to either a builtin, sandbox, category, MCP server, or native tool handler."""
     if is_builtin_tool(tc_name):
         return await execute_builtin_tool(tc_name, tc_arguments)
     if is_sandbox_tool(tc_name):
         if not sandbox_container_id:
             return json.dumps({"error": "Sandbox is not running for this agent"})
         return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id, agent=agent, db=db)
+    if is_any_category_tool(tc_name):
+        return await execute_category_tool(tc_name, tc_arguments, agent=agent, db=db, session_id=session_id)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
         server_name, original_tool_name = parsed
@@ -1557,15 +1568,17 @@ async def _execute_mcp_or_native_tool(
 
 async def _execute_mcp_or_native_tool_mongo(
     tc_name: str, tc_arguments: str, mcp_connections: dict[str, MCPConnection], mongo_db,
-    sandbox_container_id: str | None = None, agent=None,
+    sandbox_container_id: str | None = None, agent=None, session_id=None,
 ) -> str:
-    """Route a tool call to either a builtin, sandbox, MCP server, or native tool handler (MongoDB)."""
+    """Route a tool call to either a builtin, sandbox, category, MCP server, or native tool handler (MongoDB)."""
     if is_builtin_tool(tc_name):
         return await execute_builtin_tool(tc_name, tc_arguments)
     if is_sandbox_tool(tc_name):
         if not sandbox_container_id:
             return json.dumps({"error": "Sandbox is not running for this agent"})
         return await execute_sandbox_tool(tc_name, tc_arguments, sandbox_container_id, agent=agent, db=mongo_db, is_mongo=True)
+    if is_any_category_tool(tc_name):
+        return await execute_category_tool(tc_name, tc_arguments, agent=agent, db=mongo_db, session_id=session_id, is_mongo=True)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
         server_name, original_tool_name = parsed
@@ -2806,6 +2819,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
     # to the LLM as history) always keeps the literal placeholder. See
     # secret_placeholder.py's StreamingSecretResolver docstring.
     _secret_resolver = StreamingSecretResolver(agent_id, getattr(agent, "user_id", None), db) if agent else None
+    _loop_guard = ToolLoopGuard()
     tool_calls_collected = []  # accumulate tool calls from the current round
     token_usage = {}  # accumulates usage across all tool rounds
     # Sandbox-synced artifact tags, collected across ALL rounds (full_content gets
@@ -3210,6 +3224,8 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         result = json.dumps({"error": "Sandbox is not running for this agent"})
                 elif is_async_job_tool(tc.name):
                     result = await execute_schedule_async_check(tc.arguments, session_id, agent_id, mcp_server_configs, "sqlite", db)
+                elif is_any_category_tool(tc.name):
+                    result = await execute_category_tool(tc.name, tc.arguments, agent=agent, db=db, session_id=session_id)
                 else:
                     result = await _execute_tool(tc.name, tc.arguments, db, agent=agent)
                 _tc.record_tool_span(
@@ -3270,10 +3286,11 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
 
                 # Feed result back as user message (compatible with all providers)
                 _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent))
-                messages.append(LLMMessage(
-                    role="user",
-                    content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
-                ))
+                _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
+                _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
+                if _repeat_count >= REPEAT_WARNING_THRESHOLD:
+                    _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
+                messages.append(LLMMessage(role="user", content=_feedback))
 
             # Clear content for the next LLM round (the final text reply)
             full_content = ""
@@ -3399,6 +3416,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
     _secret_resolver = StreamingSecretResolver(agent_id, getattr(agent, "user_id", None), db) if agent else None
+    _loop_guard = ToolLoopGuard()
 
     # Context compaction check before streaming
     compaction_event = await _compact_context_if_needed(messages, llm, system_prompt, db, session_id, provider_record)
@@ -3728,7 +3746,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                             else:
                                 yield _item
                     else:
-                        result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db, sandbox_container_id=_sandbox_cid, agent=agent)
+                        result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db, sandbox_container_id=_sandbox_cid, agent=agent, session_id=session_id)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     _tc.record_tool_span(
                         tool_name=tc.name,
@@ -3778,10 +3796,11 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
 
                     # Feed result back as user message (compatible with all providers)
                     _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent))
-                    messages.append(LLMMessage(
-                        role="user",
-                        content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
-                    ))
+                    _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
+                    _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
+                    if _repeat_count >= REPEAT_WARNING_THRESHOLD:
+                        _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
+                    messages.append(LLMMessage(role="user", content=_feedback))
 
                 full_content = ""
 
@@ -4605,10 +4624,21 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
 
 async def _build_tools_for_llm_mongo(agent, mongo_db) -> list[dict] | None:
     """Retrieve agent's tool definitions from MongoDB and format them for the LLM.
-    Built-in tools (web_search, fetch_url) are always included."""
+    Built-in tools (web_search, fetch_url) are always included. Category tools
+    are opt-in per agent — see _build_tools_for_llm's docstring."""
     tools: list[dict] = list(BUILTIN_TOOL_SCHEMAS)
-    builtin_names = {t["function"]["name"] for t in BUILTIN_TOOL_SCHEMAS}
-    seen_names = set(builtin_names)
+
+    _raw_config_cat = agent.get("config_json")
+    if isinstance(_raw_config_cat, str):
+        try:
+            _raw_config_cat = json.loads(_raw_config_cat) if _raw_config_cat else None
+        except (json.JSONDecodeError, TypeError):
+            _raw_config_cat = None
+    _cat_config = ToolCategoryConfig.from_agent_config(_raw_config_cat)
+    for _schema_list in _cat_config.enabled_schema_lists():
+        tools.extend(_schema_list)
+
+    seen_names = {t["function"]["name"] for t in tools}
 
     tools_raw = agent.get("tools_json") or agent.get("tools")
     if tools_raw:
@@ -4971,6 +5001,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
     _secret_resolver = StreamingSecretResolver(agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True) if agent else None
+    _loop_guard = ToolLoopGuard()
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     tools = _inject_create_tool_schema(tools, agent)
@@ -5320,6 +5351,8 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                         result = json.dumps({"error": "Sandbox is not running for this agent"})
                 elif is_async_job_tool(tc.name):
                     result = await execute_schedule_async_check(tc.arguments, session_id, agent_id, mcp_server_configs, "mongo", mongo_db)
+                elif is_any_category_tool(tc.name):
+                    result = await execute_category_tool(tc.name, tc.arguments, agent=agent, db=mongo_db, session_id=session_id, is_mongo=True)
                 else:
                     result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db, agent=agent)
                 await _record_tool_span_mongo(
@@ -5368,10 +5401,11 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                     yield ev
 
                 _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent, is_mongo=True))
-                messages.append(LLMMessage(
-                    role="user",
-                    content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
-                ))
+                _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
+                _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
+                if _repeat_count >= REPEAT_WARNING_THRESHOLD:
+                    _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
+                messages.append(LLMMessage(role="user", content=_feedback))
 
             full_content = ""
 
@@ -5468,6 +5502,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
     _persisted_artifact_tags: list[str] = []
     _persisted_tool_calls: list[dict] = []
     _secret_resolver = StreamingSecretResolver(agent_id, (agent or {}).get("user_id"), mongo_db, is_mongo=True) if agent else None
+    _loop_guard = ToolLoopGuard()
 
     # Inject the virtual create_tool schema if the agent allows tool creation
     native_tools = _inject_create_tool_schema(native_tools, agent)
@@ -5812,7 +5847,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                             else:
                                 yield _item
                     else:
-                        result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db, sandbox_container_id=_sandbox_cid_mongo, agent=agent)
+                        result = await _execute_mcp_or_native_tool_mongo(tc.name, tc.arguments, mcp_connections, mongo_db, sandbox_container_id=_sandbox_cid_mongo, agent=agent, session_id=session_id)
                     _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
                     await _record_tool_span_mcp_mongo(
                         tool_name=tc.name,
@@ -5858,10 +5893,11 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
 
                     # Feed result back as user message (compatible with all providers)
                     _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent, is_mongo=True))
-                    messages.append(LLMMessage(
-                        role="user",
-                        content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
-                    ))
+                    _repeat_count = _loop_guard.record_and_check(tc.name, tc.arguments)
+                    _feedback = f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}"
+                    if _repeat_count >= REPEAT_WARNING_THRESHOLD:
+                        _feedback += ToolLoopGuard.warning_text(tc.name, _repeat_count)
+                    messages.append(LLMMessage(role="user", content=_feedback))
 
                 full_content = ""
 
