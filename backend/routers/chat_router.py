@@ -1803,12 +1803,22 @@ def _strip_artifacts_for_memory(text: str) -> str:
     return _ARTIFACT_STRIP_RE.sub("[artifact content omitted]", text).strip()
 
 
+_MEMORY_INJECTION_PREAMBLE = (
+    "\n\n## Long-term memory (from past conversations with this user, not said in this chat)\n"
+    "These are facts you distilled and saved from *previous*, separate conversations - "
+    "the user has not stated them in the current conversation. Treat them as background "
+    "context you already know about this user, not as something they just told you. If "
+    "you reference one, it's fine to say so naturally (e.g. \"you mentioned before that...\") "
+    "rather than acting as if they just said it moments ago.\n"
+)
+
+
 def _build_memory_injection(memories: list) -> str:
     """Return a formatted memory block to append to the system prompt."""
     if not memories:
         return ""
     lines = "\n".join(f"- [{m.category}] {m.value}" for m in memories)
-    return f"\n\n## What I know about you:\n{lines}"
+    return f"{_MEMORY_INJECTION_PREAMBLE}{lines}"
 
 
 def _build_memory_injection_dicts(memories: list[dict]) -> str:
@@ -1816,7 +1826,7 @@ def _build_memory_injection_dicts(memories: list[dict]) -> str:
     if not memories:
         return ""
     lines = "\n".join(f"- [{m.get('category', 'context')}] {m['value']}" for m in memories)
-    return f"\n\n## What I know about you:\n{lines}"
+    return f"{_MEMORY_INJECTION_PREAMBLE}{lines}"
 
 
 _TEAMMATE_MEMORY_CAP_PER_AGENT = 5  # keep this tight — read-only context, not full memory
@@ -1837,10 +1847,10 @@ def _build_teammates_memory_injection(db, current_agent_id: int, agents_with_pro
         ).order_by(AgentMemory.created_at.desc()).limit(_TEAMMATE_MEMORY_CAP_PER_AGENT).all()
         if mems:
             lines = "\n".join(f"  - [{m.category}] {m.value}" for m in mems)
-            sections.append(f"- {ag.name} knows:\n{lines}")
+            sections.append(f"- {ag.name} knows (from past conversations, not this one):\n{lines}")
     if not sections:
         return ""
-    return "\n\n## What your teammates know:\n" + "\n".join(sections)
+    return "\n\n## What your teammates remember about this user (from their own past conversations)\n" + "\n".join(sections)
 
 
 async def _build_teammates_memory_injection_mongo(mongo_db, current_agent_id: str, agents_with_providers, user_id: str) -> str:
@@ -1854,10 +1864,10 @@ async def _build_teammates_memory_injection_mongo(mongo_db, current_agent_id: st
         mems = mems[:_TEAMMATE_MEMORY_CAP_PER_AGENT]
         if mems:
             lines = "\n".join(f"  - [{m.get('category', 'context')}] {m['value']}" for m in mems)
-            sections.append(f"- {ag.get('name', 'Agent')} knows:\n{lines}")
+            sections.append(f"- {ag.get('name', 'Agent')} knows (from past conversations, not this one):\n{lines}")
     if not sections:
         return ""
-    return "\n\n## What your teammates know:\n" + "\n".join(sections)
+    return "\n\n## What your teammates remember about this user (from their own past conversations)\n" + "\n".join(sections)
 
 
 def _agent_supports_skills(provider_record, model_id: str | None) -> bool:
