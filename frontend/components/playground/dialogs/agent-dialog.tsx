@@ -24,8 +24,39 @@ import Link from "next/link"
 import { apiClient } from "@/lib/api-client"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite, PromptVaultEntry, Skill, VaultFile } from "@/types/playground"
-import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap, Download, Upload, Pencil, Check, FileText } from "lucide-react"
+import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, ShieldCheck, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap, Download, Upload, Pencil, Check, FileText } from "lucide-react"
 import { AppRoutes } from "@/app/api/routes"
+
+// ─── Privacy Mode helpers ────────────────────────────────────────────────────
+
+const PRIVACY_ENTITY_OPTIONS: { value: string; label: string }[] = [
+  { value: "EMAIL", label: "Email" },
+  { value: "PHONE", label: "Phone Number" },
+  { value: "SSN", label: "SSN" },
+  { value: "CREDIT_CARD", label: "Credit Card" },
+  { value: "IP_ADDRESS", label: "IP Address" },
+  { value: "CRYPTO_ADDRESS", label: "Crypto Wallet Address" },
+]
+
+interface PrivacyModeConfig {
+  enabled: boolean
+  entities: string[]
+  strategy: "redact" | "mask"
+  deny_list: string[]
+}
+
+function buildAgentConfig(
+  existingConfig: Record<string, unknown> | undefined,
+  privacyMode: PrivacyModeConfig,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = { ...(existingConfig || {}) }
+  if (privacyMode.enabled) {
+    base.privacy_mode = privacyMode
+  } else {
+    delete base.privacy_mode
+  }
+  return base
+}
 
 // ─── Version diff helpers ────────────────────────────────────────────────────
 
@@ -232,6 +263,10 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
   const [sandboxEnabled, setSandboxEnabled] = useState(false)
   const [sandboxRunning, setSandboxRunning] = useState(false)
   const [sandboxLoading, setSandboxLoading] = useState(false)
+  const [privacyModeEnabled, setPrivacyModeEnabled] = useState(false)
+  const [privacyEntities, setPrivacyEntities] = useState<string[]>(PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
+  const [privacyStrategy, setPrivacyStrategy] = useState<"redact" | "mask">("redact")
+  const [privacyDenyList, setPrivacyDenyList] = useState("")
   const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([])
   const [availableMCPServers, setAvailableMCPServers] = useState<MCPServer[]>([])
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([])
@@ -305,6 +340,11 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setSandboxEnabled(agent.sandbox_enabled ?? false)
       setSandboxRunning(agent.sandbox_container_id != null && agent.sandbox_enabled === true)
       setPromptVaultId(agent.prompt_vault_id ?? null)
+      const existingPrivacyMode = agent.config?.privacy_mode as Partial<PrivacyModeConfig> | undefined
+      setPrivacyModeEnabled(existingPrivacyMode?.enabled ?? false)
+      setPrivacyEntities(existingPrivacyMode?.entities ?? PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
+      setPrivacyStrategy(existingPrivacyMode?.strategy ?? "redact")
+      setPrivacyDenyList((existingPrivacyMode?.deny_list ?? []).join("\n"))
       apiClient.listAgentMemories(agent.id).then(setMemories).catch(() => {})
       setVersions([])
       setVersionsOpen(false)
@@ -326,6 +366,10 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
       setSandboxEnabled(false)
       setSandboxRunning(false)
       setPromptVaultId(null)
+      setPrivacyModeEnabled(false)
+      setPrivacyEntities(PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
+      setPrivacyStrategy("redact")
+      setPrivacyDenyList("")
     }
     return () => {
       if (optPollTimer) clearInterval(optPollTimer)
@@ -336,6 +380,12 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     if (!name) return
     setLoading(true)
     setError("")
+    const privacyMode: PrivacyModeConfig = {
+      enabled: privacyModeEnabled,
+      entities: privacyEntities,
+      strategy: privacyStrategy,
+      deny_list: privacyDenyList.split("\n").map((l) => l.trim()).filter((l) => l.length > 0),
+    }
     try {
       if (isEditing && agent) {
         const updated = await apiClient.updateAgent(agent.id, {
@@ -354,6 +404,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           allow_tool_creation: allowToolCreation,
           memory_enabled: memoryEnabled,
           sandbox_enabled: sandboxEnabled,
+          config: buildAgentConfig(agent.config, privacyMode),
         })
         setAgents(agents.map((a) => (a.id === updated.id ? updated : a)))
         onSaved?.(updated)
@@ -374,6 +425,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
           allow_tool_creation: allowToolCreation,
           memory_enabled: memoryEnabled,
           sandbox_enabled: sandboxEnabled,
+          config: buildAgentConfig(undefined, privacyMode),
         })
         setAgents([...agents, newAgent])
         setSelectedAgent(newAgent.id)
@@ -451,6 +503,14 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     )
   }
 
+  const togglePrivacyEntity = (entity: string) => {
+    setPrivacyEntities((prev) =>
+      prev.includes(entity)
+        ? prev.filter((e) => e !== entity)
+        : [...prev, entity]
+    )
+  }
+
   const toggleHitlTool = (toolName: string) => {
     setHitlTools((prev) =>
       prev.includes(toolName)
@@ -472,6 +532,10 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
     setHitlTools([])
     setAllowToolCreation(false)
     setMemoryEnabled(true)
+    setPrivacyModeEnabled(false)
+    setPrivacyEntities(PRIVACY_ENTITY_OPTIONS.map((e) => e.value))
+    setPrivacyStrategy("redact")
+    setPrivacyDenyList("")
     setError("")
     setMemories([])
     setVersions([])
@@ -1277,6 +1341,91 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                     <><Play className="h-3 w-3" /> Start</>
                   )}
                 </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Privacy Mode Section */}
+          <div className="grid gap-2">
+            <Label className="flex items-center gap-1.5">
+              <ShieldCheck className="h-3.5 w-3.5 text-blue-500" />
+              Privacy Mode
+            </Label>
+            <p className="text-xs text-muted-foreground -mt-1">
+              Redact structured PII (emails, phone numbers, SSNs, credit cards, IPs, crypto addresses) from messages and tool results before they reach the LLM provider — in chat and via the Public Agent API.
+            </p>
+            <button
+              type="button"
+              onClick={() => setPrivacyModeEnabled((v) => !v)}
+              className="w-full flex items-center gap-2 p-2 rounded text-xs hover:bg-muted/50 transition-colors text-left border border-border"
+            >
+              {privacyModeEnabled ? (
+                <CheckCircle2 className="h-4 w-4 text-blue-500 shrink-0" />
+              ) : (
+                <Circle className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+              )}
+              <span className={privacyModeEnabled ? "text-blue-600 dark:text-blue-400 font-medium" : "text-muted-foreground"}>
+                {privacyModeEnabled ? "Enabled — PII will be redacted before reaching the model" : "Disabled"}
+              </span>
+            </button>
+
+            {privacyModeEnabled && (
+              <div className="space-y-3 mt-1">
+                <div className="grid gap-2">
+                  <Label className="text-xs">Entity Types</Label>
+                  <div className="space-y-1 max-h-40 overflow-y-auto rounded-md border border-border p-2">
+                    {PRIVACY_ENTITY_OPTIONS.map((entity) => {
+                      const isEnabled = privacyEntities.includes(entity.value)
+                      return (
+                        <button
+                          key={entity.value}
+                          type="button"
+                          onClick={() => togglePrivacyEntity(entity.value)}
+                          className="w-full flex items-start gap-2 p-2 rounded text-xs hover:bg-muted/50 transition-colors text-left"
+                        >
+                          <div className="pt-0.5">
+                            {isEnabled ? (
+                              <CheckCircle2 className="h-4 w-4 text-blue-500 shrink-0" />
+                            ) : (
+                              <Circle className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium">{entity.label}</div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="privacy-strategy" className="text-xs">Strategy</Label>
+                  <Select value={privacyStrategy} onValueChange={(v) => setPrivacyStrategy(v as "redact" | "mask")}>
+                    <SelectTrigger id="privacy-strategy">
+                      <SelectValue placeholder="Select a strategy..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="redact">Redact (replace with [REDACTED_TYPE])</SelectItem>
+                      <SelectItem value="mask">Mask (show last 4 characters, e.g. ****-1234)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="privacy-deny-list" className="text-xs">Custom terms to redact (one per line)</Label>
+                  <Textarea
+                    id="privacy-deny-list"
+                    value={privacyDenyList}
+                    onChange={(e) => setPrivacyDenyList(e.target.value)}
+                    placeholder={"EMP-\\d{6}\nProject Nightingale"}
+                    rows={3}
+                    className="resize-none max-h-40 overflow-y-auto font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Plain text or regex — e.g. internal codenames, employee ID formats like EMP-\d{"{"}6{"}"}.
+                  </p>
+                </div>
               </div>
             )}
           </div>

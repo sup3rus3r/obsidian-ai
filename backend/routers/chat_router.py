@@ -19,6 +19,7 @@ from llm.base import LLMMessage, LLMToolCall
 from llm.provider_factory import create_provider_from_config
 from mcp_client import connect_mcp_server, parse_mcp_tool_name, MCPConnection
 from file_storage import FileStorageService
+from pii_redactor import redact_text, PrivacyModeConfig
 from rag_service import RAGService
 from sandbox_tools import (
     SANDBOX_TOOL_SCHEMAS, execute_sandbox_tool, is_sandbox_tool,
@@ -1686,6 +1687,19 @@ async def _process_attachments_mongo(attachments, session_id: str, user_id: str,
     return image_parts, attachment_records
 
 
+def _privacy_config_for_agent(agent, is_mongo: bool = False) -> "PrivacyModeConfig":
+    """Resolve an agent's privacy_mode config from its config_json, for the
+    streaming generators — which already receive `agent` as a param and would
+    otherwise need a new parameter threaded through every call site (team chat
+    included, where each sub-call passes a different agent)."""
+    if not agent:
+        return PrivacyModeConfig(enabled=False)
+    raw = agent.get("config_json") if is_mongo else getattr(agent, "config_json", None)
+    if isinstance(raw, str):
+        raw = json.loads(raw) if raw else None
+    return PrivacyModeConfig.from_agent_config(raw)
+
+
 async def _build_user_llm_message(
     message_text: str,
     session_id: str,
@@ -1695,6 +1709,7 @@ async def _build_user_llm_message(
     edit_target: tuple | None = None,
     past_messages=None,
     sandbox_container_id: str | None = None,
+    privacy_config: "PrivacyModeConfig | None" = None,
 ) -> tuple["LLMMessage", dict]:
     """Build an LLMMessage for the user, including RAG context and image parts.
 
@@ -1754,6 +1769,14 @@ async def _build_user_llm_message(
                     )
         if kb_chunks:
             rag_context += f"\n\nRelevant context from knowledge bases:\n" + "\n\n".join(kb_chunks)
+
+    # Redact PII from the outbound text only — redaction protects what the LLM
+    # provider receives, not RAG/image content already resolved above. Applied
+    # last, right before the message leaves this function, so every return
+    # path (plain text, +RAG context, +images) is covered by one call site.
+    if privacy_config and privacy_config.enabled:
+        message_text = redact_text(message_text, privacy_config)
+        rag_context = redact_text(rag_context, privacy_config)
 
     if image_parts:
         content_parts = [{"type": "text", "text": message_text + rag_context}]
@@ -2172,7 +2195,7 @@ async def chat(
     return await _chat_sqlite(request, current_user, db, start_time)
 
 
-def _build_llm_messages_from_history(past_messages: list, db: DBSession, current_agent_id: int | None, is_team: bool, current_model_id: str | None = None) -> list:
+def _build_llm_messages_from_history(past_messages: list, db: DBSession, current_agent_id: int | None, is_team: bool, current_model_id: str | None = None, privacy_config: "PrivacyModeConfig | None" = None) -> list:
     """
     Convert persisted Message rows into the LLMMessage list for a new request.
 
@@ -2231,8 +2254,13 @@ def _build_llm_messages_from_history(past_messages: list, db: DBSession, current
                 tool_calls=[LLMToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments") or "{}") for tc in tool_calls_data],
             ))
             for tc in tool_calls_data:
-                messages.append(LLMMessage(role="tool", content=tc.get("result") or "", tool_call_id=tc["id"]))
+                _tool_result = tc.get("result") or ""
+                if privacy_config and privacy_config.enabled:
+                    _tool_result = redact_text(_tool_result, privacy_config)
+                messages.append(LLMMessage(role="tool", content=_tool_result, tool_call_id=tc["id"]))
         else:
+            if privacy_config and privacy_config.enabled and msg.role == "user":
+                content = redact_text(content, privacy_config)
             messages.append(LLMMessage(role=msg.role, content=content))
     return messages
 
@@ -2400,7 +2428,13 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
 
     _current_agent_id = session.entity_id if session.entity_type == "agent" else None
     _current_model_id = _agent_for_kb.model_id if _agent_for_kb else None
-    messages = _build_llm_messages_from_history(past_messages, db, _current_agent_id, session.entity_type == "team", current_model_id=_current_model_id)
+    _privacy_config = PrivacyModeConfig.from_agent_config(
+        json.loads(_agent_for_kb.config_json) if _agent_for_kb and _agent_for_kb.config_json else None
+    )
+    messages = _build_llm_messages_from_history(
+        past_messages, db, _current_agent_id, session.entity_type == "team",
+        current_model_id=_current_model_id, privacy_config=_privacy_config,
+    )
 
     # Add user message to history (with images + RAG context)
     _user_llm_msg, _kb_meta = await _build_user_llm_message(
@@ -2408,6 +2442,7 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
         kb_ids=_agent_kb_ids, kb_names=_agent_kb_names,
         edit_target=_edit_target_early, past_messages=past_messages,
         sandbox_container_id=_sandbox_cid_for_edit,
+        privacy_config=_privacy_config,
     )
     messages.append(_user_llm_msg)
 
@@ -3191,9 +3226,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     yield ev
 
                 # Feed result back as user message (compatible with all providers)
+                _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent))
                 messages.append(LLMMessage(
                     role="user",
-                    content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}",
+                    content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
                 ))
 
             # Clear content for the next LLM round (the final text reply)
@@ -3686,9 +3722,10 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                         yield ev
 
                     # Feed result back as user message (compatible with all providers)
+                    _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent))
                     messages.append(LLMMessage(
                         role="user",
-                        content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}",
+                        content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
                     ))
 
                 full_content = ""
@@ -4569,7 +4606,7 @@ def _create_llm_for_mongo_provider(provider_record, model_id: str):
     )
 
 
-async def _build_llm_messages_from_history_mongo(past_messages: list, mongo_db, current_agent_id: str | None, is_team: bool, current_model_id: str | None = None) -> list:
+async def _build_llm_messages_from_history_mongo(past_messages: list, mongo_db, current_agent_id: str | None, is_team: bool, current_model_id: str | None = None, privacy_config: "PrivacyModeConfig | None" = None) -> list:
     """Mongo twin of _build_llm_messages_from_history — see its docstring for the
     cross-agent/model identity tagging and tool-call reconstruction rationale."""
     agent_ids = {msg["agent_id"] for msg in past_messages if msg.get("agent_id")}
@@ -4614,8 +4651,13 @@ async def _build_llm_messages_from_history_mongo(past_messages: list, mongo_db, 
                 tool_calls=[LLMToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments") or "{}") for tc in tool_calls_data],
             ))
             for tc in tool_calls_data:
-                messages.append(LLMMessage(role="tool", content=tc.get("result") or "", tool_call_id=tc["id"]))
+                _tool_result = tc.get("result") or ""
+                if privacy_config and privacy_config.enabled:
+                    _tool_result = redact_text(_tool_result, privacy_config)
+                messages.append(LLMMessage(role="tool", content=_tool_result, tool_call_id=tc["id"]))
         else:
+            if privacy_config and privacy_config.enabled and msg["role"] == "user":
+                content = redact_text(content, privacy_config)
             messages.append(LLMMessage(role=msg["role"], content=content))
     return messages
 
@@ -4764,7 +4806,14 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
 
     _current_agent_id_m = session.get("entity_id") if session.get("entity_type") == "agent" else None
     _current_model_id_m = _agent_for_kb_mongo.get("model_id") if _agent_for_kb_mongo else None
-    messages = await _build_llm_messages_from_history_mongo(past_messages, mongo_db, _current_agent_id_m, session.get("entity_type") == "team", current_model_id=_current_model_id_m)
+    _raw_config_mongo = _agent_for_kb_mongo.get("config_json") if _agent_for_kb_mongo else None
+    if isinstance(_raw_config_mongo, str):
+        _raw_config_mongo = json.loads(_raw_config_mongo) if _raw_config_mongo else None
+    _privacy_config_mongo = PrivacyModeConfig.from_agent_config(_raw_config_mongo)
+    messages = await _build_llm_messages_from_history_mongo(
+        past_messages, mongo_db, _current_agent_id_m, session.get("entity_type") == "team",
+        current_model_id=_current_model_id_m, privacy_config=_privacy_config_mongo,
+    )
 
     # Add user message to history (with images + RAG context)
     _user_llm_msg_mongo, _kb_meta_mongo = await _build_user_llm_message(
@@ -4772,6 +4821,7 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
         kb_ids=_agent_kb_ids_mongo, kb_names=_agent_kb_names_mongo,
         edit_target=_edit_target_mongo_early, past_messages=past_messages,
         sandbox_container_id=_sandbox_cid_for_edit_mongo,
+        privacy_config=_privacy_config_mongo,
     )
     messages.append(_user_llm_msg_mongo)
 
@@ -5249,9 +5299,10 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                 for ev in _yield_tool_element_events(tc.name, result):
                     yield ev
 
+                _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent, is_mongo=True))
                 messages.append(LLMMessage(
                     role="user",
-                    content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}",
+                    content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
                 ))
 
             full_content = ""
@@ -5726,9 +5777,10 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                                 _persisted_artifact_tags.append(_artifact_tag_for_persistence(_pd["id"], _pd["title"], _pd["type"], _pd["content"]))
 
                     # Feed result back as user message (compatible with all providers)
+                    _redacted_result = redact_text(str(result), _privacy_config_for_agent(agent, is_mongo=True))
                     messages.append(LLMMessage(
                         role="user",
-                        content=f"[Tool '{tc.name}' returned: {result}]\n\n{TOOL_RESULT_PROMPT}",
+                        content=f"[Tool '{tc.name}' returned: {_redacted_result}]\n\n{TOOL_RESULT_PROMPT}",
                     ))
 
                 full_content = ""
