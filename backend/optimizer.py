@@ -439,8 +439,16 @@ async def _run_optimization_sqlite(
                 inspection_summary = json.loads(inspection_run.summary_json)
                 inspection_context_text = _build_inspection_context_text(inspection_summary)
 
-        # Require min_traces only when no eval/audit/inspection data is available
-        if len(sessions) < min_traces and not eval_context_text and not audit_context_text and not inspection_context_text:
+        # Require min_traces only when the run has no eval/audit/inspection
+        # source at all — gate on whether one was SUPPLIED, not on whether
+        # its derived context text happens to be non-empty. An audit whose
+        # agent behaved consistently (no probe below the failure threshold)
+        # legitimately produces empty audit_context_text from
+        # _build_audit_context_text, but that's not the same as "no audit
+        # was sent" — conflating the two caused a Send-to-Optimizer audit
+        # with a clean/high score to fail here with a misleading
+        # "not enough traces" error despite audit_run_id being set.
+        if len(sessions) < min_traces and not eval_suite_id and not audit_run_id and not inspection_run_id:
             _update(run_id, status="failed",
                     error_message=f"Not enough traces: found {len(sessions)}, need {min_traces}",
                     completed_at=datetime.now(timezone.utc))
@@ -694,8 +702,11 @@ async def _run_optimization_mongo(
                 inspection_summary = json.loads(inspection_run["summary_json"])
                 inspection_context_text = _build_inspection_context_text(inspection_summary)
 
-        # Require min_traces only when no eval/audit/inspection data is available
-        if len(all_sessions) < min_traces and not eval_context_text and not audit_context_text and not inspection_context_text:
+        # Require min_traces only when the run has no eval/audit/inspection
+        # source at all — see the identical comment in the SQLite path for
+        # why this must gate on whether one was SUPPLIED, not on whether
+        # its derived context text happens to be non-empty.
+        if len(all_sessions) < min_traces and not eval_suite_id and not audit_run_id and not inspection_run_id:
             await _update(run_id, status="failed",
                           error_message=f"Not enough traces: found {len(all_sessions)}, need {min_traces}",
                           completed_at=datetime.now(timezone.utc))

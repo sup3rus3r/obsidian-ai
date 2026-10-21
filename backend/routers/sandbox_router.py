@@ -13,8 +13,9 @@ import os
 import sys
 import uuid
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from fastapi.responses import StreamingResponse
+from typing import Optional
 
 from config import DATABASE_TYPE
 from auth import get_current_user, TokenData
@@ -22,10 +23,10 @@ from sandbox_tools import run_docker_command_bytes
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
-    from models_mongo import AgentCollection, TeamCollection
+    from models_mongo import AgentCollection, TeamCollection, TraceSpanCollection
 else:
     from database import get_db
-    from models import Agent, Team
+    from models import Agent, Team, TraceSpan
     from sqlalchemy.orm import Session
 
 router = APIRouter(tags=["sandbox"])
@@ -270,14 +271,29 @@ async def get_agent_sandbox_status(
             db.close()
 
 
-async def _download_workspace_tar(volume_name: str) -> StreamingResponse:
+async def _download_workspace_tar(volume_name: str, only_paths: list[str] | None = None) -> StreamingResponse:
     """Archive a sandbox's /workspace volume to a tar.gz, using a throwaway
     container so this works whether the real sandbox container is running or
-    stopped — the volume persists independently either way."""
+    stopped — the volume persists independently either way.
+
+    only_paths, if given, restricts the archive to those specific paths
+    (relative to /workspace) instead of the whole tree — used for the
+    per-session download, since the sandbox's /workspace is shared across
+    every chat session that has used this agent's sandbox (sandbox_container_id
+    lives on Agent, not Session), so "the whole volume" and "this chat's
+    files" are genuinely different things."""
     exclude_args = []
     for pattern in _DOWNLOAD_EXCLUDES:
         exclude_args += ["--exclude", pattern]
-    tar_cmd = ["tar", "-czf", "-"] + exclude_args + ["-C", "/workspace", "."]
+
+    if only_paths:
+        # Each path is tar'd individually with --ignore-failed-read so a
+        # path the agent wrote earlier but has since deleted doesn't abort
+        # the whole archive — it's just silently skipped.
+        tar_cmd = ["tar", "-czf", "-", "--ignore-failed-read"] + exclude_args + ["-C", "/workspace"] + only_paths
+    else:
+        tar_cmd = ["tar", "-czf", "-"] + exclude_args + ["-C", "/workspace", "."]
+
     out, err, code = await run_docker_command_bytes(
         ["run", "--rm", "-v", f"{volume_name}:/workspace", _SANDBOX_IMAGE, *tar_cmd],
         timeout=180,
@@ -285,7 +301,8 @@ async def _download_workspace_tar(volume_name: str) -> StreamingResponse:
     if code != 0:
         raise HTTPException(status_code=500, detail=f"Failed to archive workspace: {err.decode('utf-8', errors='replace')}")
     if not out:
-        raise HTTPException(status_code=404, detail="Workspace is empty or sandbox was never used")
+        detail = "No files from this chat were found in the sandbox" if only_paths else "Workspace is empty or sandbox was never used"
+        raise HTTPException(status_code=404, detail=detail)
 
     async def _body():
         yield out
@@ -297,11 +314,55 @@ async def _download_workspace_tar(volume_name: str) -> StreamingResponse:
     )
 
 
+def _extract_sandbox_write_paths(spans: list) -> list[str]:
+    """Pull every path a sandbox_write call targeted, from a session's
+    tool_call trace spans. Deliberately narrow: sandbox_write's path
+    argument is structured and reliable, but files created indirectly via
+    sandbox_bash/sandbox_python/sandbox_node (running arbitrary shell/code)
+    can't be statically recovered from the command text, so they're not
+    included here — this is a real, documented limitation of provenance
+    tracking without physically separating each session's files."""
+    paths: set[str] = set()
+    for span in spans:
+        name = span.get("name") if isinstance(span, dict) else getattr(span, "name", None)
+        span_type = span.get("span_type") if isinstance(span, dict) else getattr(span, "span_type", None)
+        if span_type != "tool_call" or name != "sandbox_write":
+            continue
+        raw_input = span.get("input_data") if isinstance(span, dict) else getattr(span, "input_data", None)
+        if not raw_input:
+            continue
+        try:
+            input_data = json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+            args = json.loads(input_data.get("arguments", "{}"))
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            continue
+        path = args.get("path", "").strip()
+        if path:
+            paths.add(_relative_to_workspace(path))
+    return sorted(paths)
+
+
+def _relative_to_workspace(path: str) -> str:
+    """sandbox_write's path argument can be absolute (/workspace/x or
+    //workspace/x, the latter from the double-slash-to-dodge-Git-Bash-mangling
+    convention used elsewhere in this file) or already workspace-relative
+    (x) — normalize to always be relative to /workspace, matching tar's
+    `-C /workspace` root, so an absolute path doesn't turn into a bogus
+    nested "workspace/x" entry."""
+    p = path.strip()
+    for prefix in ("//workspace/", "/workspace/"):
+        if p.startswith(prefix):
+            return p[len(prefix):]
+    return p.lstrip("/")
+
+
 @router.get("/agents/{agent_id}/sandbox/download")
 async def download_agent_sandbox(
     agent_id: str,
+    session_id: Optional[str] = Query(None, description="If set, only files written during this chat session are included."),
     current_user: TokenData = Depends(get_current_user),
 ):
+    only_paths = None
     if DATABASE_TYPE == "mongo":
         db = get_database()
         agent = await AgentCollection.find_by_id(db, agent_id)
@@ -310,6 +371,11 @@ async def download_agent_sandbox(
         if str(agent.get("user_id")) != current_user.user_id:
             raise HTTPException(status_code=403, detail="Not your agent")
         volume_name = f"obsidian-sandbox-vol-agent-{agent_id[:8]}"
+        if session_id:
+            spans = await TraceSpanCollection.find_by_session(db, session_id)
+            only_paths = _extract_sandbox_write_paths(spans)
+            if not only_paths:
+                raise HTTPException(status_code=404, detail="No files from this chat were found in the sandbox")
     else:
         from database import SessionLocal
         db = SessionLocal()
@@ -320,10 +386,15 @@ async def download_agent_sandbox(
             if agent.user_id != int(current_user.user_id):
                 raise HTTPException(status_code=403, detail="Not your agent")
             volume_name = f"obsidian-sandbox-vol-agent-{agent_id}"
+            if session_id:
+                spans = db.query(TraceSpan).filter(TraceSpan.session_id == int(session_id)).all()
+                only_paths = _extract_sandbox_write_paths(spans)
+                if not only_paths:
+                    raise HTTPException(status_code=404, detail="No files from this chat were found in the sandbox")
         finally:
             db.close()
 
-    return await _download_workspace_tar(volume_name)
+    return await _download_workspace_tar(volume_name, only_paths=only_paths)
 
 
 async def _proxy_to_sandbox(host_port: int | None, path: str, request: Request) -> Response:
@@ -525,8 +596,10 @@ async def get_team_sandbox_status(
 @router.get("/teams/{team_id}/sandbox/download")
 async def download_team_sandbox(
     team_id: str,
+    session_id: Optional[str] = Query(None, description="If set, only files written during this chat session are included."),
     current_user: TokenData = Depends(get_current_user),
 ):
+    only_paths = None
     if DATABASE_TYPE == "mongo":
         db = get_database()
         team = await TeamCollection.find_by_id(db, team_id)
@@ -535,6 +608,11 @@ async def download_team_sandbox(
         if str(team.get("user_id")) != current_user.user_id:
             raise HTTPException(status_code=403, detail="Not your team")
         volume_name = f"obsidian-sandbox-vol-team-{team_id[:8]}"
+        if session_id:
+            spans = await TraceSpanCollection.find_by_session(db, session_id)
+            only_paths = _extract_sandbox_write_paths(spans)
+            if not only_paths:
+                raise HTTPException(status_code=404, detail="No files from this chat were found in the sandbox")
     else:
         from database import SessionLocal
         db = SessionLocal()
@@ -545,10 +623,15 @@ async def download_team_sandbox(
             if team.user_id != int(current_user.user_id):
                 raise HTTPException(status_code=403, detail="Not your team")
             volume_name = f"obsidian-sandbox-vol-team-{team_id}"
+            if session_id:
+                spans = db.query(TraceSpan).filter(TraceSpan.session_id == int(session_id)).all()
+                only_paths = _extract_sandbox_write_paths(spans)
+                if not only_paths:
+                    raise HTTPException(status_code=404, detail="No files from this chat were found in the sandbox")
         finally:
             db.close()
 
-    return await _download_workspace_tar(volume_name)
+    return await _download_workspace_tar(volume_name, only_paths=only_paths)
 
 
 @router.api_route("/teams/{team_id}/sandbox/preview/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

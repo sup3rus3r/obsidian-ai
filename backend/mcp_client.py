@@ -6,6 +6,7 @@ Tools discovered from MCP servers are formatted as OpenAI-compatible function sp
 """
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -16,6 +17,21 @@ from mcp.client.streamable_http import streamablehttp_client
 
 logger = logging.getLogger(__name__)
 
+# Anthropic (and, more conservatively, OpenAI/Gemini) require tool names to
+# match ^[a-zA-Z0-9_-]{1,128}$ — but MCP server names are free-text user
+# input (models.py's MCPServer.name has no format constraint) and upstream
+# tool names aren't guaranteed to be constrained either, so a raw
+# f"mcp__{server_name}__{tool.name}" prefix (the actual shape that shipped)
+# can and did produce invalid names (spaces, dots, etc.) that the provider
+# API rejects outright with a 400. Sanitize both halves into the prefix,
+# and keep an unsanitized reverse-lookup so dispatch still calls the real
+# upstream tool with its real name.
+_SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _sanitize_name_part(name: str) -> str:
+    return _SAFE_NAME_RE.sub("_", name) or "_"
+
 
 class MCPConnection:
     """Represents an active connection to an MCP server."""
@@ -23,17 +39,25 @@ class MCPConnection:
     def __init__(self, server_id: str, server_name: str, session: ClientSession):
         self.server_id = server_id
         self.server_name = server_name
+        self.sanitized_server_name = _sanitize_name_part(server_name)
         self.session = session
         self.tools: list[dict] = []
         self.tool_names: set[str] = set()
+        # sanitized original tool name -> real upstream tool name, so
+        # call_tool() can always be given the name the MCP server itself
+        # actually expects, not the one shown to the LLM.
+        self._tool_name_map: dict[str, str] = {}
 
     async def discover_tools(self) -> list[dict]:
         """List tools from the MCP server and format as OpenAI function specs."""
         result = await self.session.list_tools()
         self.tools = []
         self.tool_names = set()
+        self._tool_name_map = {}
         for tool in result.tools:
-            prefixed_name = f"mcp__{self.server_name}__{tool.name}"
+            sanitized_tool_name = _sanitize_name_part(tool.name)
+            self._tool_name_map[sanitized_tool_name] = tool.name
+            prefixed_name = f"mcp__{self.sanitized_server_name}__{sanitized_tool_name}"[:128]
             self.tool_names.add(prefixed_name)
             self.tools.append({
                 "type": "function",
@@ -44,6 +68,11 @@ class MCPConnection:
                 },
             })
         return self.tools
+
+    def resolve_real_tool_name(self, sanitized_tool_name: str) -> str:
+        """Map a sanitized tool name (as parsed from a prefixed tool call)
+        back to the real name the upstream MCP server expects."""
+        return self._tool_name_map.get(sanitized_tool_name, sanitized_tool_name)
 
     async def call_tool(self, original_tool_name: str, arguments: dict) -> str:
         """Call a tool on the MCP server. Accepts the unprefixed original name."""
@@ -58,8 +87,12 @@ class MCPConnection:
 
 
 def parse_mcp_tool_name(prefixed_name: str) -> tuple[str, str] | None:
-    """Parse 'mcp__<server_name>__<tool_name>' into (server_name, tool_name).
-    Returns None if the name doesn't match the MCP prefix pattern."""
+    """Parse 'mcp__<sanitized_server_name>__<sanitized_tool_name>' into
+    (sanitized_server_name, sanitized_tool_name). Returns None if the name
+    doesn't match the MCP prefix pattern. Both halves are the SANITIZED
+    forms — callers must match them against MCPConnection.sanitized_server_name
+    (not .server_name) and resolve the real tool name via
+    MCPConnection.resolve_real_tool_name() before calling call_tool()."""
     if not prefixed_name.startswith("mcp__"):
         return None
     parts = prefixed_name.split("__", 2)

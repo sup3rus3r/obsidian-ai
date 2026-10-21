@@ -175,11 +175,11 @@ export const AppRoutes = {
     AgentSandboxStart   : (id: string) => `/api/agents/${id}/sandbox/start`,
     AgentSandboxStop    : (id: string) => `/api/agents/${id}/sandbox/stop`,
     AgentSandboxStatus  : (id: string) => `/api/agents/${id}/sandbox/status`,
-    AgentSandboxDownload: (id: string) => `/api/agents/${id}/sandbox/download`,
+    AgentSandboxDownload: (id: string, sessionId?: string) => `/api/agents/${id}/sandbox/download${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`,
     TeamSandboxStart    : (id: string) => `/api/teams/${id}/sandbox/start`,
     TeamSandboxStop     : (id: string) => `/api/teams/${id}/sandbox/stop`,
     TeamSandboxStatus   : (id: string) => `/api/teams/${id}/sandbox/status`,
-    TeamSandboxDownload : (id: string) => `/api/teams/${id}/sandbox/download`,
+    TeamSandboxDownload : (id: string, sessionId?: string) => `/api/teams/${id}/sandbox/download${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`,
 
     // Agent-scoped API access (public API keys)
     AgentApiClients      : (agentId: string) => `/api/agents/${agentId}/api-clients`,

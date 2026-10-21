@@ -18,6 +18,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 export function PlaygroundShell({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession()
@@ -148,6 +154,7 @@ function TopBar() {
   const artifactPanelOpen = usePlaygroundStore((s) => s.artifactPanelOpen)
   const setArtifactPanelOpen = usePlaygroundStore((s) => s.setArtifactPanelOpen)
   const contextUsage = usePlaygroundStore((s) => s.contextUsage)
+  const selectedSessionId = usePlaygroundStore((s) => s.selectedSessionId)
 
   const selectedAgentEntity = mode === "agent" ? agents.find((a) => a.id === selectedAgentId) : undefined
   const selectedTeamEntity = mode === "team" ? teams.find((t) => t.id === selectedTeamId) : undefined
@@ -169,19 +176,45 @@ function TopBar() {
                 <Terminal className="h-3 w-3" />
                 {selectedEntity.sandbox_container_id ? "Sandbox" : "Sandbox off"}
               </span>
-              <button
-                type="button"
-                onClick={() => {
-                  const downloadFn = mode === "team" ? apiClient.downloadTeamSandbox : apiClient.downloadAgentSandbox
-                  downloadFn(selectedEntity.id, selectedEntity.name).catch((err: unknown) => {
-                    toast.error(err instanceof Error ? err.message : "Failed to download project files")
-                  })
-                }}
-                title="Download project files"
-                className="inline-flex items-center justify-center h-6 w-6 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Download className="h-3.5 w-3.5" />
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    title="Download project files"
+                    className="inline-flex items-center justify-center h-6 w-6 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuItem
+                    disabled={!selectedSessionId}
+                    onClick={() => {
+                      if (!selectedSessionId) return
+                      const promise = mode === "team"
+                        ? apiClient.downloadTeamSandbox(selectedEntity.id, selectedEntity.name, selectedSessionId)
+                        : apiClient.downloadAgentSandbox(selectedEntity.id, selectedEntity.name, selectedSessionId)
+                      promise.catch((err: unknown) => {
+                        toast.error(err instanceof Error ? err.message : "Failed to download this chat's files")
+                      })
+                    }}
+                  >
+                    This chat only
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      const promise = mode === "team"
+                        ? apiClient.downloadTeamSandbox(selectedEntity.id, selectedEntity.name)
+                        : apiClient.downloadAgentSandbox(selectedEntity.id, selectedEntity.name)
+                      promise.catch((err: unknown) => {
+                        toast.error(err instanceof Error ? err.message : "Failed to download project files")
+                      })
+                    }}
+                  >
+                    All chats (entire sandbox)
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </>
           )}
           <ModelSelector />

@@ -1551,14 +1551,14 @@ async def _execute_mcp_or_native_tool(
         return await execute_category_tool(tc_name, tc_arguments, agent=agent, db=db, session_id=session_id)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
-        server_name, original_tool_name = parsed
+        server_name, sanitized_tool_name = parsed
         conn = mcp_connections.get(server_name)
         if conn:
             try:
                 args = json.loads(tc_arguments) if tc_arguments else {}
             except json.JSONDecodeError:
                 args = {}
-            return await conn.call_tool(original_tool_name, args)
+            return await conn.call_tool(conn.resolve_real_tool_name(sanitized_tool_name), args)
         else:
             return json.dumps({"error": f"MCP server '{server_name}' not connected"})
     else:
@@ -1580,14 +1580,14 @@ async def _execute_mcp_or_native_tool_mongo(
         return await execute_category_tool(tc_name, tc_arguments, agent=agent, db=mongo_db, session_id=session_id, is_mongo=True)
     parsed = parse_mcp_tool_name(tc_name)
     if parsed:
-        server_name, original_tool_name = parsed
+        server_name, sanitized_tool_name = parsed
         conn = mcp_connections.get(server_name)
         if conn:
             try:
                 args = json.loads(tc_arguments) if tc_arguments else {}
             except json.JSONDecodeError:
                 args = {}
-            return await conn.call_tool(original_tool_name, args)
+            return await conn.call_tool(conn.resolve_real_tool_name(sanitized_tool_name), args)
         else:
             return json.dumps({"error": f"MCP server '{server_name}' not connected"})
     else:
@@ -1595,13 +1595,16 @@ async def _execute_mcp_or_native_tool_mongo(
 
 
 async def _connect_mcp_servers(stack: AsyncExitStack, mcp_server_configs: list[dict]) -> tuple[dict[str, MCPConnection], list[dict]]:
-    """Connect to all MCP servers using an AsyncExitStack. Returns (connections_map, all_mcp_tools)."""
+    """Connect to all MCP servers using an AsyncExitStack. Returns (connections_map, all_mcp_tools).
+    Keyed by sanitized_server_name, not the raw server_name, since that's
+    what parse_mcp_tool_name() recovers from a prefixed tool call (the
+    prefix itself is built from sanitized names — see mcp_client.py)."""
     mcp_connections: dict[str, MCPConnection] = {}
     all_mcp_tools: list[dict] = []
     for config in mcp_server_configs:
         try:
             conn = await stack.enter_async_context(connect_mcp_server(config))
-            mcp_connections[conn.server_name] = conn
+            mcp_connections[conn.sanitized_server_name] = conn
             all_mcp_tools.extend(conn.tools)
         except Exception as e:
             logger.warning(f"Failed to connect to MCP server {config.get('name')}: {e}")
