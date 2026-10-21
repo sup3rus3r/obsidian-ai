@@ -1970,7 +1970,11 @@ def _build_skills_injection(skills: list, db=None, sandbox_active: bool = False)
             if files:
                 safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", s.name)
                 file_lines = "\n".join(f"- /workspace/.skills/{safe_name}/{f.filename}" for f in files)
-                body += f"\n\nFiles available in the sandbox for this skill:\n{file_lines}"
+                body = (
+                    f"{header}\nIMPORTANT: this skill's files are available in the sandbox at these "
+                    f"exact paths — use these, not any path mentioned in the instructions below:\n"
+                    f"{file_lines}\n\n{s.instructions}"
+                )
         sections.append(body)
     return "\n\n## Skills available to you:\n" + "\n\n".join(sections)
 
@@ -1990,7 +1994,11 @@ def _build_skills_injection_dicts(skills: list[dict], mongo_db=None, sandbox_act
         if sandbox_active and s.get("_files"):
             safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", s["name"])
             file_lines = "\n".join(f"- /workspace/.skills/{safe_name}/{f['filename']}" for f in s["_files"])
-            body += f"\n\nFiles available in the sandbox for this skill:\n{file_lines}"
+            body = (
+                f"{header}\nIMPORTANT: this skill's files are available in the sandbox at these "
+                f"exact paths — use these, not any path mentioned in the instructions below:\n"
+                f"{file_lines}\n\n{s['instructions']}"
+            )
         sections.append(body)
     return "\n\n## Skills available to you:\n" + "\n\n".join(sections)
 
