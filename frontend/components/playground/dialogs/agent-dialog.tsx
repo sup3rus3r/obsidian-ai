@@ -132,6 +132,19 @@ function snapshotDiff(a: AgentConfigSnapshot, b: AgentConfigSnapshot): Array<{ k
   return diffs
 }
 
+function SectionHeader({ title, first = false }: { title: string; first?: boolean }) {
+  return (
+    <div className={first ? "" : "mt-3"}>
+      <div className="flex items-center gap-2.5 bg-muted/60 rounded-md px-3 py-2 border border-border/60">
+        <div className="h-4 w-1 rounded-full bg-primary shrink-0" />
+        <h3 className="text-sm font-semibold text-foreground">
+          {title}
+        </h3>
+      </div>
+    </div>
+  )
+}
+
 function VersionDiffModal({
   version,
   prevVersion,
@@ -881,6 +894,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
         </DialogHeader>
 
         <div className="grid gap-4 py-4 px-6 overflow-y-auto flex-1 min-h-0">
+          <SectionHeader title="Basics" first />
+
           <div className="grid gap-2">
             <Label htmlFor="agent-name">Name</Label>
             <Input
@@ -1040,6 +1055,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          <SectionHeader title="Tools & Integrations" />
 
           {/* Tools Section */}
           <div className="grid gap-2">
@@ -1288,6 +1305,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
             )}
           </div>
 
+          <SectionHeader title="Safety & Approval" />
+
           {/* HITL Tool Overrides Section */}
           <div className="grid gap-2">
             <Label className="flex items-center gap-1.5">
@@ -1360,6 +1379,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               </span>
             </button>
           </div>
+
+          <SectionHeader title="Runtime" />
 
           {/* Docker Sandbox Section */}
           <div className="grid gap-2">
@@ -1494,6 +1515,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               </div>
             )}
           </div>
+
+          <SectionHeader title="Access & Permissions" />
 
           {/* Secret Access Section (edit mode only, read-only — managed from the Secrets Vault) */}
           {isEditing && (
@@ -1676,6 +1699,8 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
               )}
             </div>
           )}
+
+          {isEditing && <SectionHeader title="Advanced" />}
 
           {/* Long-term Memory Section (edit mode only) */}
           {isEditing && (
