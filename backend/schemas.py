@@ -1395,6 +1395,7 @@ class SkillResponse(BaseModel):
     name: str
     description: Optional[str] = None
     instructions: str
+    file_count: int = 0
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -1403,6 +1404,24 @@ class SkillResponse(BaseModel):
 
 class SkillListResponse(BaseModel):
     skills: list[SkillResponse]
+
+class SkillFileCreate(BaseModel):
+    filename: str
+    file_data: str   # base64 data URI
+
+class SkillFileResponse(BaseModel):
+    id: str
+    skill_id: str
+    filename: str
+    media_type: str
+    file_size: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class SkillFileListResponse(BaseModel):
+    files: list[SkillFileResponse]
 
 
 # ─── Optimizer Vault Actions ──────────────────────────────────────────────────

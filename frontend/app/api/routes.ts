@@ -270,4 +270,7 @@ export const AppRoutes = {
     GetSkill                : (id: string) => `/api/skills/${id}`,
     UpdateSkill             : (id: string) => `/api/skills/${id}`,
     DeleteSkill             : (id: string) => `/api/skills/${id}`,
+    ListSkillFiles          : (skillId: string) => `/api/skills/${skillId}/files`,
+    AddSkillFile            : (skillId: string) => `/api/skills/${skillId}/files`,
+    DeleteSkillFile         : (skillId: string, fileId: string) => `/api/skills/${skillId}/files/${fileId}`,
 }

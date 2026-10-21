@@ -11,7 +11,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from config import DATABASE_TYPE
 from database import get_db
-from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, AsyncJob, VaultFile
+from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, SkillFile, AsyncJob, VaultFile
 from schemas import ChatRequest, RateMessageRequest, HITLApprovalResponse, HITLPendingListResponse, ToolProposalResponse, ToolProposalPendingListResponse, AsyncJobResponse, AsyncJobPendingListResponse
 from auth import get_current_user, TokenData
 from encryption import decrypt_api_key
@@ -1951,27 +1951,47 @@ def _agent_supports_skills(provider_record, model_id: str | None) -> bool:
     return bool(model_id) and model_id.startswith("claude")
 
 
-def _build_skills_injection(skills: list) -> str:
+def _build_skills_injection(skills: list, db=None, sandbox_active: bool = False) -> str:
     """Return a formatted skills block (SQLAlchemy Skill rows) to append to
     the system prompt, in SKILL.md-style progressive disclosure: name +
-    description first, full instructions below."""
+    description first, full instructions below. When sandbox_active, also
+    names each skill's attached files and their sandbox path (seeded at
+    container start — see sandbox_router.py's start_agent_sandbox) so the
+    model knows to actually look for and run them, not just be told text
+    about something it has no way to find."""
     if not skills:
         return ""
     sections = []
     for s in skills:
         header = f"### {s.name}" + (f" — {s.description}" if s.description else "")
-        sections.append(f"{header}\n{s.instructions}")
+        body = f"{header}\n{s.instructions}"
+        if sandbox_active and db is not None:
+            files = db.query(SkillFile).filter(SkillFile.skill_id == s.id).all()
+            if files:
+                safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", s.name)
+                file_lines = "\n".join(f"- /workspace/.skills/{safe_name}/{f.filename}" for f in files)
+                body += f"\n\nFiles available in the sandbox for this skill:\n{file_lines}"
+        sections.append(body)
     return "\n\n## Skills available to you:\n" + "\n\n".join(sections)
 
 
-def _build_skills_injection_dicts(skills: list[dict]) -> str:
-    """Same as above but for Mongo dicts."""
+def _build_skills_injection_dicts(skills: list[dict], mongo_db=None, sandbox_active: bool = False) -> str:
+    """Same as above but for Mongo dicts. mongo_db lookups for attached
+    files are synchronous-looking here but the caller must have already
+    awaited them — see the call site, which pre-fetches file lists before
+    calling this (kept sync itself, matching _build_skills_injection's
+    shape, since string-building has no need to be async)."""
     if not skills:
         return ""
     sections = []
     for s in skills:
         header = f"### {s['name']}" + (f" — {s['description']}" if s.get("description") else "")
-        sections.append(f"{header}\n{s['instructions']}")
+        body = f"{header}\n{s['instructions']}"
+        if sandbox_active and s.get("_files"):
+            safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", s["name"])
+            file_lines = "\n".join(f"- /workspace/.skills/{safe_name}/{f['filename']}" for f in s["_files"])
+            body += f"\n\nFiles available in the sandbox for this skill:\n{file_lines}"
+        sections.append(body)
     return "\n\n## Skills available to you:\n" + "\n\n".join(sections)
 
 
@@ -2379,7 +2399,7 @@ def _resolve_agent_chat_context(session, request: ChatRequest, db: DBSession, cu
                 Skill.user_id == int(current_user.user_id),
                 Skill.is_active == True,
             ).all()
-            _skills_injection = _build_skills_injection(_skills)
+            _skills_injection = _build_skills_injection(_skills, db=db, sandbox_active=bool(_sandbox_active))
     _vault_injection = ""
     if agent.vault_file_ids_json:
         try:
@@ -4812,8 +4832,11 @@ async def _resolve_agent_chat_context_mongo(session, request: ChatRequest, mongo
         for _sid in _skill_ids_mongo:
             _sk = await SkillCollection.find_by_id(mongo_db, str(_sid))
             if _sk and _sk.get("is_active", True) and _sk.get("user_id") == _user_id_str:
+                if _sandbox_active_mongo:
+                    from models_mongo import SkillFileCollection as _SkillFileColl
+                    _sk["_files"] = await _SkillFileColl.find_by_skill(mongo_db, str(_sk["_id"]))
                 _skills_mongo.append(_sk)
-        _skills_injection_mongo = _build_skills_injection_dicts(_skills_mongo)
+        _skills_injection_mongo = _build_skills_injection_dicts(_skills_mongo, mongo_db=mongo_db, sandbox_active=bool(_sandbox_active_mongo))
     _vault_injection_mongo = ""
     if agent.get("vault_file_ids_json"):
         _vault_ids_raw = agent.get("vault_file_ids_json")

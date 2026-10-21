@@ -1,8 +1,10 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import dynamic from "next/dynamic"
 import { useSession } from "next-auth/react"
-import { Sparkles, Plus, Trash2, Pencil, Loader2, Search } from "lucide-react"
+import { useTheme } from "next-themes"
+import { Sparkles, Plus, Trash2, Pencil, Loader2, Search, Paperclip, X } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,22 +19,49 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Textarea } from "@/components/ui/textarea"
+import "@uiw/react-md-editor/markdown-editor.css"
 import { AnimatedList, AnimatedListItem } from "@/components/ui/animated-list"
 import { AppRoutes } from "@/app/api/routes"
 import { useConfirm } from "@/hooks/use-confirm"
+import { apiClient } from "@/lib/api-client"
+import type { SkillFile } from "@/types/playground"
+
+const MDEditor = dynamic(() => import("@uiw/react-md-editor"), { ssr: false })
 
 interface SkillEntry {
   id: string
   name: string
   description: string | null
   instructions: string
+  file_count: number
   created_at: string
   updated_at: string | null
 }
 
+interface StagedFile {
+  filename: string
+  file_data: string
+}
+
+function formatFileSize(bytes: number | null): string {
+  if (bytes == null) return ""
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function readFileAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
 export default function SkillsPage() {
   const { data: session } = useSession()
+  const { resolvedTheme } = useTheme()
   const [skills, setSkills] = useState<SkillEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
@@ -52,12 +81,16 @@ export default function SkillsPage() {
   const [createDescription, setCreateDescription] = useState("")
   const [createInstructions, setCreateInstructions] = useState("")
   const [creating, setCreating] = useState(false)
+  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
 
   // Edit form
   const [editName, setEditName] = useState("")
   const [editDescription, setEditDescription] = useState("")
   const [editInstructions, setEditInstructions] = useState("")
   const [editing, setEditing] = useState(false)
+  const [editFiles, setEditFiles] = useState<SkillFile[]>([])
+  const [editFilesLoading, setEditFilesLoading] = useState(false)
+  const [uploadingFile, setUploadingFile] = useState(false)
 
   useEffect(() => {
     if (session?.accessToken) fetchSkills()
@@ -101,16 +134,82 @@ export default function SkillsPage() {
         const err = await res.json().catch(() => ({ detail: "Failed to create skill" }))
         throw new Error(err.detail || `HTTP ${res.status}`)
       }
+      const created = await res.json()
+      if (stagedFiles.length > 0) {
+        for (const f of stagedFiles) {
+          try {
+            await apiClient.addSkillFile(created.id, f.filename, f.file_data)
+          } catch (e: any) {
+            toast.error(`Failed to upload ${f.filename}: ${e.message || "unknown error"}`)
+          }
+        }
+      }
       toast.success("Skill saved to vault")
       setShowCreateDialog(false)
       setCreateName("")
       setCreateDescription("")
       setCreateInstructions("")
+      setStagedFiles([])
       await fetchSkills()
     } catch (e: any) {
       toast.error(e.message || "Failed to create skill")
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleStageFiles = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return
+    const files = await Promise.all(
+      Array.from(fileList).map(async (file) => ({
+        filename: file.name,
+        file_data: await readFileAsDataURL(file),
+      })),
+    )
+    setStagedFiles((prev) => [...prev, ...files])
+  }
+
+  const removeStagedFile = (filename: string) => {
+    setStagedFiles((prev) => prev.filter((f) => f.filename !== filename))
+  }
+
+  const fetchEditFiles = async (skillId: string) => {
+    setEditFilesLoading(true)
+    try {
+      const files = await apiClient.listSkillFiles(skillId)
+      setEditFiles(files)
+    } catch (e) {
+      console.error("Failed to fetch skill files:", e)
+    } finally {
+      setEditFilesLoading(false)
+    }
+  }
+
+  const handleUploadEditFiles = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0 || !editingSkill) return
+    setUploadingFile(true)
+    try {
+      for (const file of Array.from(fileList)) {
+        const dataUrl = await readFileAsDataURL(file)
+        const created = await apiClient.addSkillFile(editingSkill.id, file.name, dataUrl)
+        setEditFiles((prev) => [...prev, created])
+      }
+      await fetchSkills()
+    } catch (e: any) {
+      toast.error(e.message || "Failed to upload file")
+    } finally {
+      setUploadingFile(false)
+    }
+  }
+
+  const handleDeleteEditFile = async (fileId: string) => {
+    if (!editingSkill) return
+    try {
+      await apiClient.deleteSkillFile(editingSkill.id, fileId)
+      setEditFiles((prev) => prev.filter((f) => f.id !== fileId))
+      await fetchSkills()
+    } catch (e: any) {
+      toast.error(e.message || "Failed to remove file")
     }
   }
 
@@ -171,7 +270,9 @@ export default function SkillsPage() {
     setEditName(skill.name)
     setEditDescription(skill.description || "")
     setEditInstructions(skill.instructions)
+    setEditFiles([])
     setShowEditDialog(true)
+    fetchEditFiles(skill.id)
   }
 
   const filteredSkills = skills.filter((s) => {
@@ -255,7 +356,15 @@ export default function SkillsPage() {
               >
                 <CardContent className="flex items-start gap-4 py-3 px-4">
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm">{skill.name}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-sm">{skill.name}</p>
+                      {skill.file_count > 0 && (
+                        <Badge variant="outline" className="gap-1 text-xs font-normal">
+                          <Paperclip className="h-3 w-3" />
+                          {skill.file_count}
+                        </Badge>
+                      )}
+                    </div>
                     {skill.description && (
                       <p className="text-sm text-muted-foreground mt-0.5">{skill.description}</p>
                     )}
@@ -318,7 +427,7 @@ export default function SkillsPage() {
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
         <DialogContent
           showFullscreenButton
-          className="max-w-2xl max-h-[85vh] flex flex-col p-0 gap-0"
+          className="max-w-[70vw] max-h-[85vh] flex flex-col p-0 gap-0"
         >
           <DialogHeader className="px-6 pt-6 pb-4">
             <DialogTitle>New Skill</DialogTitle>
@@ -348,16 +457,53 @@ export default function SkillsPage() {
                   placeholder="Short summary shown before the skill is loaded"
                 />
               </div>
-              <div className="flex flex-col flex-1 min-h-0 gap-2 pb-4">
+              <div className="flex flex-col flex-1 min-h-0 gap-2">
                 <Label htmlFor="create-instructions" className="shrink-0">Instructions</Label>
-                <Textarea
-                  id="create-instructions"
-                  value={createInstructions}
-                  onChange={(e) => setCreateInstructions(e.target.value)}
-                  placeholder="Detailed instructions the model should follow when this skill is relevant..."
-                  className="flex-1 min-h-32 resize-none overflow-y-auto"
-                  required
+                <div className="flex-1 min-h-32 overflow-y-auto" data-color-mode={resolvedTheme === "dark" ? "dark" : "light"}>
+                  <MDEditor
+                    value={createInstructions}
+                    onChange={(v) => setCreateInstructions(v || "")}
+                    height="100%"
+                    preview="live"
+                    textareaProps={{ id: "create-instructions", placeholder: "Detailed instructions the model should follow when this skill is relevant...", required: true }}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 shrink-0 pb-4">
+                <Label htmlFor="create-files" className="flex items-center gap-1.5">
+                  <Paperclip className="h-3.5 w-3.5" />
+                  Files (Optional)
+                </Label>
+                <Input
+                  id="create-files"
+                  type="file"
+                  multiple
+                  onChange={(e) => { handleStageFiles(e.target.files); e.target.value = "" }}
                 />
+                {stagedFiles.length > 0 && (
+                  <div className="space-y-1 rounded-md border border-border p-2">
+                    {stagedFiles.map((f) => (
+                      <div key={f.filename} className="flex items-center justify-between gap-2 text-xs px-1">
+                        <span className="truncate">{f.filename}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-muted-foreground">will be uploaded after saving</span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-6 w-6"
+                            onClick={() => removeStagedFile(f.filename)}
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Files are available to this skill's agent only when its sandbox is running — they're added when the sandbox starts, not retroactively while it's already running.
+                </p>
               </div>
             </div>
             <DialogFooter className="px-6 py-4 border-t border-border">
@@ -369,6 +515,7 @@ export default function SkillsPage() {
                   setCreateName("")
                   setCreateDescription("")
                   setCreateInstructions("")
+                  setStagedFiles([])
                 }}
               >
                 Cancel
@@ -386,7 +533,7 @@ export default function SkillsPage() {
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
         <DialogContent
           showFullscreenButton
-          className="max-w-2xl max-h-[85vh] flex flex-col p-0 gap-0"
+          className="max-w-[70vw] max-h-[85vh] flex flex-col p-0 gap-0"
         >
           <DialogHeader className="px-6 pt-6 pb-4">
             <DialogTitle>Edit Skill</DialogTitle>
@@ -412,22 +559,66 @@ export default function SkillsPage() {
                   placeholder="Short summary"
                 />
               </div>
-              <div className="flex flex-col flex-1 min-h-0 gap-2 pb-4">
+              <div className="flex flex-col flex-1 min-h-0 gap-2">
                 <Label htmlFor="edit-instructions" className="shrink-0">Instructions</Label>
-                <Textarea
-                  id="edit-instructions"
-                  value={editInstructions}
-                  onChange={(e) => setEditInstructions(e.target.value)}
-                  className="flex-1 min-h-32 resize-none overflow-y-auto"
-                  required
-                />
+                <div className="flex-1 min-h-32 overflow-y-auto" data-color-mode={resolvedTheme === "dark" ? "dark" : "light"}>
+                  <MDEditor
+                    value={editInstructions}
+                    onChange={(v) => setEditInstructions(v || "")}
+                    height="100%"
+                    preview="live"
+                    textareaProps={{ id: "edit-instructions", required: true }}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 shrink-0 pb-4">
+                <Label htmlFor="edit-files" className="flex items-center gap-1.5">
+                  <Paperclip className="h-3.5 w-3.5" />
+                  Files
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="edit-files"
+                    type="file"
+                    multiple
+                    disabled={uploadingFile}
+                    onChange={(e) => { handleUploadEditFiles(e.target.files); e.target.value = "" }}
+                  />
+                  {uploadingFile && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />}
+                </div>
+                {editFilesLoading ? (
+                  <p className="text-xs text-muted-foreground">Loading files...</p>
+                ) : editFiles.length > 0 ? (
+                  <div className="space-y-1 rounded-md border border-border p-2">
+                    {editFiles.map((f) => (
+                      <div key={f.id} className="flex items-center justify-between gap-2 text-xs px-1">
+                        <span className="truncate">{f.filename}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-muted-foreground">{formatFileSize(f.file_size)}</span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-6 w-6 text-destructive hover:text-destructive"
+                            onClick={() => handleDeleteEditFile(f.id)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <p className="text-xs text-muted-foreground">
+                  Files are available to this skill's agent only when its sandbox is running — they're added when the sandbox starts, not retroactively while it's already running.
+                </p>
               </div>
             </div>
             <DialogFooter className="px-6 py-4 border-t border-border">
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => { setShowEditDialog(false); setEditingSkill(null) }}
+                onClick={() => { setShowEditDialog(false); setEditingSkill(null); setEditFiles([]) }}
               >
                 Cancel
               </Button>

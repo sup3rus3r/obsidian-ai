@@ -10,6 +10,7 @@ SSE chat streams. The base image used is obsidian-webdev-base:latest.
 import asyncio
 import json
 import os
+import re
 import sys
 import uuid
 import httpx
@@ -20,6 +21,7 @@ from typing import Optional
 from config import DATABASE_TYPE
 from auth import get_current_user, TokenData
 from sandbox_tools import run_docker_command_bytes
+from file_storage import FileStorageService
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
@@ -159,6 +161,7 @@ async def start_agent_sandbox(
                 "sandbox_host_port": host_port,
             }},
         )
+        await _seed_skill_files_mongo(container_id, db, agent.get("skill_ids_json"))
         return {"container_id": container_id, "host_port": host_port, "status": "running"}
 
     else:
@@ -184,6 +187,7 @@ async def start_agent_sandbox(
             agent.sandbox_container_id = container_id
             agent.sandbox_host_port = host_port
             db.commit()
+            await _seed_skill_files_sqlite(container_id, db, agent.skill_ids_json)
             return {"container_id": container_id, "host_port": host_port, "status": "running"}
         finally:
             db.close()
@@ -342,6 +346,69 @@ def _extract_sandbox_write_paths(spans: list) -> list[str]:
     return sorted(paths)
 
 
+async def _seed_skill_files_mongo(container_id: str, mongo_db, skill_ids_raw) -> None:
+    """Push every attached skill's files into a freshly-started container,
+    under /workspace/.skills/<skill_name>/<filename>. Only called right
+    after _start_container, never on container reuse — files already
+    written on a prior start persist in the named volume across stop/start
+    cycles, and re-seeding every start would be redundant. Best-effort:
+    a failed write for one file doesn't abort seeding the rest."""
+    from sandbox_tools import write_sandbox_file_bytes
+    if isinstance(skill_ids_raw, str):
+        try:
+            skill_ids = json.loads(skill_ids_raw) if skill_ids_raw else []
+        except (json.JSONDecodeError, TypeError):
+            skill_ids = []
+    elif isinstance(skill_ids_raw, list):
+        skill_ids = skill_ids_raw
+    else:
+        skill_ids = []
+    if not skill_ids:
+        return
+    from models_mongo import SkillCollection, SkillFileCollection
+    for sid in skill_ids:
+        skill = await SkillCollection.find_by_id(mongo_db, str(sid))
+        if not skill:
+            continue
+        files = await SkillFileCollection.find_by_skill(mongo_db, str(sid))
+        if not files:
+            continue
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", skill["name"])
+        for f in files:
+            try:
+                data = await FileStorageService.read_file_gridfs(mongo_db, f["storage_path"])
+                await write_sandbox_file_bytes(container_id, f"//workspace/.skills/{safe_name}/{f['filename']}", data)
+            except Exception:
+                continue
+
+
+async def _seed_skill_files_sqlite(container_id: str, db, skill_ids_raw) -> None:
+    """Sibling of _seed_skill_files_mongo for the SQLAlchemy path — same
+    seeding rules, see its docstring."""
+    from sandbox_tools import write_sandbox_file_bytes
+    try:
+        skill_ids = json.loads(skill_ids_raw) if skill_ids_raw else []
+    except (json.JSONDecodeError, TypeError):
+        skill_ids = []
+    if not skill_ids:
+        return
+    from models import Skill, SkillFile
+    for sid in skill_ids:
+        skill = db.query(Skill).filter(Skill.id == int(sid)).first()
+        if not skill:
+            continue
+        files = db.query(SkillFile).filter(SkillFile.skill_id == int(sid)).all()
+        if not files:
+            continue
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", skill.name)
+        for f in files:
+            try:
+                data = FileStorageService.read_file_sqlite(f.storage_path)
+                await write_sandbox_file_bytes(container_id, f"//workspace/.skills/{safe_name}/{f.filename}", data)
+            except Exception:
+                continue
+
+
 def _relative_to_workspace(path: str) -> str:
     """sandbox_write's path argument can be absolute (/workspace/x or
     //workspace/x, the latter from the double-slash-to-dodge-Git-Bash-mangling
@@ -481,6 +548,22 @@ async def start_team_sandbox(
                 "sandbox_host_port": host_port,
             }},
         )
+        # Teams don't carry skill_ids_json themselves — seed the files of every
+        # member agent's attached skills, since any of them may act in this
+        # shared sandbox.
+        from models_mongo import AgentCollection as _AgentColl
+        team_agent_ids_raw = team.get("agent_ids_json") or team.get("agent_ids", [])
+        if isinstance(team_agent_ids_raw, str):
+            try:
+                team_agent_ids = json.loads(team_agent_ids_raw) if team_agent_ids_raw else []
+            except (json.JSONDecodeError, TypeError):
+                team_agent_ids = []
+        else:
+            team_agent_ids = team_agent_ids_raw or []
+        for member_id in team_agent_ids:
+            member_agent = await _AgentColl.find_by_id(db, str(member_id))
+            if member_agent:
+                await _seed_skill_files_mongo(container_id, db, member_agent.get("skill_ids_json"))
         return {"container_id": container_id, "host_port": host_port, "status": "running"}
 
     else:
@@ -506,6 +589,18 @@ async def start_team_sandbox(
             team.sandbox_container_id = container_id
             team.sandbox_host_port = host_port
             db.commit()
+            # Teams don't carry skill_ids_json themselves — seed the files of
+            # every member agent's attached skills, since any of them may
+            # act in this shared sandbox.
+            from models import Agent as _AgentModel
+            try:
+                team_agent_ids = json.loads(team.agent_ids_json) if team.agent_ids_json else []
+            except (json.JSONDecodeError, TypeError):
+                team_agent_ids = []
+            for member_id in team_agent_ids:
+                member_agent = db.query(_AgentModel).filter(_AgentModel.id == int(member_id)).first()
+                if member_agent:
+                    await _seed_skill_files_sqlite(container_id, db, member_agent.skill_ids_json)
             return {"container_id": container_id, "host_port": host_port, "status": "running"}
         finally:
             db.close()

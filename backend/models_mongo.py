@@ -918,6 +918,42 @@ class SkillCollection:
         return result.deleted_count > 0
 
 
+class SkillFileCollection:
+    """Mongo mirror of models.py's SkillFile — a file attached to a Skill,
+    seeded into an agent's sandbox filesystem at container start."""
+    collection_name = "skill_files"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("skill_id")
+
+    @classmethod
+    async def find_by_skill(cls, db, skill_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"skill_id": skill_id})
+        return await cursor.to_list(length=200)
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def delete(cls, db, file_id: str) -> bool:
+        collection = db[cls.collection_name]
+        result = await collection.delete_one({"_id": ObjectId(file_id)})
+        return result.deleted_count > 0
+
+    @classmethod
+    async def delete_by_skill(cls, db, skill_id: str) -> None:
+        collection = db[cls.collection_name]
+        await collection.delete_many({"skill_id": skill_id})
+
+
 class KnowledgeBaseCollection:
     collection_name = "knowledge_bases"
 

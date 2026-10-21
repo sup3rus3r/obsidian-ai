@@ -165,6 +165,23 @@ def _run_sqlite_migrations(engine):
         except Exception:
             conn.rollback()
 
+        # Create skill_files table if missing
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS skill_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                    filename TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    file_size INTEGER,
+                    storage_path TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
         # Add attachments_json to messages if missing
         try:
             conn.execute(sqlalchemy.text(

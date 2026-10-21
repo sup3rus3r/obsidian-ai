@@ -104,8 +104,11 @@ async def read_sandbox_file_direct(container_id: str, path: str) -> str | None:
     return out if code == 0 else None
 
 
-async def write_sandbox_file_direct(container_id: str, path: str, content: str) -> bool:
-    """Backend-side direct write. False on failure — never raises."""
+async def write_sandbox_file_bytes(container_id: str, path: str, data: bytes) -> bool:
+    """Backend-side direct write of raw bytes. False on failure — never
+    raises. Used both for text writes (write_sandbox_file_direct, below)
+    and for seeding binary skill-attachment files into a freshly-started
+    container (see sandbox_router.py's start_agent_sandbox)."""
     if not container_id:
         return False
     dir_path = "/".join(path.split("/")[:-1])
@@ -113,9 +116,14 @@ async def write_sandbox_file_direct(container_id: str, path: str, content: str) 
         await _docker_exec(container_id, "//bin/sh", "-c", f"mkdir -p {_double_slash(dir_path)}")
     _, code = await _docker_exec(
         container_id, "tee", _double_slash(path),
-        stdin_data=content.encode("utf-8"),
+        stdin_data=data,
     )
     return code == 0
+
+
+async def write_sandbox_file_direct(container_id: str, path: str, content: str) -> bool:
+    """Backend-side direct write of text. False on failure — never raises."""
+    return await write_sandbox_file_bytes(container_id, path, content.encode("utf-8"))
 
 
 async def wait_for_port_ready(host_port: int, attempts: int = 5, delay_s: float = 1.0) -> bool:

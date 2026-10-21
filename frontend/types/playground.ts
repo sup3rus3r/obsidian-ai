@@ -57,8 +57,18 @@ export interface Skill {
   name: string
   description: string | null
   instructions: string
+  file_count: number
   created_at: string
   updated_at: string | null
+}
+
+export interface SkillFile {
+  id: string
+  skill_id: string
+  filename: string
+  media_type: string
+  file_size: number | null
+  created_at: string
 }
 
 export interface Team {

@@ -229,10 +229,14 @@ class Skill(Base):
     """A reusable Claude Skill: a named instruction bundle (SKILL.md-style) that
     gets injected into an agent's system prompt when attached. Modeled on
     Anthropic's Agent Skills concept (progressive-disclosure instruction
-    bundles) but implemented as plain prompt injection rather than their
-    hosted code-execution container — so it works without extra
-    infrastructure, while still only being meaningful for Claude models
-    (gated at the agent-config layer, not here)."""
+    bundles), implemented as plain prompt injection rather than their hosted
+    code-execution container — so it works without extra infrastructure,
+    while still only being meaningful for Claude models (gated at the
+    agent-config layer, not here). A skill may also carry real files
+    (SkillFile) that get seeded into an agent's sandbox filesystem at
+    container start, for skills whose instructions reference a script or
+    data file the model needs to actually read/run, not just text it's told
+    about — see sandbox_router.py's start_agent_sandbox."""
     __tablename__ = "skills"
 
     id           = Column(Integer, primary_key=True, index=True)
@@ -243,6 +247,22 @@ class Skill(Base):
     is_active    = Column(Boolean, default=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
     updated_at   = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class SkillFile(Base):
+    """A file attached to a Skill, seeded into an agent's sandbox filesystem
+    (under /workspace/.skills/<skill_name>/<filename>) when the sandbox
+    container starts — not persisted into the prompt itself, unlike
+    Skill.instructions. See sandbox_tools.py's write_sandbox_file_bytes."""
+    __tablename__ = "skill_files"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    skill_id      = Column(Integer, ForeignKey("skills.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename      = Column(String, nullable=False)
+    media_type    = Column(String, nullable=False)
+    file_size     = Column(Integer, nullable=True)
+    storage_path  = Column(String, nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class KnowledgeBase(Base):

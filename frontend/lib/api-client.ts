@@ -71,6 +71,7 @@ import type {
   HITLApprovalItem,
   AsyncJobItem,
   Skill,
+  SkillFile,
   VaultFile,
   Secret,
   SecretAccess,
@@ -1212,6 +1213,22 @@ class ApiClient {
 
   async getSkill(id: string): Promise<Skill> {
     return this.request<Skill>(AppRoutes.GetSkill(id))
+  }
+
+  async listSkillFiles(skillId: string): Promise<SkillFile[]> {
+    const result = await this.request<{ files: SkillFile[] }>(AppRoutes.ListSkillFiles(skillId))
+    return result.files || []
+  }
+
+  async addSkillFile(skillId: string, filename: string, fileData: string): Promise<SkillFile> {
+    return this.request<SkillFile>(AppRoutes.AddSkillFile(skillId), {
+      method: "POST",
+      body: JSON.stringify({ filename, file_data: fileData }),
+    })
+  }
+
+  async deleteSkillFile(skillId: string, fileId: string): Promise<void> {
+    await this.request<void>(AppRoutes.DeleteSkillFile(skillId, fileId), { method: "DELETE" })
   }
 
   // ============= Global HITL =============

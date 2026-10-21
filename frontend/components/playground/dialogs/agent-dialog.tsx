@@ -24,7 +24,7 @@ import Link from "next/link"
 import { apiClient } from "@/lib/api-client"
 import { usePlaygroundStore } from "@/stores/playground-store"
 import type { Agent, ToolDefinition, MCPServer, KnowledgeBase, AgentMemory, AgentVersion, AgentConfigSnapshot, OptimizationRun, EvalSuite, PromptVaultEntry, Skill, VaultFile, Secret } from "@/types/playground"
-import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, ShieldCheck, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap, Download, Upload, Pencil, Check, FileText, KeyRound } from "lucide-react"
+import { Loader2, CheckCircle2, Circle, Server, BookOpen, ExternalLink, ShieldAlert, ShieldCheck, Brain, Trash2, Wrench, Sparkles, History, RotateCcw, ChevronDown, ChevronRight, Zap, CheckCheck, X, Terminal, Play, Square, BookMarked, GraduationCap, Download, Upload, Pencil, Check, FileText, KeyRound, Paperclip } from "lucide-react"
 import { AppRoutes } from "@/app/api/routes"
 import { Routes } from "@/config/routes"
 
@@ -1263,7 +1263,15 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium">{skill.name}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium">{skill.name}</span>
+                          {skill.file_count > 0 && (
+                            <span className="inline-flex items-center gap-0.5 text-muted-foreground/80 shrink-0">
+                              <Paperclip className="h-3 w-3" />
+                              {skill.file_count}
+                            </span>
+                          )}
+                        </div>
                         {skill.description && (
                           <div className="text-muted-foreground truncate">{skill.description}</div>
                         )}
@@ -1272,6 +1280,11 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                   )
                 })}
               </div>
+            )}
+            {sandboxRunning && selectedSkills.some((id) => availableSkills.find((s) => s.id === id)?.file_count) && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Restart the sandbox to pick up newly attached skill files.
+              </p>
             )}
           </div>
 
@@ -1590,7 +1603,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSaved }: AgentDialogP
                   </div>
                   {productivityTools && isEditing && !accessibleSecrets.some((s) => s.secret_type === "smtp") && (
                     <div className="text-amber-500/80 mt-1">
-                      Grant an SMTP secret below to enable sending email.
+                      Grant an SMTP secret in the Secret Access section above to enable sending email.
                     </div>
                   )}
                 </div>
