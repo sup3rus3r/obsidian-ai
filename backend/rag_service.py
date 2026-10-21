@@ -107,6 +107,19 @@ class _FaissIndex:
 class RAGService:
 
     @staticmethod
+    def preload_embedding_model():
+        """Load the sentence-transformers embedding model now, so the first
+        real document upload doesn't pay the (sometimes multi-minute,
+        first-run download) load cost inline. Best-effort: swallows errors
+        since the model will just lazy-load on first real use anyway."""
+        if not USE_FAISS:
+            return
+        try:
+            _get_faiss_model()
+        except Exception:
+            logger.warning("Embedding model preload failed; will lazy-load on first use", exc_info=True)
+
+    @staticmethod
     def _index_path(session_id: str) -> str:
         os.makedirs(INDEX_DIR, exist_ok=True)
         ext = ".faiss" if USE_FAISS else ".leann"

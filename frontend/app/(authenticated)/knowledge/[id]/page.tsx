@@ -354,7 +354,7 @@ export default function KnowledgeDetailPage() {
           <DialogHeader>
             <DialogTitle>Upload File</DialogTitle>
             <DialogDescription>
-              Upload a PDF, DOCX, TXT, or Markdown file. Text will be extracted and indexed.
+              Upload a PDF, DOCX, TXT, Markdown, CSV, or JSON file. Text will be extracted and indexed.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -391,7 +391,7 @@ export default function KnowledgeDetailPage() {
               disabled={fileLoading || !fileName.trim() || !fileData}
             >
               {fileLoading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-              Upload & Index
+              {fileLoading ? "Indexing… (first upload can take a minute)" : "Upload & Index"}
             </Button>
           </DialogFooter>
         </DialogContent>

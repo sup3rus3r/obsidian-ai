@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import logging
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
@@ -1288,6 +1289,13 @@ async def lifespan(app: FastAPI):
     from tunnel import start_tunnel, stop_tunnel
     import os as _os
     start_tunnel(int(_os.getenv("PORT", "8000")))
+
+    # Warm the RAG embedding model in the background so the first KB/chat
+    # document upload doesn't pay the (sometimes multi-minute, first-run
+    # download) load cost inline and look like a hang. Best-effort — if this
+    # fails, the model just lazy-loads on first real use as before.
+    from rag_service import RAGService
+    asyncio.get_event_loop().run_in_executor(None, RAGService.preload_embedding_model)
 
     yield
 
