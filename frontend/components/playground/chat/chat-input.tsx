@@ -188,7 +188,7 @@ export function ChatInput({ onSend, onStop, isStreaming, disabled }: ChatInputPr
           />
         )}
         <PromptInput
-          accept="image/*,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          accept="image/*,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/json"
           multiple
           maxFiles={10}
           maxFileSize={20 * 1024 * 1024}

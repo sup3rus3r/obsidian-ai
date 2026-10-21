@@ -3069,6 +3069,7 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                         db.commit()
                         _tool_proposal_events.pop(_tp_event_key, None)
                         messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' timed out and was not saved.]\n\n{TOOL_RESULT_PROMPT}"))
+                        yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": "Proposal timed out.", "status": "completed"})}
                         continue
                     finally:
                         _tool_proposal_events.pop(_tp_event_key, None)
@@ -3077,8 +3078,10 @@ async def _stream_response(llm, messages, system_prompt, db, session_id, agent_i
                     if _tp_record.status == "approved":
                         _session_dynamic_tools.setdefault(str(session_id), set()).add(_tp_name)
                         messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' was approved and saved to the toolkit. You can now call it directly.]\n\n{TOOL_RESULT_PROMPT}"))
+                        yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' approved and saved.", "status": "completed"})}
                     else:
                         messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
+                        yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' rejected.", "status": "completed"})}
                     continue
 
                 # --- Tool edit: intercept edit_tool virtual calls (SQLite single-agent) ---
@@ -3624,6 +3627,7 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                             db.commit()
                             _tool_proposal_events.pop(_tp_event_key, None)
                             messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' timed out and was not saved.]\n\n{TOOL_RESULT_PROMPT}"))
+                            yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": "Proposal timed out.", "status": "completed"})}
                             continue
                         finally:
                             _tool_proposal_events.pop(_tp_event_key, None)
@@ -3631,8 +3635,10 @@ async def _stream_response_with_mcp(llm, messages, system_prompt, db, session_id
                         if _tp_record.status == "approved":
                             _session_dynamic_tools.setdefault(str(session_id), set()).add(_tp_name)
                             messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' was approved and saved to the toolkit. You can now call it directly.]\n\n{TOOL_RESULT_PROMPT}"))
+                            yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' approved and saved.", "status": "completed"})}
                         else:
                             messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
+                            yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' rejected.", "status": "completed"})}
                         continue
 
                     # --- Tool edit: intercept edit_tool virtual calls (SQLite single-agent+MCP) ---
@@ -5238,6 +5244,7 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                         await ToolProposalCollection.update_status(mongo_db, str(_tp_doc["_id"]), "rejected")
                         _tool_proposal_events.pop(_tp_event_key, None)
                         messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' timed out and was not saved.]\n\n{TOOL_RESULT_PROMPT}"))
+                        yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": "Proposal timed out.", "status": "completed"})}
                         continue
                     finally:
                         _tool_proposal_events.pop(_tp_event_key, None)
@@ -5245,8 +5252,10 @@ async def _stream_response_mongo(llm, messages, system_prompt, mongo_db, session
                     if refreshed_tp and refreshed_tp.get("status") == "approved":
                         _session_dynamic_tools.setdefault(str(session_id), set()).add(_tp_name)
                         messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' was approved and saved to the toolkit. You can now call it directly.]\n\n{TOOL_RESULT_PROMPT}"))
+                        yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' approved and saved.", "status": "completed"})}
                     else:
                         messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
+                        yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' rejected.", "status": "completed"})}
                     continue
 
                 # --- Tool edit: intercept edit_tool virtual calls (Mongo single-agent) ---
@@ -5741,6 +5750,7 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                             await ToolProposalCollection.update_status(mongo_db, str(_tp_doc["_id"]), "rejected")
                             _tool_proposal_events.pop(_tp_event_key, None)
                             messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' timed out and was not saved.]\n\n{TOOL_RESULT_PROMPT}"))
+                            yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": "Proposal timed out.", "status": "completed"})}
                             continue
                         finally:
                             _tool_proposal_events.pop(_tp_event_key, None)
@@ -5748,8 +5758,10 @@ async def _stream_response_with_mcp_mongo(llm, messages, system_prompt, mongo_db
                         if refreshed_tp and refreshed_tp.get("status") == "approved":
                             _session_dynamic_tools.setdefault(str(session_id), set()).add(_tp_name)
                             messages.append(LLMMessage(role="user", content=f"[Tool '{_tp_name}' was approved and saved to the toolkit. You can now call it directly.]\n\n{TOOL_RESULT_PROMPT}"))
+                            yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' approved and saved.", "status": "completed"})}
                         else:
                             messages.append(LLMMessage(role="user", content=f"[Tool proposal '{_tp_name}' was rejected by the user. Do not propose this tool again.]\n\n{TOOL_RESULT_PROMPT}"))
+                            yield {"event": "tool_call", "data": json.dumps({"id": tc.id, "name": tc.name, "arguments": tc.arguments, "result": f"Tool '{_tp_name}' rejected.", "status": "completed"})}
                         continue
 
                     # --- Tool edit: intercept edit_tool virtual calls (Mongo single-agent+MCP) ---

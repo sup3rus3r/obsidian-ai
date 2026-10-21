@@ -1,5 +1,6 @@
 """Per-session RAG with LEANN (Linux/macOS) or FAISS (Windows) backend."""
 
+import csv
 import io
 import json
 import os
@@ -200,6 +201,21 @@ class RAGService:
             except ImportError:
                 logger.warning("python-docx not installed, cannot extract DOCX text")
                 return ""
+
+        if media_type in ("text/csv", "application/csv") or lower.endswith(".csv"):
+            text = file_bytes.decode("utf-8", errors="replace")
+            rows = list(csv.DictReader(io.StringIO(text)))
+            return "\n".join(
+                ", ".join(f"{k}: {v}" for k, v in row.items()) for row in rows
+            )
+
+        if media_type == "application/json" or lower.endswith(".json"):
+            text = file_bytes.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(text)
+            except ValueError:
+                return text
+            return json.dumps(data, indent=2)
 
         return ""
 

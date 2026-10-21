@@ -364,7 +364,7 @@ export default function KnowledgeDetailPage() {
                 ref={fileInputRef}
                 id="file-input"
                 type="file"
-                accept=".pdf,.docx,.txt,.md,.markdown"
+                accept=".pdf,.docx,.txt,.md,.markdown,.csv,.json"
                 onChange={handleFileChange}
                 className="block w-full text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border file:border-border file:text-xs file:font-medium file:bg-background hover:file:bg-muted cursor-pointer"
               />
