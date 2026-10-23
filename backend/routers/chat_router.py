@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from contextlib import AsyncExitStack
 from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,8 +12,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from config import DATABASE_TYPE
 from database import get_db
-from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, SkillFile, AsyncJob, VaultFile
-from schemas import ChatRequest, RateMessageRequest, HITLApprovalResponse, HITLPendingListResponse, ToolProposalResponse, ToolProposalPendingListResponse, AsyncJobResponse, AsyncJobPendingListResponse
+from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, SkillFile, AsyncJob, VaultFile, AgentThreadMessage
+from schemas import ChatRequest, RateMessageRequest, HITLApprovalResponse, HITLPendingListResponse, ToolProposalResponse, ToolProposalPendingListResponse, AsyncJobResponse, AsyncJobPendingListResponse, AgentThreadMessageResponse, AgentThreadMessageListResponse
 from auth import get_current_user, TokenData
 from encryption import decrypt_api_key
 from llm.base import LLMMessage, LLMToolCall
@@ -34,7 +35,7 @@ from builtin_tools import BUILTIN_TOOL_SCHEMAS, execute_builtin_tool, is_builtin
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
-    from models_mongo import SessionCollection, MessageCollection, AgentCollection, LLMProviderCollection, ToolDefinitionCollection, SkillCollection, TeamCollection, MCPServerCollection, FileAttachmentCollection, KnowledgeBaseCollection, HITLApprovalCollection, AgentMemoryCollection, ToolProposalCollection, AsyncJobCollection, VaultFileCollection
+    from models_mongo import SessionCollection, MessageCollection, AgentCollection, LLMProviderCollection, ToolDefinitionCollection, SkillCollection, TeamCollection, MCPServerCollection, FileAttachmentCollection, KnowledgeBaseCollection, HITLApprovalCollection, AgentMemoryCollection, ToolProposalCollection, AsyncJobCollection, VaultFileCollection, AgentThreadMessageCollection
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,15 @@ _hitl_events: dict[str, asyncio.Event] = {}
 # Tool proposals: module-level dict mapping "{session_id}:{tool_call_id}" -> asyncio.Event
 # Set by the approve/reject proposal endpoints; awaited by the streaming generator.
 _tool_proposal_events: dict[str, asyncio.Event] = {}
+
+# Open-thread soft-cap pause: module-level dict mapping thread_id -> asyncio.Event.
+# Set by the continue/stop endpoints; awaited by the collaborate-mode generator
+# when ThreadSoftCapReached fires (see team_delegation_tools.py's ThreadState).
+_thread_continue_events: dict[str, asyncio.Event] = {}
+# Resolved decision ("continue" | "stop") for a thread_id, stashed by the
+# continue/stop endpoints for the awaiting generator to read after the event
+# fires — asyncio.Event itself carries no payload, just a signal.
+_thread_continue_decisions: dict[str, str] = {}
 
 # session_id (str) -> set of tool names dynamically approved in this session
 _session_dynamic_tools: dict[str, set] = {}
@@ -831,12 +841,14 @@ class _TraceContext:
 
     def record_tool_span(self, tool_name: str, arguments_str: str, result: str,
                          duration_ms: int, round_number: int = 0,
-                         span_type: str = "tool_call", status: str = "success"):
+                         span_type: str = "tool_call", status: str = "success",
+                         parent_span_id: int | None = None) -> int | None:
         if not self.db:
-            return
+            return None
         span = TraceSpan(
             session_id=self.session_id,
             workflow_run_id=self.workflow_run_id,
+            parent_span_id=parent_span_id,
             span_type=span_type,
             name=tool_name,
             input_tokens=0,
@@ -852,6 +864,8 @@ class _TraceContext:
         )
         self.db.add(span)
         self.db.commit()
+        self.db.refresh(span)
+        return span.id
 
 
 async def _save_trace_span_mongo(mongo_db, data: dict):
@@ -2548,20 +2562,19 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
         session_id = int(request.session_id)
         _team_sandbox_cid = team.sandbox_container_id if team.sandbox_enabled else None
 
-        if mode == "coordinate":
-            return EventSourceResponse(
-                _team_chat_coordinate(agents_with_providers, messages, db, session_id, start_time, request.message, team_sandbox_container_id=_team_sandbox_cid)
-            )
-        elif mode == "route":
-            return EventSourceResponse(
-                _team_chat_route(agents_with_providers, messages, db, session_id, start_time, request.message, team_sandbox_container_id=_team_sandbox_cid)
-            )
-        elif mode == "collaborate":
-            return EventSourceResponse(
-                _team_chat_collaborate(agents_with_providers, messages, db, session_id, start_time, request.message, team_sandbox_container_id=_team_sandbox_cid)
-            )
-        else:
+        _team_mode_fn = {
+            "coordinate": _team_chat_coordinate,
+            "route": _team_chat_route,
+            "collaborate": _team_chat_collaborate,
+        }.get(mode)
+        if _team_mode_fn is None:
             raise HTTPException(status_code=400, detail=f"Unknown team mode: {mode}")
+        return EventSourceResponse(
+            _team_chat_with_compaction(
+                _team_mode_fn, agents_with_providers, messages, db, session_id,
+                start_time, request.message, team_sandbox_container_id=_team_sandbox_cid,
+            )
+        )
 
     # --- Agent chat ---
     agent, provider_record, llm, system_prompt, tools, mcp_server_configs = _resolve_agent_chat_context(
@@ -2683,6 +2696,39 @@ async def _resolve_context_limit(llm, provider_record=None) -> int:
     return _get_context_limit(model_id, provider_config)
 
 
+async def _summarize_messages_for_compaction(older: list, llm) -> str | None:
+    """Shared summarization core for both session-history compaction
+    (_compact_context_if_needed) and per-thread transcript compaction
+    (_compact_thread_transcript_if_needed). Returns the summary text, or None
+    if summarization itself failed (caller should then leave messages as-is)."""
+    history_text = []
+    for m in older:
+        role = m.role.upper()
+        content = m.content or ""
+        if isinstance(content, list):
+            content = " ".join(
+                part.get("text", "") for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        history_text.append(f"{role}: {content[:2000]}")  # cap each message at 2000 chars
+
+    summarization_prompt = (
+        "You are summarizing a conversation to free up context window space. "
+        "Produce a concise but complete summary covering: key topics discussed, "
+        "decisions made, important facts established, tool calls and their results, "
+        "and any ongoing tasks. Write in third-person past tense. Be thorough but concise."
+    )
+    history_joined = "\n\n".join(history_text)
+    summary_request = [LLMMessage(role="user", content=f"Please summarize this conversation history:\n\n{history_joined}")]
+
+    try:
+        summary_response = await llm.chat(summary_request, system_prompt=summarization_prompt)
+        return summary_response.content or "(no summary)"
+    except Exception as e:
+        logger.warning(f"Context compaction summarization failed: {e}")
+        return None
+
+
 async def _compact_context_if_needed(messages: list, llm, system_prompt: str | None, db, session_id, provider_record=None, is_mongo: bool = False) -> dict | None:
     """Check if context is near the limit and compact if needed.
 
@@ -2711,32 +2757,8 @@ async def _compact_context_if_needed(messages: list, llm, system_prompt: str | N
     older = messages[:-_COMPACTION_KEEP_RECENT]
     recent = messages[-_COMPACTION_KEEP_RECENT:]
 
-    # Build a text representation of older messages for summarization
-    history_text = []
-    for m in older:
-        role = m.role.upper()
-        content = m.content or ""
-        if isinstance(content, list):
-            content = " ".join(
-                part.get("text", "") for part in content
-                if isinstance(part, dict) and part.get("type") == "text"
-            )
-        history_text.append(f"{role}: {content[:2000]}")  # cap each message at 2000 chars
-
-    summarization_prompt = (
-        "You are summarizing a conversation to free up context window space. "
-        "Produce a concise but complete summary covering: key topics discussed, "
-        "decisions made, important facts established, tool calls and their results, "
-        "and any ongoing tasks. Write in third-person past tense. Be thorough but concise."
-    )
-    history_joined = "\n\n".join(history_text)
-    summary_request = [LLMMessage(role="user", content=f"Please summarize this conversation history:\n\n{history_joined}")]
-
-    try:
-        summary_response = await llm.chat(summary_request, system_prompt=summarization_prompt)
-        summary_text = summary_response.content or "(no summary)"
-    except Exception as e:
-        logger.warning(f"Context compaction summarization failed: {e}")
+    summary_text = await _summarize_messages_for_compaction(older, llm)
+    if summary_text is None:
         return None
 
     # Save compaction record to DB
@@ -2777,6 +2799,171 @@ async def _compact_context_if_needed(messages: list, llm, system_prompt: str | N
             "summary_preview": summary_text[:120],
         }),
     }
+
+
+# How many messages a single non-streaming tool-loop (_chat_with_tools and
+# friends) can accumulate within ONE call before compacting its own running
+# chat_messages list. Smaller than _COMPACTION_KEEP_RECENT's session-level
+# equivalent — a single hop's own loop is capped at MAX_TOOL_ROUNDS=10 rounds,
+# so this only needs to catch a hop that's actually using many tool rounds
+# (including recursive delegation), not every short exchange.
+_THREAD_COMPACTION_KEEP_RECENT = 6
+
+
+async def _compact_thread_transcript_if_needed(chat_messages: list, llm, provider_record=None) -> None:
+    """Per-hop compaction for the non-streaming tool-calling loop used by team
+    delegation (_chat_with_tools / _chat_with_tools_mongo / their MCP twins).
+
+    _compact_context_if_needed (above) only fires once, before a team-mode
+    turn dispatches, against the shared *session* history — it has no reach
+    into a single recursive delegation hop's own growing chat_messages list
+    (which accumulates a message per tool round: assistant call + tool result,
+    for up to MAX_TOOL_ROUNDS rounds, and now potentially several more rounds
+    if that hop itself delegates further). A hop with many tool rounds or a
+    deep recursive delegation chain can still blow past the context limit
+    even though the base session history was already compacted once.
+
+    Unlike _compact_context_if_needed, this does NOT persist a compaction
+    record to the session's Message log — a single hop's internal tool-loop
+    bookkeeping isn't part of the user-facing chat history, it's scratch state
+    for that one call. Modifies chat_messages in-place; no return value, no
+    SSE event (there's no streaming generator at this call depth to yield to).
+    """
+    if len(chat_messages) <= _THREAD_COMPACTION_KEEP_RECENT + 2:
+        return
+
+    estimated = _estimate_tokens(chat_messages)
+    limit = await _resolve_context_limit(llm, provider_record)
+    if estimated < int(limit * _COMPACTION_THRESHOLD):
+        return
+
+    older = chat_messages[:-_THREAD_COMPACTION_KEEP_RECENT]
+    recent = chat_messages[-_THREAD_COMPACTION_KEEP_RECENT:]
+
+    summary_text = await _summarize_messages_for_compaction(older, llm)
+    if summary_text is None:
+        return
+
+    summary_msg = LLMMessage(
+        role="user",
+        content=f"[Summary of this teammate discussion so far]\n{summary_text}",
+    )
+    chat_messages.clear()
+    chat_messages.append(summary_msg)
+    chat_messages.extend(recent)
+
+
+async def _await_thread_continue(db, session_id, thread_state: "ThreadState", is_mongo: bool = False):
+    """Pause a collaborate-mode generator when a delegation thread hits its
+    soft cap (see team_delegation_tools.ThreadState / ThreadSoftCapReached),
+    persist a thread_continue-kind HITLApproval row, yield a
+    thread_continue_required SSE event, and await the user's decision — same
+    asyncio.Event + DB-row + SSE pattern as the existing tool-call HITL flow
+    (see the "--- HITL: check if this tool requires human approval ---" block
+    above), reused here for a different kind of pause.
+
+    Only the outermost generator the request handler is actually iterating
+    can meaningfully suspend like this — by the time a soft cap trips, the
+    call stack may be several recursive call_teammate hops deep, but none of
+    those inner frames can yield an SSE event or genuinely pause the stream.
+    ThreadSoftCapReached is designed to propagate all the way up to here
+    (collaborate mode's own per-agent loop) rather than be caught early.
+
+    On resolution, stashes the decision ("continue" | "stop") in
+    _thread_continue_decisions for the caller to read — the caller is
+    responsible for resetting thread_state.hop_count and retrying if the
+    decision was "continue"."""
+    if is_mongo:
+        from models_mongo import HITLApprovalCollection
+        approval = await HITLApprovalCollection.create(db, {
+            "session_id": session_id,
+            "tool_call_id": thread_state.thread_id,
+            "tool_name": "call_teammate",
+            "status": "pending",
+            "kind": "thread_continue",
+        })
+        approval_id = str(approval["_id"])
+    else:
+        approval = HITLApproval(
+            session_id=session_id,
+            tool_call_id=thread_state.thread_id,
+            tool_name="call_teammate",
+            status="pending",
+            kind="thread_continue",
+        )
+        db.add(approval)
+        db.commit()
+        db.refresh(approval)
+        approval_id = str(approval.id)
+
+    event = asyncio.Event()
+    _thread_continue_events[thread_state.thread_id] = event
+
+    yield {
+        "event": "thread_continue_required",
+        "data": json.dumps({
+            "approval_id": approval_id,
+            "session_id": str(session_id),
+            "thread_id": thread_state.thread_id,
+            "hop_count": thread_state.hop_count,
+            "soft_cap": thread_state.soft_cap,
+        }),
+    }
+
+    try:
+        await asyncio.wait_for(event.wait(), timeout=600.0)
+    except asyncio.TimeoutError:
+        _thread_continue_decisions[thread_state.thread_id] = "stop"
+        if is_mongo:
+            from models_mongo import HITLApprovalCollection
+            await HITLApprovalCollection.update_status(db, approval_id, "denied")
+        else:
+            approval.status = "denied"
+            db.commit()
+    finally:
+        _thread_continue_events.pop(thread_state.thread_id, None)
+
+
+async def _team_chat_with_compaction(
+    mode_generator_fn, agents_with_providers, messages, db, session_id,
+    start_time, user_message, team_sandbox_container_id=None, is_mongo: bool = False,
+    create_llm_fn=None,
+):
+    """Wraps a team mode generator (_team_chat_coordinate/route/collaborate, SQLite
+    or Mongo) with a compaction pass over the shared base `messages` history before
+    any agent sees it.
+
+    Team modes bypassed compaction entirely: only _stream_response/_stream_response_with_mcp
+    (the single-agent streaming path) called _compact_context_if_needed. Every team-mode
+    agent that runs through the non-streaming _chat_with_tools/_chat_with_tools_and_mcp
+    helpers instead — every non-final collaborate agent, every parallel route specialist,
+    plus both router LLMs' own selection calls — got the full, ever-growing raw history on
+    every single turn. Collaborate mode compounds this further by also appending each prior
+    agent's full response into every subsequent agent's prompt. In a multi-agent team this
+    blows past the provider's context window far faster than single-agent chats do, causing
+    agents to lose track of earlier context and providers to return 502s on oversized payloads.
+
+    Compacting the shared `messages` list once here (same summarize-older-into-one-message
+    strategy as the single-agent path, reusing the first team agent's provider as the
+    summarizer LLM) bounds the base history every team mode and every agent within it builds
+    from, without needing to patch each non-streaming call site individually.
+    """
+    _router_agent, _router_provider = agents_with_providers[0]
+    _create_llm_fn = create_llm_fn or _create_llm_for_provider
+    _router_agent_model_id = _router_agent.get("model_id") if is_mongo else _router_agent.model_id
+    _router_provider_model_id = _router_provider.get("model_id") if is_mongo else _router_provider.model_id
+    _router_llm = _create_llm_fn(_router_provider, _router_agent_model_id or _router_provider_model_id or "gpt-4o")
+    compaction_event = await _compact_context_if_needed(
+        messages, _router_llm, None, db, session_id, _router_provider, is_mongo=is_mongo,
+    )
+    if compaction_event:
+        yield compaction_event
+
+    async for event in mode_generator_fn(
+        agents_with_providers, messages, db, session_id, start_time, user_message,
+        team_sandbox_container_id=team_sandbox_container_id,
+    ):
+        yield event
 
 
 _TOOL_CODEGEN_SYSTEM = """You are a Python tool implementation expert. Given a tool name, description, and parameter schema, write a complete working Python handler function.
@@ -3958,7 +4145,7 @@ def _norm_tool_args(args) -> str:
         return str(args)
 
 
-async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools: list | None, db, sandbox_container_id: str | None = None, team_context: tuple | None = None, on_event: Callable[[dict], None] | None = None, agent_for_sandbox=None) -> str:
+async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools: list | None, db, sandbox_container_id: str | None = None, team_context: tuple | None = None, on_event: Callable[[dict], None] | None = None, agent_for_sandbox=None, trace_ctx: "_TraceContext | None" = None) -> str:
     """Non-streaming chat that executes tool calls in a loop until a final text response.
 
     Used by team modes (route/collaborate) where agents need to use tools
@@ -3972,6 +4159,10 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
     chat yields directly (tool_call running/completed, artifact sync) so a caller that
     cannot yield mid-call (this function returns a plain string) can still surface live
     progress. See _run_sandbox_tool_with_heartbeat / _match_tracked_artifact.
+
+    trace_ctx, when set, records a TraceSpan for each tool call executed here — this path
+    previously recorded none at all (only the streaming single-agent path did), so team-mode
+    tool/delegation activity was invisible to tracing.
     """
     from team_delegation_tools import CALL_TEAMMATE_TOOL_SCHEMA, is_call_teammate_tool, execute_call_teammate
 
@@ -3980,6 +4171,12 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
 
     chat_messages = list(messages)
     for _round in range(MAX_TOOL_ROUNDS):
+        if team_context:
+            # Only team delegation calls go through this path today, and only
+            # that path risks a single hop's own tool-loop (including recursive
+            # delegation) growing large enough to matter — see
+            # _compact_thread_transcript_if_needed's docstring.
+            await _compact_thread_transcript_if_needed(chat_messages, llm)
         response = await llm.chat(chat_messages, system_prompt=system_prompt, tools=tools)
         if not response.tool_calls:
             return response.content or ""
@@ -3997,9 +4194,11 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
             tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in unique_calls],
         ))
         for tc in unique_calls:
-            if team_context and is_call_teammate_tool(tc.name):
-                _agents_with_providers, _current_agent_id, _depth = team_context
-                result = await execute_call_teammate(tc.arguments, _agents_with_providers, _current_agent_id, "sqlite", db, depth=_depth)
+            _tool_start = time.time()
+            _is_delegation = team_context and is_call_teammate_tool(tc.name)
+            if _is_delegation:
+                _agents_with_providers, _current_agent_id, _thread_state = team_context
+                result = await execute_call_teammate(tc.arguments, _agents_with_providers, _current_agent_id, "sqlite", db, thread_state=_thread_state, trace_ctx=trace_ctx, on_event=on_event)
             elif is_builtin_tool(tc.name):
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
@@ -4008,16 +4207,34 @@ async def _chat_with_tools(llm, messages: list, system_prompt: str | None, tools
                 else:
                     result = json.dumps({"error": "Sandbox is not running for this agent"})
             else:
-                result = await _execute_tool(tc.name, tc.arguments, db, agent=agent)
+                result = await _execute_tool(tc.name, tc.arguments, db, agent=agent_for_sandbox)
+            if trace_ctx and not _is_delegation:
+                # Delegation spans are recorded inside execute_call_teammate itself (it may
+                # record several nested spans for a recursive hop) — recording again here
+                # would double-count the outer call.
+                trace_ctx.record_tool_span(
+                    tool_name=tc.name,
+                    arguments_str=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
+                    result=str(result),
+                    duration_ms=int((time.time() - _tool_start) * 1000),
+                    round_number=_round,
+                    span_type="tool_call",
+                )
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     # Final call without tools to force a text response
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
     return final.content or ""
 
 
-async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db, sandbox_container_id: str | None = None, team_context: tuple | None = None, on_event: Callable[[dict], None] | None = None, agent_for_sandbox=None) -> str:
+async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db, sandbox_container_id: str | None = None, team_context: tuple | None = None, on_event: Callable[[dict], None] | None = None, agent_for_sandbox=None, trace_ctx=None) -> str:
     """Non-streaming chat with tool execution loop (MongoDB version).
-    team_context, on_event: see _chat_with_tools's docstring."""
+    team_context, on_event: see _chat_with_tools's docstring.
+
+    trace_ctx: accepted for symmetry with _chat_with_tools, but span recording
+    here is a no-op for now — chat_router._TraceContext writes via a SQLAlchemy
+    Session and isn't Mongo-compatible. A Mongo-native trace context (using
+    _save_trace_span_mongo) is a follow-up, not wired in this pass.
+    """
     from team_delegation_tools import CALL_TEAMMATE_TOOL_SCHEMA, is_call_teammate_tool, execute_call_teammate
 
     if team_context:
@@ -4025,6 +4242,8 @@ async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None,
 
     chat_messages = list(messages)
     for _round in range(MAX_TOOL_ROUNDS):
+        if team_context:
+            await _compact_thread_transcript_if_needed(chat_messages, llm)
         response = await llm.chat(chat_messages, system_prompt=system_prompt, tools=tools)
         if not response.tool_calls:
             return response.content or ""
@@ -4042,8 +4261,8 @@ async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None,
         ))
         for tc in unique_calls:
             if team_context and is_call_teammate_tool(tc.name):
-                _agents_with_providers, _current_agent_id, _depth = team_context
-                result = await execute_call_teammate(tc.arguments, _agents_with_providers, _current_agent_id, "mongo", mongo_db, depth=_depth)
+                _agents_with_providers, _current_agent_id, _thread_state = team_context
+                result = await execute_call_teammate(tc.arguments, _agents_with_providers, _current_agent_id, "mongo", mongo_db, thread_state=_thread_state, on_event=on_event)
             elif is_builtin_tool(tc.name):
                 result = await execute_builtin_tool(tc.name, tc.arguments)
             elif is_sandbox_tool(tc.name):
@@ -4052,14 +4271,18 @@ async def _chat_with_tools_mongo(llm, messages: list, system_prompt: str | None,
                 else:
                     result = json.dumps({"error": "Sandbox is not running for this agent"})
             else:
-                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db, agent=agent)
+                result = await _execute_tool_mongo(tc.name, tc.arguments, mongo_db, agent=agent_for_sandbox)
             chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
     final = await llm.chat(chat_messages, system_prompt=system_prompt)
     return final.content or ""
 
 
-async def _chat_with_tools_and_mcp(llm, messages: list, system_prompt: str | None, tools: list | None, db, mcp_server_configs: list[dict]) -> str:
-    """Non-streaming chat with MCP + native tool execution loop (SQLite)."""
+async def _chat_with_tools_and_mcp(llm, messages: list, system_prompt: str | None, tools: list | None, db, mcp_server_configs: list[dict], trace_ctx: "_TraceContext | None" = None) -> str:
+    """Non-streaming chat with MCP + native tool execution loop (SQLite).
+
+    trace_ctx: see _chat_with_tools's docstring — previously this path recorded
+    no spans at all.
+    """
     async with AsyncExitStack() as stack:
         mcp_connections, all_mcp_tools = await _connect_mcp_servers(stack, mcp_server_configs)
         merged_tools = _merge_tools(tools, all_mcp_tools)
@@ -4074,14 +4297,29 @@ async def _chat_with_tools_and_mcp(llm, messages: list, system_prompt: str | Non
                 tool_calls=[LLMToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in response.tool_calls],
             ))
             for tc in response.tool_calls:
+                _tool_start = time.time()
                 result = await _execute_mcp_or_native_tool(tc.name, tc.arguments, mcp_connections, db)
+                if trace_ctx:
+                    _span_type = "mcp_call" if parse_mcp_tool_name(tc.name) else "tool_call"
+                    trace_ctx.record_tool_span(
+                        tool_name=tc.name,
+                        arguments_str=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
+                        result=str(result),
+                        duration_ms=int((time.time() - _tool_start) * 1000),
+                        round_number=_round,
+                        span_type=_span_type,
+                    )
                 chat_messages.append(LLMMessage(role="tool", content=result, tool_call_id=tc.id))
         final = await llm.chat(chat_messages, system_prompt=system_prompt)
         return final.content or ""
 
 
-async def _chat_with_tools_and_mcp_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db, mcp_server_configs: list[dict]) -> str:
-    """Non-streaming chat with MCP + native tool execution loop (MongoDB)."""
+async def _chat_with_tools_and_mcp_mongo(llm, messages: list, system_prompt: str | None, tools: list | None, mongo_db, mcp_server_configs: list[dict], trace_ctx=None) -> str:
+    """Non-streaming chat with MCP + native tool execution loop (MongoDB).
+
+    trace_ctx: accepted for symmetry — see _chat_with_tools_mongo's docstring,
+    not wired to actual recording yet on the Mongo path.
+    """
     async with AsyncExitStack() as stack:
         mcp_connections, all_mcp_tools = await _connect_mcp_servers(stack, mcp_server_configs)
         merged_tools = _merge_tools(tools, all_mcp_tools)
@@ -4342,12 +4580,26 @@ async def _team_chat_route(agents_with_providers, messages, db, session_id, star
                 # limitation, not specific to teams) — only the native-tools-only path below does.
                 content = await _chat_with_tools_and_mcp(llm, messages, effective_system_prompt, tools, db, mcp_configs)
             else:
+                from team_delegation_tools import ThreadState, ThreadSoftCapReached
                 _sandbox_cid = team_sandbox_container_id or getattr(agent, "sandbox_container_id", None)
-                content = await _chat_with_tools(
-                    llm, messages, effective_system_prompt, tools, db, sandbox_container_id=_sandbox_cid,
-                    team_context=(agents_with_providers, agent.id, 0),
-                    on_event=_make_on_event(agent), agent_for_sandbox=agent,
-                )
+                _thread_state = ThreadState(thread_id=str(uuid.uuid4()), session_id=session_id)
+                try:
+                    content = await _chat_with_tools(
+                        llm, messages, effective_system_prompt, tools, db, sandbox_container_id=_sandbox_cid,
+                        team_context=(agents_with_providers, agent.id, _thread_state),
+                        on_event=_make_on_event(agent), agent_for_sandbox=agent,
+                    )
+                except ThreadSoftCapReached:
+                    # Deliberately not a pause-and-ask-the-user flow here: route mode runs
+                    # several specialists in parallel (asyncio.gather below), and pausing the
+                    # whole stream for one specialist's thread while the others keep running
+                    # independently has no clean UX. Only collaborate mode (sequential, one
+                    # thing happening at a time) gets the real pause/resume — see
+                    # _team_chat_collaborate's use of _await_thread_continue.
+                    content = (
+                        f"[This teammate discussion reached its turn limit ({_thread_state.soft_cap} hops) "
+                        "and was stopped early — the delegation went longer than expected.]"
+                    )
             return content
 
         async def get_agent_response(agent, provider):
@@ -4631,12 +4883,31 @@ async def _team_chat_collaborate(agents_with_providers, messages, db, session_id
                     # (pre-existing limitation, not specific to teams).
                     content = await _chat_with_tools_and_mcp(llm, agent_messages, effective_system_prompt, tools, db, mcp_configs)
                 else:
+                    from team_delegation_tools import ThreadState, ThreadSoftCapReached
                     _sandbox_cid = team_sandbox_container_id or getattr(ag, "sandbox_container_id", None)
-                    content = await _chat_with_tools(
-                        llm, agent_messages, effective_system_prompt, tools, db, sandbox_container_id=_sandbox_cid,
-                        team_context=(agents_with_providers, ag.id, 0),
-                        on_event=_collab_events.append, agent_for_sandbox=ag,
+                    _thread_state = ThreadState(thread_id=str(uuid.uuid4()), session_id=session_id)
+                    _call_kwargs = dict(
+                        llm=llm, messages=agent_messages, system_prompt=effective_system_prompt, tools=tools,
+                        db=db, sandbox_container_id=_sandbox_cid, on_event=_collab_events.append, agent_for_sandbox=ag,
                     )
+                    while True:
+                        try:
+                            content = await _chat_with_tools(
+                                **_call_kwargs, team_context=(agents_with_providers, ag.id, _thread_state),
+                            )
+                            break
+                        except ThreadSoftCapReached:
+                            async for _pause_ev in _await_thread_continue(db, session_id, _thread_state, is_mongo=False):
+                                yield _pause_ev
+                            _decision = _thread_continue_decisions.pop(_thread_state.thread_id, "stop")
+                            if _decision == "continue":
+                                _thread_state.reset_for_continue()
+                                continue
+                            content = (
+                                f"[This teammate discussion reached its turn limit ({_thread_state.soft_cap} hops) "
+                                "and was stopped — the user chose not to continue it.]"
+                            )
+                            break
                 _persisted_collab_tags: list[str] = []
                 for _raw_ev in _collab_events:
                     for _out_ev in _route_event_to_sse(str(ag.id), ag.name, _raw_ev, _persisted_collab_tags):
@@ -4990,20 +5261,20 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
         mode = team.get("mode", "coordinate")
         _team_sandbox_cid_mongo = team.get("sandbox_container_id") if team.get("sandbox_enabled") else None
 
-        if mode == "coordinate":
-            return EventSourceResponse(
-                _team_chat_coordinate_mongo(agents_with_providers, messages, mongo_db, request.session_id, start_time, request.message, team_sandbox_container_id=_team_sandbox_cid_mongo)
-            )
-        elif mode == "route":
-            return EventSourceResponse(
-                _team_chat_route_mongo(agents_with_providers, messages, mongo_db, request.session_id, start_time, request.message, team_sandbox_container_id=_team_sandbox_cid_mongo)
-            )
-        elif mode == "collaborate":
-            return EventSourceResponse(
-                _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db, request.session_id, start_time, request.message, team_sandbox_container_id=_team_sandbox_cid_mongo)
-            )
-        else:
+        _team_mode_fn_mongo = {
+            "coordinate": _team_chat_coordinate_mongo,
+            "route": _team_chat_route_mongo,
+            "collaborate": _team_chat_collaborate_mongo,
+        }.get(mode)
+        if _team_mode_fn_mongo is None:
             raise HTTPException(status_code=400, detail=f"Unknown team mode: {mode}")
+        return EventSourceResponse(
+            _team_chat_with_compaction(
+                _team_mode_fn_mongo, agents_with_providers, messages, mongo_db, request.session_id,
+                start_time, request.message, team_sandbox_container_id=_team_sandbox_cid_mongo,
+                is_mongo=True, create_llm_fn=_create_llm_for_mongo_provider,
+            )
+        )
 
     # --- Agent chat (MongoDB) ---
     agent, provider_record, llm, system_prompt, tools, mcp_server_configs = await _resolve_agent_chat_context_mongo(
@@ -6263,12 +6534,23 @@ async def _team_chat_route_mongo(agents_with_providers, messages, mongo_db, sess
                 # (pre-existing limitation, not specific to teams).
                 content = await _chat_with_tools_and_mcp_mongo(llm, messages, effective_system_prompt_m, tools, mongo_db, mcp_configs)
             else:
+                from team_delegation_tools import ThreadState, ThreadSoftCapReached
                 _sandbox_cid = team_sandbox_container_id or agent.get("sandbox_container_id")
-                content = await _chat_with_tools_mongo(
-                    llm, messages, effective_system_prompt_m, tools, mongo_db, sandbox_container_id=_sandbox_cid,
-                    team_context=(agents_with_providers, str(agent["_id"]), 0),
-                    on_event=_make_on_event_m(agent), agent_for_sandbox=agent,
-                )
+                _thread_state = ThreadState(thread_id=str(uuid.uuid4()), session_id=session_id)
+                try:
+                    content = await _chat_with_tools_mongo(
+                        llm, messages, effective_system_prompt_m, tools, mongo_db, sandbox_container_id=_sandbox_cid,
+                        team_context=(agents_with_providers, str(agent["_id"]), _thread_state),
+                        on_event=_make_on_event_m(agent), agent_for_sandbox=agent,
+                    )
+                except ThreadSoftCapReached:
+                    # Deliberately not a pause-and-ask-the-user flow — see the SQLite
+                    # _team_chat_route's identical comment: route mode runs specialists in
+                    # parallel, so only collaborate mode gets the real pause/resume.
+                    content = (
+                        f"[This teammate discussion reached its turn limit ({_thread_state.soft_cap} hops) "
+                        "and was stopped early — the delegation went longer than expected.]"
+                    )
             return content
 
         async def get_agent_response(agent, provider):
@@ -6483,12 +6765,32 @@ async def _team_chat_collaborate_mongo(agents_with_providers, messages, mongo_db
                     # (pre-existing limitation, not specific to teams).
                     content = await _chat_with_tools_and_mcp_mongo(llm, agent_messages, effective_system_prompt, tools, mongo_db, mcp_configs)
                 else:
+                    from team_delegation_tools import ThreadState, ThreadSoftCapReached
                     _sandbox_cid = team_sandbox_container_id or ag.get("sandbox_container_id")
-                    content = await _chat_with_tools_mongo(
-                        llm, agent_messages, effective_system_prompt, tools, mongo_db, sandbox_container_id=_sandbox_cid,
-                        team_context=(agents_with_providers, str(ag["_id"]), 0),
-                        on_event=_collab_events_m.append, agent_for_sandbox=ag,
+                    _thread_state = ThreadState(thread_id=str(uuid.uuid4()), session_id=session_id)
+                    _call_kwargs_m = dict(
+                        llm=llm, messages=agent_messages, system_prompt=effective_system_prompt, tools=tools,
+                        mongo_db=mongo_db, sandbox_container_id=_sandbox_cid, on_event=_collab_events_m.append,
+                        agent_for_sandbox=ag,
                     )
+                    while True:
+                        try:
+                            content = await _chat_with_tools_mongo(
+                                **_call_kwargs_m, team_context=(agents_with_providers, str(ag["_id"]), _thread_state),
+                            )
+                            break
+                        except ThreadSoftCapReached:
+                            async for _pause_ev in _await_thread_continue(mongo_db, session_id, _thread_state, is_mongo=True):
+                                yield _pause_ev
+                            _decision = _thread_continue_decisions.pop(_thread_state.thread_id, "stop")
+                            if _decision == "continue":
+                                _thread_state.reset_for_continue()
+                                continue
+                            content = (
+                                f"[This teammate discussion reached its turn limit ({_thread_state.soft_cap} hops) "
+                                "and was stopped — the user chose not to continue it.]"
+                            )
+                            break
                 _persisted_collab_tags_m: list[str] = []
                 for _raw_ev in _collab_events_m:
                     for _out_ev in _route_event_to_sse(str(ag["_id"]), name, _raw_ev, _persisted_collab_tags_m):
@@ -6585,6 +6887,152 @@ async def reject_hitl(
         event.set()
 
     return {"status": "denied"}
+
+
+@router.post("/sessions/{session_id}/thread/{approval_id}/continue")
+async def continue_thread(
+    session_id: str,
+    approval_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    """Resume a delegation thread that paused at its soft cap, giving it a
+    fresh hop budget — unblocks _await_thread_continue in the waiting
+    collaborate-mode generator (see ThreadSoftCapReached)."""
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        approval = await HITLApprovalCollection.find_by_id(mongo_db, approval_id)
+        if not approval or approval.get("session_id") != session_id or approval.get("status") != "pending" or approval.get("kind") != "thread_continue":
+            raise HTTPException(status_code=404, detail="Thread pause not found or already resolved")
+        await HITLApprovalCollection.update_status(mongo_db, approval_id, "approved")
+        thread_id = approval["tool_call_id"]
+        _thread_continue_decisions[thread_id] = "continue"
+        event = _thread_continue_events.get(thread_id)
+        if event:
+            event.set()
+        return {"status": "continue"}
+
+    approval = db.query(HITLApproval).filter(
+        HITLApproval.id == int(approval_id),
+        HITLApproval.session_id == int(session_id),
+        HITLApproval.status == "pending",
+        HITLApproval.kind == "thread_continue",
+    ).first()
+    if not approval:
+        raise HTTPException(status_code=404, detail="Thread pause not found or already resolved")
+
+    approval.status = "approved"
+    db.commit()
+
+    thread_id = approval.tool_call_id
+    _thread_continue_decisions[thread_id] = "continue"
+    event = _thread_continue_events.get(thread_id)
+    if event:
+        event.set()
+
+    return {"status": "continue"}
+
+
+@router.post("/sessions/{session_id}/thread/{approval_id}/stop")
+async def stop_thread(
+    session_id: str,
+    approval_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    """Stop a delegation thread that paused at its soft cap — the agent gives
+    its final answer with what it has instead of continuing the discussion."""
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        approval = await HITLApprovalCollection.find_by_id(mongo_db, approval_id)
+        if not approval or approval.get("session_id") != session_id or approval.get("status") != "pending" or approval.get("kind") != "thread_continue":
+            raise HTTPException(status_code=404, detail="Thread pause not found or already resolved")
+        await HITLApprovalCollection.update_status(mongo_db, approval_id, "denied")
+        thread_id = approval["tool_call_id"]
+        _thread_continue_decisions[thread_id] = "stop"
+        event = _thread_continue_events.get(thread_id)
+        if event:
+            event.set()
+        return {"status": "stop"}
+
+    approval = db.query(HITLApproval).filter(
+        HITLApproval.id == int(approval_id),
+        HITLApproval.session_id == int(session_id),
+        HITLApproval.status == "pending",
+        HITLApproval.kind == "thread_continue",
+    ).first()
+    if not approval:
+        raise HTTPException(status_code=404, detail="Thread pause not found or already resolved")
+
+    approval.status = "denied"
+    db.commit()
+
+    thread_id = approval.tool_call_id
+    _thread_continue_decisions[thread_id] = "stop"
+    event = _thread_continue_events.get(thread_id)
+    if event:
+        event.set()
+
+    return {"status": "stop"}
+
+
+@router.get("/sessions/{session_id}/thread-messages", response_model=AgentThreadMessageListResponse)
+async def get_thread_messages(
+    session_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    """Return all agent-to-agent delegation hops (AgentThreadMessage rows) for
+    a session, so a reloaded page can show past open-thread discussions, not
+    just ones from the currently live stream (which only has the in-memory
+    SSE events, nothing after a refresh)."""
+    if DATABASE_TYPE == "mongo":
+        mongo_db = get_database()
+        rows = await AgentThreadMessageCollection.find_by_session(mongo_db, session_id)
+        agent_ids = {str(r["from_agent_id"]) for r in rows} | {str(r["to_agent_id"]) for r in rows}
+        agent_names: dict[str, str] = {}
+        for aid in agent_ids:
+            ag = await AgentCollection.find_by_id(mongo_db, aid)
+            if ag:
+                agent_names[aid] = ag.get("name", "")
+        return AgentThreadMessageListResponse(messages=[
+            AgentThreadMessageResponse(
+                id=str(r["_id"]),
+                session_id=str(r["session_id"]),
+                thread_id=r["thread_id"],
+                hop_index=r["hop_index"],
+                from_agent_id=str(r["from_agent_id"]),
+                from_agent_name=agent_names.get(str(r["from_agent_id"])),
+                to_agent_id=str(r["to_agent_id"]),
+                to_agent_name=agent_names.get(str(r["to_agent_id"])),
+                content=r.get("content"),
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ])
+
+    rows = db.query(AgentThreadMessage).filter(
+        AgentThreadMessage.session_id == int(session_id),
+    ).order_by(AgentThreadMessage.created_at.asc()).all()
+    agent_ids = {r.from_agent_id for r in rows} | {r.to_agent_id for r in rows}
+    agent_names = {
+        a.id: a.name for a in db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+    } if agent_ids else {}
+    return AgentThreadMessageListResponse(messages=[
+        AgentThreadMessageResponse(
+            id=str(r.id),
+            session_id=str(r.session_id),
+            thread_id=r.thread_id,
+            hop_index=r.hop_index,
+            from_agent_id=str(r.from_agent_id),
+            from_agent_name=agent_names.get(r.from_agent_id),
+            to_agent_id=str(r.to_agent_id),
+            to_agent_name=agent_names.get(r.to_agent_id),
+            content=r.content,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ])
 
 
 @router.get("/sessions/{session_id}/hitl/pending", response_model=HITLPendingListResponse)

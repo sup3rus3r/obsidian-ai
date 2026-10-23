@@ -22,8 +22,11 @@ import { FileTree } from "@/components/ai-elements/file-tree"
 import { Plan } from "@/components/ai-elements/plan"
 import { JsxPreview } from "@/components/ai-elements/jsx-preview"
 import { HITLApproval } from "@/components/ai-elements/hitl-approval"
+import { ThreadContinueApproval } from "@/components/ai-elements/thread-continue-approval"
 import { ToolProposalCard } from "@/components/ai-elements/tool-proposal-card"
-import type { Message as MessageType, ToolCall, ToolRound, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent } from "@/types/playground"
+import type { Message as MessageType, ToolCall, ToolRound, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent, ThreadContinueEvent } from "@/types/playground"
+import type { AgentHopEntry } from "@/stores/playground-store"
+import { Users } from "lucide-react"
 
 /** Extract the first html/jsx/tsx fenced block from message content.
  *  Returns { preview, stripped } where stripped has the fence block removed. */
@@ -111,6 +114,10 @@ interface MessageBubbleProps {
   jsxComplete?: boolean
   // HITL
   hitlApprovalEvent?: HITLApprovalEvent | null
+  // Open multi-agent delegation threads (call_teammate)
+  agentHopLog?: AgentHopEntry[]
+  threadContinueEvent?: ThreadContinueEvent | null
+  onThreadContinueResolved?: () => void
   // Tool Proposals
   toolProposalEvent?: ToolProposalEvent | null
   generatingTool?: { name: string; handler_type: string } | null
@@ -133,6 +140,9 @@ export function MessageBubble({
   jsxPreview,
   jsxComplete,
   hitlApprovalEvent,
+  agentHopLog,
+  threadContinueEvent,
+  onThreadContinueResolved,
   toolProposalEvent,
   generatingTool,
   accessToken,
@@ -241,6 +251,44 @@ export function MessageBubble({
             event={hitlApprovalEvent}
             accessToken={accessToken ?? ""}
             onResolved={onHITLResolved ?? (() => {})}
+          />
+        )}
+
+        {/* Agent-to-agent delegation thread (call_teammate) — rendered inline in the
+            same timeline as the user-facing chat, visually distinguished per agent so
+            it reads as "teammates talking to each other," not part of the final answer. */}
+        {!isUser && agentHopLog && agentHopLog.length > 0 && (
+          <div className="space-y-1.5 rounded-lg border border-cyan-500/20 bg-cyan-500/3 p-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-cyan-600 dark:text-cyan-400">
+              <Users className="h-3.5 w-3.5" />
+              Teammate discussion
+            </div>
+            {agentHopLog.map((hop) => (
+              <div key={`${hop.thread_id}-${hop.hop_index}`} className="text-xs border-l-2 border-cyan-500/30 py-0.5 pl-2">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <span className="font-medium text-foreground">{hop.from_agent_name}</span>
+                  <span>asked</span>
+                  <span className="font-medium text-foreground">{hop.to_agent_name}</span>
+                  {hop.status === "running" && <Loader2 className="h-3 w-3 animate-spin shrink-0" />}
+                </div>
+                <div className="mt-0.5 text-muted-foreground/80 line-clamp-2">{hop.message}</div>
+                {hop.status === "completed" && (hop.response || hop.error) && (
+                  <div className={`mt-1 ${hop.error ? "text-destructive" : "text-foreground/90"}`}>
+                    {hop.error ? `Error: ${hop.error}` : hop.response}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Thread soft-cap pause — teammates have gone many rounds, ask the user
+            whether to let them continue or stop with a final answer. */}
+        {!isUser && threadContinueEvent && (
+          <ThreadContinueApproval
+            event={threadContinueEvent}
+            accessToken={accessToken ?? ""}
+            onResolved={onThreadContinueResolved ?? (() => {})}
           />
         )}
 

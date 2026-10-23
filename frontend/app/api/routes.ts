@@ -128,6 +128,11 @@ export const AppRoutes = {
     HITLReject          : (sessionId: string, approvalId: string) => `/api/chat/sessions/${sessionId}/hitl/${approvalId}/reject`,
     HITLPending         : (sessionId: string) => `/api/chat/sessions/${sessionId}/hitl/pending`,
 
+    // Open multi-agent delegation threads (call_teammate)
+    ThreadContinue      : (sessionId: string, approvalId: string) => `/api/chat/sessions/${sessionId}/thread/${approvalId}/continue`,
+    ThreadStop          : (sessionId: string, approvalId: string) => `/api/chat/sessions/${sessionId}/thread/${approvalId}/stop`,
+    ThreadMessages      : (sessionId: string) => `/api/chat/sessions/${sessionId}/thread-messages`,
+
     // Tool Proposals
     ToolProposalApprove : (sessionId: string, proposalId: string) => `/api/chat/sessions/${sessionId}/tool-proposals/${proposalId}/approve`,
     ToolProposalReject  : (sessionId: string, proposalId: string) => `/api/chat/sessions/${sessionId}/tool-proposals/${proposalId}/reject`,

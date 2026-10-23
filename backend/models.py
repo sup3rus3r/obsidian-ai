@@ -134,6 +134,27 @@ class Message(Base):
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class AgentThreadMessage(Base):
+    """A single agent-to-agent hop within an open multi-agent delegation thread
+    (see team_delegation_tools.py's execute_call_teammate). Deliberately separate
+    from Message: these are not part of the primary user-facing chat log — they
+    render inline alongside it (merged by created_at) but keeping them in their
+    own table means every existing query against `messages` for session history
+    stays untouched."""
+    __tablename__ = "agent_thread_messages"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    session_id          = Column(Integer, ForeignKey("sessions.id"), nullable=False, index=True)
+    user_turn_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)  # the eventual final Message row for this user turn, once known
+    thread_id           = Column(String, nullable=False, index=True)  # groups one open-thread run
+    hop_index           = Column(Integer, nullable=False)
+    from_agent_id       = Column(Integer, ForeignKey("agents.id"), nullable=False)
+    to_agent_id         = Column(Integer, ForeignKey("agents.id"), nullable=False)
+    content              = Column(Text, nullable=True)
+    tool_calls_json      = Column(Text, nullable=True)
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class FileAttachment(Base):
     """A file uploaded in a chat session."""
     __tablename__ = "file_attachments"
@@ -381,6 +402,7 @@ class HITLApproval(Base):
     tool_name           = Column(String, nullable=False)
     tool_arguments_json = Column(Text, nullable=True)
     status              = Column(String, default="pending", nullable=False)  # pending | approved | denied
+    kind                = Column(String, default="tool_call", nullable=False)  # tool_call | thread_continue
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at         = Column(DateTime(timezone=True), nullable=True)
 
@@ -486,7 +508,8 @@ class TraceSpan(Base):
     session_id            = Column(Integer, ForeignKey("sessions.id"), nullable=True, index=True)
     workflow_run_id       = Column(Integer, ForeignKey("workflow_runs.id"), nullable=True, index=True)
     message_id            = Column(Integer, ForeignKey("messages.id"), nullable=True)
-    span_type             = Column(String, nullable=False)               # llm_call | tool_call | mcp_call | workflow_step
+    parent_span_id        = Column(Integer, ForeignKey("trace_spans.id"), nullable=True, index=True)  # for nested/delegated spans (e.g. agent_delegation hops)
+    span_type             = Column(String, nullable=False)               # llm_call | tool_call | mcp_call | workflow_step | agent_delegation
     name                  = Column(String, nullable=False)               # model name OR tool name
     input_tokens          = Column(Integer, default=0, nullable=False)
     output_tokens         = Column(Integer, default=0, nullable=False)

@@ -532,6 +532,40 @@ class MessageCollection:
         )
 
 
+class AgentThreadMessageCollection:
+    """A single agent-to-agent hop within an open multi-agent delegation thread.
+    See models.py's AgentThreadMessage for why this is a separate collection
+    from MessageCollection, not reused Message rows."""
+    collection_name = "agent_thread_messages"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("session_id")
+        await collection.create_index("thread_id")
+        await collection.create_index([("thread_id", 1), ("hop_index", 1)])
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def find_by_session(cls, db, session_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"session_id": session_id}).sort("created_at", 1)
+        return await cursor.to_list(length=1000)
+
+    @classmethod
+    async def find_by_thread(cls, db, thread_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"thread_id": thread_id}).sort("hop_index", 1)
+        return await cursor.to_list(length=1000)
+
+
 class ToolDefinitionCollection:
     collection_name = "tool_definitions"
 

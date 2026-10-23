@@ -1,6 +1,19 @@
 import { create } from "zustand"
 import { apiClient } from "@/lib/api-client"
-import type { LLMProvider, Agent, Team, Session, Message, ToolCall, AgentStep, AgentToolStep, ToolRound, MCPServer, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent, Artifact, ArtifactType } from "@/types/playground"
+import type { LLMProvider, Agent, Team, Session, Message, ToolCall, AgentStep, AgentToolStep, ToolRound, MCPServer, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent, Artifact, ArtifactType, AgentHopStartEvent, AgentHopMessageEvent, ThreadContinueEvent, AgentThreadMessageRecord } from "@/types/playground"
+
+export interface AgentHopEntry {
+  thread_id: string
+  hop_index: number
+  from_agent_id: string
+  from_agent_name: string
+  to_agent_id: string
+  to_agent_name: string
+  message: string
+  response?: string
+  error?: string
+  status: "running" | "completed"
+}
 
 interface PlaygroundState {
   // Sidebar
@@ -19,6 +32,10 @@ interface PlaygroundState {
   teams: Team[]
   sessions: Session[]
   messages: Message[]
+  // Past agent-to-agent delegation hops for the current session (history, from
+  // GET /sessions/{id}/thread-messages) — distinct from streamingAgentHopLog,
+  // which is only the current live stream's hops.
+  threadMessages: AgentThreadMessageRecord[]
 
   mcpServers: MCPServer[]
 
@@ -37,6 +54,13 @@ interface PlaygroundState {
   streamingAgentStep: AgentStep | null
   streamingAgentStepLog: AgentStep[]
   streamingAgentToolStepLog: AgentToolStep[]
+  // Open multi-agent delegation hops (call_teammate), merged start+message by
+  // (thread_id, hop_index) so the UI can show "pending" then fill in the
+  // response — same running->completed shape as streamingAgentToolStepLog.
+  streamingAgentHopLog: AgentHopEntry[]
+  // Set when a thread's soft cap is reached and the stream is paused awaiting
+  // a continue/stop decision from the user; cleared on resolution.
+  streamingThreadContinue: ThreadContinueEvent | null
   streamingToolRound: ToolRound | null
   streamingKBContext: { id: string; name: string }[]
   abortController: AbortController | null
@@ -85,6 +109,7 @@ interface PlaygroundState {
   setMCPServers: (mcpServers: MCPServer[]) => void
   setSessions: (sessions: Session[]) => void
   setMessages: (messages: Message[]) => void
+  setThreadMessages: (messages: AgentThreadMessageRecord[]) => void
   addMessage: (message: Message) => void
   updateLastMessage: (updates: Partial<Message>) => void
   setIsStreaming: (streaming: boolean) => void
@@ -99,6 +124,10 @@ interface PlaygroundState {
   clearStreamingAgentStepLog: () => void
   appendStreamingAgentToolStepLog: (step: AgentToolStep) => void
   clearStreamingAgentToolStepLog: () => void
+  upsertStreamingAgentHopStart: (event: AgentHopStartEvent) => void
+  upsertStreamingAgentHopMessage: (event: AgentHopMessageEvent) => void
+  clearStreamingAgentHopLog: () => void
+  setStreamingThreadContinue: (event: ThreadContinueEvent | null) => void
   setStreamingToolRound: (round: ToolRound | null) => void
   setStreamingKBContext: (kbs: { id: string; name: string }[]) => void
   setAbortController: (controller: AbortController | null) => void
@@ -159,6 +188,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   sessions: [],
   mcpServers: [],
   messages: [],
+  threadMessages: [],
   isLoadingProviders: false,
   isLoadingAgents: false,
   isLoadingTeams: false,
@@ -171,6 +201,8 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   streamingAgentStep: null,
   streamingAgentStepLog: [],
   streamingAgentToolStepLog: [],
+  streamingAgentHopLog: [],
+  streamingThreadContinue: null,
   streamingToolRound: null,
   streamingKBContext: [],
   abortController: null,
@@ -209,8 +241,8 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setMode: (mode) => set({ mode, selectedSessionId: null, messages: [] }),
   setSelectedProvider: (id) => set({ selectedProviderId: id }),
-  setSelectedAgent: (id) => set({ selectedAgentId: id, selectedSessionId: null, messages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null }),
-  setSelectedTeam: (id) => set({ selectedTeamId: id, selectedSessionId: null, messages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null }),
+  setSelectedAgent: (id) => set({ selectedAgentId: id, selectedSessionId: null, messages: [], threadMessages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null }),
+  setSelectedTeam: (id) => set({ selectedTeamId: id, selectedSessionId: null, messages: [], threadMessages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null }),
   setSelectedSession: (id) => set({ selectedSessionId: id, artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null, contextUsage: null }),
   setProviders: (providers) => set({ providers }),
   setAgents: (agents) => set({ agents }),
@@ -218,6 +250,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   setMCPServers: (mcpServers) => set({ mcpServers }),
   setSessions: (sessions) => set({ sessions }),
   setMessages: (messages) => set({ messages }),
+  setThreadMessages: (threadMessages) => set({ threadMessages }),
   addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
   updateLastMessage: (updates) =>
     set((s) => {
@@ -260,6 +293,28 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   appendStreamingAgentToolStepLog: (step) =>
     set((s) => ({ streamingAgentToolStepLog: [...s.streamingAgentToolStepLog, step] })),
   clearStreamingAgentToolStepLog: () => set({ streamingAgentToolStepLog: [] }),
+  upsertStreamingAgentHopStart: (event) =>
+    set((s) => ({
+      streamingAgentHopLog: [
+        ...s.streamingAgentHopLog,
+        {
+          thread_id: event.thread_id, hop_index: event.hop_index,
+          from_agent_id: event.from_agent_id, from_agent_name: event.from_agent_name,
+          to_agent_id: event.to_agent_id, to_agent_name: event.to_agent_name,
+          message: event.message, status: "running",
+        },
+      ],
+    })),
+  upsertStreamingAgentHopMessage: (event) =>
+    set((s) => ({
+      streamingAgentHopLog: s.streamingAgentHopLog.map((h) =>
+        h.thread_id === event.thread_id && h.hop_index === event.hop_index
+          ? { ...h, response: event.response, error: event.error, status: "completed" as const }
+          : h
+      ),
+    })),
+  clearStreamingAgentHopLog: () => set({ streamingAgentHopLog: [] }),
+  setStreamingThreadContinue: (event) => set({ streamingThreadContinue: event }),
   setStreamingToolRound: (round) => set({ streamingToolRound: round }),
   setStreamingKBContext: (kbs) => set({ streamingKBContext: kbs }),
   setAbortController: (controller) => set({ abortController: controller }),
@@ -338,9 +393,9 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
     })),
 
   clearChat: () => set({
-    messages: [], selectedSessionId: null,
+    messages: [], threadMessages: [], selectedSessionId: null,
     streamingContent: "", streamingReasoning: "", streamingToolCalls: [],
-    streamingAgentStep: null, streamingAgentStepLog: [], streamingAgentToolStepLog: [], streamingToolRound: null, streamingKBContext: [],
+    streamingAgentStep: null, streamingAgentStepLog: [], streamingAgentToolStepLog: [], streamingAgentHopLog: [], streamingThreadContinue: null, streamingToolRound: null, streamingKBContext: [],
     streamingTerminal: "", streamingTerminalComplete: false, streamingFileTree: null,
     streamingSourceUrls: [], streamingPlan: null, streamingJsx: "", streamingJsxComplete: false,
     sessionTokens: null, pendingHITLApproval: null, pendingToolProposal: null, generatingTool: null,
@@ -361,6 +416,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
       sessions: [],
       mcpServers: [],
       messages: [],
+      threadMessages: [],
       isLoadingProviders: false,
       isLoadingAgents: false,
       isLoadingTeams: false,
@@ -373,6 +429,8 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
       streamingAgentStep: null,
       streamingAgentStepLog: [],
       streamingAgentToolStepLog: [],
+      streamingAgentHopLog: [],
+      streamingThreadContinue: null,
       streamingToolRound: null,
       streamingKBContext: [],
       abortController: null,
@@ -505,7 +563,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
       const state = get()
       set({ sessions: state.sessions.filter((s) => s.id !== sessionId) })
       if (state.selectedSessionId === sessionId) {
-        set({ selectedSessionId: null, messages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null })
+        set({ selectedSessionId: null, messages: [], threadMessages: [], artifacts: [], activeArtifactId: null, artifactPanelOpen: false, streamingArtifact: null })
       }
     } catch (error) {
       console.error("Failed to delete session:", error)

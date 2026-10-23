@@ -544,6 +544,57 @@ export interface HITLApprovalEvent {
   tool_arguments: Record<string, unknown>
 }
 
+// Open multi-agent delegation threads (call_teammate) — one agent asking
+// another a question/sub-task mid-turn, recursively, bounded by a soft cap
+// (see backend team_delegation_tools.py's ThreadState).
+export interface AgentHopStartEvent {
+  thread_id: string
+  hop_index: number
+  from_agent_id: string
+  from_agent_name: string
+  to_agent_id: string
+  to_agent_name: string
+  message: string
+}
+
+export interface AgentHopMessageEvent {
+  thread_id: string
+  hop_index: number
+  from_agent_id: string
+  from_agent_name: string
+  to_agent_id: string
+  to_agent_name: string
+  response?: string
+  error?: string
+  duration_ms: number
+}
+
+// Emitted when an open thread hits its soft cap (default ~18 hops) — pauses
+// the stream until the user calls the continue/stop endpoint.
+export interface ThreadContinueEvent {
+  approval_id: string
+  session_id: string
+  thread_id: string
+  hop_count: number
+  soft_cap: number
+}
+
+// Persisted agent-to-agent hop (GET /sessions/{id}/thread-messages — history
+// for a reloaded session; see also AgentHopEntry in playground-store.ts for
+// the equivalent live-streaming shape).
+export interface AgentThreadMessageRecord {
+  id: string
+  session_id: string
+  thread_id: string
+  hop_index: number
+  from_agent_id: string
+  from_agent_name?: string
+  to_agent_id: string
+  to_agent_name?: string
+  content?: string
+  created_at: string
+}
+
 // Tool Proposals
 export interface ToolProposalEvent {
   proposal_id: string

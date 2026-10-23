@@ -61,7 +61,7 @@ if DATABASE_TYPE == "mongo":
     from models_mongo import (
         UserCollection, APIClientCollection, LLMProviderCollection,
         AgentCollection, TeamCollection, WorkflowCollection, WorkflowRunCollection,
-        SessionCollection, MessageCollection, ToolDefinitionCollection, SkillCollection, MCPServerCollection,
+        SessionCollection, MessageCollection, AgentThreadMessageCollection, ToolDefinitionCollection, SkillCollection, MCPServerCollection,
         UserSecretCollection, FileAttachmentCollection,
         KnowledgeBaseCollection, KBDocumentCollection,
         WorkflowScheduleCollection, HITLApprovalCollection,
@@ -179,6 +179,56 @@ def _run_sqlite_migrations(engine):
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add parent_span_id to trace_spans if missing (links a nested/delegated
+        # span, e.g. an agent_delegation hop, to its parent span)
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE trace_spans ADD COLUMN parent_span_id INTEGER REFERENCES trace_spans(id)"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add kind to hitl_approvals if missing (tool_call | thread_continue)
+        try:
+            conn.execute(sqlalchemy.text(
+                "ALTER TABLE hitl_approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'tool_call'"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Create agent_thread_messages table if missing (one row per agent-to-agent
+        # hop in an open multi-agent delegation thread — see team_delegation_tools.py)
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS agent_thread_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL REFERENCES sessions(id),
+                    user_turn_message_id INTEGER REFERENCES messages(id),
+                    thread_id TEXT NOT NULL,
+                    hop_index INTEGER NOT NULL,
+                    from_agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    to_agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    content TEXT,
+                    tool_calls_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        try:
+            conn.execute(sqlalchemy.text(
+                "CREATE INDEX IF NOT EXISTS ix_agent_thread_messages_session_id ON agent_thread_messages(session_id)"
+            ))
+            conn.execute(sqlalchemy.text(
+                "CREATE INDEX IF NOT EXISTS ix_agent_thread_messages_thread_id ON agent_thread_messages(thread_id)"
+            ))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1222,6 +1272,7 @@ async def lifespan(app: FastAPI):
         await WorkflowRunCollection.create_indexes(db)
         await SessionCollection.create_indexes(db)
         await MessageCollection.create_indexes(db)
+        await AgentThreadMessageCollection.create_indexes(db)
         await ToolDefinitionCollection.create_indexes(db)
         await SkillCollection.create_indexes(db)
         await MCPServerCollection.create_indexes(db)

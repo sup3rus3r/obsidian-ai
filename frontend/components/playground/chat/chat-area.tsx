@@ -44,6 +44,14 @@ export function ChatArea() {
   const streamingAgentToolStepLog = usePlaygroundStore((s) => s.streamingAgentToolStepLog)
   const appendStreamingAgentToolStepLog = usePlaygroundStore((s) => s.appendStreamingAgentToolStepLog)
   const clearStreamingAgentToolStepLog = usePlaygroundStore((s) => s.clearStreamingAgentToolStepLog)
+  const streamingAgentHopLog = usePlaygroundStore((s) => s.streamingAgentHopLog)
+  const upsertStreamingAgentHopStart = usePlaygroundStore((s) => s.upsertStreamingAgentHopStart)
+  const upsertStreamingAgentHopMessage = usePlaygroundStore((s) => s.upsertStreamingAgentHopMessage)
+  const clearStreamingAgentHopLog = usePlaygroundStore((s) => s.clearStreamingAgentHopLog)
+  const streamingThreadContinue = usePlaygroundStore((s) => s.streamingThreadContinue)
+  const setStreamingThreadContinue = usePlaygroundStore((s) => s.setStreamingThreadContinue)
+  const threadMessages = usePlaygroundStore((s) => s.threadMessages)
+  const setThreadMessages = usePlaygroundStore((s) => s.setThreadMessages)
   const streamingToolRound = usePlaygroundStore((s) => s.streamingToolRound)
   const setStreamingToolRound = usePlaygroundStore((s) => s.setStreamingToolRound)
   const streamingKBContext = usePlaygroundStore((s) => s.streamingKBContext)
@@ -89,6 +97,12 @@ export function ChatArea() {
     if (!selectedSessionId || !authSession?.accessToken) return
     setHITLApprovalRequired(null)
     setPendingToolProposal(null)
+    fetch(AppRoutes.ThreadMessages(selectedSessionId), {
+      headers: { Authorization: `Bearer ${authSession.accessToken}` },
+    })
+      .then((r) => r.json())
+      .then((data) => setThreadMessages(data?.messages ?? []))
+      .catch(() => {})
     fetch(AppRoutes.HITLPending(selectedSessionId), {
       headers: { Authorization: `Bearer ${authSession.accessToken}` },
     })
@@ -162,6 +176,8 @@ export function ChatArea() {
     setStreamingAgentStep(null)
     clearStreamingAgentStepLog()
     clearStreamingAgentToolStepLog()
+    clearStreamingAgentHopLog()
+    setStreamingThreadContinue(null)
     setStreamingToolRound(null)
     setStreamingKBContext([])
     setStreamingTerminalComplete(false)
@@ -204,6 +220,8 @@ export function ChatArea() {
           setStreamingAgentStep(null)
           clearStreamingAgentStepLog()
           clearStreamingAgentToolStepLog()
+          clearStreamingAgentHopLog()
+          setStreamingThreadContinue(null)
           setStreamingToolRound(null)
           setStreamingKBContext([])
           setHITLApprovalRequired(null)
@@ -339,6 +357,9 @@ export function ChatArea() {
           }
         },
         (step) => appendStreamingAgentToolStepLog(step),
+        (event) => upsertStreamingAgentHopStart(event),
+        (event) => upsertStreamingAgentHopMessage(event),
+        (event) => setStreamingThreadContinue(event),
       )
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
@@ -350,6 +371,8 @@ export function ChatArea() {
       setStreamingAgentStep(null)
       clearStreamingAgentStepLog()
       clearStreamingAgentToolStepLog()
+      clearStreamingAgentHopLog()
+      setStreamingThreadContinue(null)
       setStreamingToolRound(null)
     }
   }
@@ -360,6 +383,8 @@ export function ChatArea() {
     setStreamingAgentStep(null)
     clearStreamingAgentStepLog()
     clearStreamingAgentToolStepLog()
+    clearStreamingAgentHopLog()
+    setStreamingThreadContinue(null)
     // Save whatever was streamed so far
     const state = usePlaygroundStore.getState()
     const content = state.streamingContent
@@ -416,6 +441,7 @@ export function ChatArea() {
       ) : (
         <MessageList
           messages={messages}
+          threadMessages={threadMessages}
           streamingContent={streamingContent}
           streamingReasoning={streamingReasoning}
           streamingToolCalls={streamingToolCalls}
@@ -432,6 +458,9 @@ export function ChatArea() {
           streamingJsx={streamingJsx}
           streamingJsxComplete={streamingJsxComplete}
           pendingHITLApproval={pendingHITLApproval}
+          streamingAgentHopLog={streamingAgentHopLog}
+          pendingThreadContinue={streamingThreadContinue}
+          onThreadContinueResolved={() => setStreamingThreadContinue(null)}
           pendingToolProposal={pendingToolProposal}
           generatingTool={generatingTool}
           accessToken={authSession?.accessToken}

@@ -1,4 +1,4 @@
-import type { Message, ToolCall, ReasoningStep, AgentStep, AgentToolStep, ToolRound, FileAttachment, WorkflowStepResult, FileNode, HITLApprovalEvent, ToolProposalEvent, ArtifactEvent, NodeStartEvent, NodeCompleteEvent, NodeErrorEvent, NodeContentDeltaEvent } from "@/types/playground"
+import type { Message, ToolCall, ReasoningStep, AgentStep, AgentToolStep, ToolRound, FileAttachment, WorkflowStepResult, FileNode, HITLApprovalEvent, ToolProposalEvent, ArtifactEvent, NodeStartEvent, NodeCompleteEvent, NodeErrorEvent, NodeContentDeltaEvent, AgentHopStartEvent, AgentHopMessageEvent, ThreadContinueEvent } from "@/types/playground"
 
 // Stream directly to the backend, bypassing the Next.js rewrite proxy
 // which buffers the entire SSE response instead of streaming it through.
@@ -52,6 +52,9 @@ export async function streamChat(
   onToolGenerating?: (event: { name: string; handler_type: string }) => void,
   onArtifact?: (event: ArtifactEvent) => void,
   onAgentToolStep?: (step: AgentToolStep) => void,
+  onAgentHopStart?: (event: AgentHopStartEvent) => void,
+  onAgentHopMessage?: (event: AgentHopMessageEvent) => void,
+  onThreadContinueRequired?: (event: ThreadContinueEvent) => void,
 ): Promise<void> {
   const body: Record<string, unknown> = {
     session_id: sessionId,
@@ -187,6 +190,15 @@ export async function streamChat(
                 break
               case "agent_tool_step":
                 onAgentToolStep?.(data as AgentToolStep)
+                break
+              case "agent_hop_start":
+                onAgentHopStart?.(data as AgentHopStartEvent)
+                break
+              case "agent_hop_message":
+                onAgentHopMessage?.(data as AgentHopMessageEvent)
+                break
+              case "thread_continue_required":
+                onThreadContinueRequired?.(data as ThreadContinueEvent)
                 break
               case "error":
                 onError(data.error || "Unknown error")

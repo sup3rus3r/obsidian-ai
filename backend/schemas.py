@@ -818,6 +818,26 @@ class HITLPendingListResponse(BaseModel):
 
 
 # ============================================================================
+# Agent Thread Message Schemas (open multi-agent delegation threads)
+# ============================================================================
+
+class AgentThreadMessageResponse(BaseModel):
+    id: str
+    session_id: str
+    thread_id: str
+    hop_index: int
+    from_agent_id: str
+    from_agent_name: Optional[str] = None
+    to_agent_id: str
+    to_agent_name: Optional[str] = None
+    content: Optional[str] = None
+    created_at: datetime
+
+class AgentThreadMessageListResponse(BaseModel):
+    messages: list[AgentThreadMessageResponse]
+
+
+# ============================================================================
 # Async Job Schemas
 # ============================================================================
 

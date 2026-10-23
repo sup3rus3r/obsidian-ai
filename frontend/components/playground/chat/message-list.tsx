@@ -3,10 +3,52 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { MessageBubble } from "./message-bubble"
 import { ScrollButton } from "@/components/ai-elements/scroll-button"
-import type { Message, ToolCall, AgentStep, ToolRound, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent } from "@/types/playground"
+import type { Message, ToolCall, AgentStep, ToolRound, FileNode, PlanData, HITLApprovalEvent, ToolProposalEvent, ThreadContinueEvent, AgentThreadMessageRecord } from "@/types/playground"
+import type { AgentHopEntry } from "@/stores/playground-store"
+
+/** Group persisted agent-to-agent hops by their nearest following Message in
+ *  the same session — there's no direct FK linking a hop to "the turn it was
+ *  part of" (see AgentThreadMessage's docstring), so history reconstructs the
+ *  association from timestamps instead: each hop belongs to whichever
+ *  Message was saved immediately after it. */
+function groupThreadMessagesByFollowingMessage(
+  messages: Message[],
+  threadMessages: AgentThreadMessageRecord[]
+): Map<string, AgentHopEntry[]> {
+  const result = new Map<string, AgentHopEntry[]>()
+  if (threadMessages.length === 0) return result
+  const sortedMessages = [...messages]
+    .filter((m) => m.role !== "user")
+    .map((m) => ({ id: m.id, time: new Date(m.created_at).getTime() }))
+    .sort((a, b) => a.time - b.time)
+
+  for (const hop of threadMessages) {
+    const hopTime = new Date(hop.created_at).getTime()
+    const owner = sortedMessages.find((m) => m.time >= hopTime)
+    if (!owner) continue
+    const [asked, response] = (hop.content ?? "").split("\n\n[Response]: ")
+    const entry: AgentHopEntry = {
+      thread_id: hop.thread_id,
+      hop_index: hop.hop_index,
+      from_agent_id: hop.from_agent_id,
+      from_agent_name: hop.from_agent_name ?? "Agent",
+      to_agent_id: hop.to_agent_id,
+      to_agent_name: hop.to_agent_name ?? "Agent",
+      message: asked?.replace(/^\[Asked\]: /, "") ?? "",
+      response,
+      status: "completed",
+    }
+    const list = result.get(owner.id) ?? []
+    list.push(entry)
+    result.set(owner.id, list)
+  }
+  for (const list of result.values()) list.sort((a, b) => a.hop_index - b.hop_index)
+  return result
+}
 
 interface MessageListProps {
   messages: Message[]
+  threadMessages?: AgentThreadMessageRecord[]
   streamingContent: string
   streamingReasoning: string
   streamingToolCalls: ToolCall[]
@@ -25,6 +67,10 @@ interface MessageListProps {
   streamingJsxComplete?: boolean
   // HITL
   pendingHITLApproval?: HITLApprovalEvent | null
+  // Open multi-agent delegation threads (call_teammate)
+  streamingAgentHopLog?: AgentHopEntry[]
+  pendingThreadContinue?: ThreadContinueEvent | null
+  onThreadContinueResolved?: () => void
   // Tool Proposals
   pendingToolProposal?: ToolProposalEvent | null
   generatingTool?: { name: string; handler_type: string } | null
@@ -35,6 +81,7 @@ interface MessageListProps {
 
 export function MessageList({
   messages,
+  threadMessages,
   streamingContent,
   streamingReasoning,
   streamingToolCalls,
@@ -51,6 +98,9 @@ export function MessageList({
   streamingJsx,
   streamingJsxComplete,
   pendingHITLApproval,
+  streamingAgentHopLog,
+  pendingThreadContinue,
+  onThreadContinueResolved,
   pendingToolProposal,
   generatingTool,
   accessToken,
@@ -106,8 +156,12 @@ export function MessageList({
       streamingPlan ||
       streamingJsx ||
       pendingHITLApproval ||
+      (streamingAgentHopLog && streamingAgentHopLog.length > 0) ||
+      pendingThreadContinue ||
       pendingToolProposal ||
       generatingTool)
+
+  const hopsByMessageId = groupThreadMessagesByFollowingMessage(messages, threadMessages ?? [])
 
   return (
     <div ref={scrollRef} className="relative flex-1 overflow-y-auto min-h-0">
@@ -128,7 +182,7 @@ export function MessageList({
           }
           // Skip other system messages
           if (message.role === "system") return null
-          return <MessageBubble key={message.id} message={message} />
+          return <MessageBubble key={message.id} message={message} agentHopLog={hopsByMessageId.get(message.id)} />
         })}
 
         {/* Agent step indicator (team mode) — a running log when multiple steps have
@@ -206,6 +260,9 @@ export function MessageList({
             jsxComplete={streamingJsxComplete}
             isStreaming
             hitlApprovalEvent={pendingHITLApproval}
+            agentHopLog={streamingAgentHopLog}
+            threadContinueEvent={pendingThreadContinue}
+            onThreadContinueResolved={onThreadContinueResolved}
             toolProposalEvent={pendingToolProposal}
             generatingTool={generatingTool}
             accessToken={accessToken}
