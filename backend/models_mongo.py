@@ -988,6 +988,60 @@ class SkillFileCollection:
         await collection.delete_many({"skill_id": skill_id})
 
 
+class TeamMemberCollection:
+    """Mongo mirror of models.py's TeamMember — one roster slot in a team,
+    a base Agent with optional per-team overrides. A sibling collection
+    (not an embedded array on the team doc), matching SkillFileCollection's
+    convention: ownership flows through the parent (team_id), not scoped
+    by user_id directly."""
+    collection_name = "team_members"
+
+    @classmethod
+    async def create_indexes(cls, db):
+        collection = db[cls.collection_name]
+        await collection.create_index("team_id")
+
+    @classmethod
+    async def find_by_team(cls, db, team_id: str) -> list[dict]:
+        collection = db[cls.collection_name]
+        cursor = collection.find({"team_id": team_id}).sort("position", 1)
+        return await cursor.to_list(length=200)
+
+    @classmethod
+    async def find_by_id(cls, db, member_id: str) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        return await collection.find_one({"_id": ObjectId(member_id)})
+
+    @classmethod
+    async def create(cls, db, data: dict) -> dict:
+        collection = db[cls.collection_name]
+        data.setdefault("created_at", datetime.utcnow())
+        result = await collection.insert_one(data)
+        data["_id"] = result.inserted_id
+        return data
+
+    @classmethod
+    async def update(cls, db, member_id: str, updates: dict) -> Optional[dict]:
+        collection = db[cls.collection_name]
+        updates["updated_at"] = datetime.utcnow()
+        return await collection.find_one_and_update(
+            {"_id": ObjectId(member_id)},
+            {"$set": updates},
+            return_document=True,
+        )
+
+    @classmethod
+    async def delete(cls, db, member_id: str) -> bool:
+        collection = db[cls.collection_name]
+        result = await collection.delete_one({"_id": ObjectId(member_id)})
+        return result.deleted_count > 0
+
+    @classmethod
+    async def delete_by_team(cls, db, team_id: str) -> None:
+        collection = db[cls.collection_name]
+        await collection.delete_many({"team_id": team_id})
+
+
 class KnowledgeBaseCollection:
     collection_name = "knowledge_bases"
 

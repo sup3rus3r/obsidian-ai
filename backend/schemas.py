@@ -284,11 +284,45 @@ class ProviderBulkImportResult(BaseModel):
 # Team Schemas
 # ============================================================================
 
+class TeamMemberCreate(BaseModel):
+    agent_id: str
+    position: int
+    override_name: Optional[str] = None
+    override_system_prompt: Optional[str] = None
+    override_tool_ids: Optional[list[str]] = None
+    override_mcp_server_ids: Optional[list[str]] = None
+    override_skill_ids: Optional[list[str]] = None
+    override_knowledge_base_ids: Optional[list[str]] = None
+    can_delegate: bool = True
+
+class TeamMemberUpdate(BaseModel):
+    position: Optional[int] = None
+    override_name: Optional[str] = None
+    override_system_prompt: Optional[str] = None
+    override_tool_ids: Optional[list[str]] = None
+    override_mcp_server_ids: Optional[list[str]] = None
+    override_skill_ids: Optional[list[str]] = None
+    override_knowledge_base_ids: Optional[list[str]] = None
+    can_delegate: Optional[bool] = None
+
+class TeamMemberResponse(BaseModel):
+    id: str
+    agent_id: str
+    agent_name: str          # base agent's current name, for display when no override_name
+    position: int
+    override_name: Optional[str] = None
+    override_system_prompt: Optional[str] = None
+    override_tool_ids: Optional[list[str]] = None
+    override_mcp_server_ids: Optional[list[str]] = None
+    override_skill_ids: Optional[list[str]] = None
+    override_knowledge_base_ids: Optional[list[str]] = None
+    can_delegate: bool = True
+
 class TeamCreate(BaseModel):
     name: str
     description: Optional[str] = None
     mode: str = "coordinate"   # coordinate | route | collaborate
-    agent_ids: list[str]
+    members: list[TeamMemberCreate] = []
     sandbox_enabled: bool = False
     config: Optional[dict] = None
 
@@ -296,16 +330,17 @@ class TeamUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     mode: Optional[str] = None
-    agent_ids: Optional[list[str]] = None
     sandbox_enabled: Optional[bool] = None
     config: Optional[dict] = None
+    # Member list changes go through POST/PATCH/DELETE /teams/{id}/members/*,
+    # not a bulk replace here.
 
 class TeamResponse(BaseModel):
     id: str
     name: str
     description: Optional[str] = None
     mode: str
-    agent_ids: list[str]
+    members: list[TeamMemberResponse]
     sandbox_enabled: bool = False
     sandbox_container_id: Optional[str] = None
     sandbox_host_port: Optional[int] = None

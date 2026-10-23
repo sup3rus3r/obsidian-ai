@@ -35,6 +35,9 @@ export const AppRoutes = {
     GetTeam             : (id: string) => `/api/teams/${id}`,
     UpdateTeam          : (id: string) => `/api/teams/${id}`,
     DeleteTeam          : (id: string) => `/api/teams/${id}`,
+    AddTeamMember       : (teamId: string) => `/api/teams/${teamId}/members`,
+    UpdateTeamMember    : (teamId: string, memberId: string) => `/api/teams/${teamId}/members/${memberId}`,
+    RemoveTeamMember    : (teamId: string, memberId: string) => `/api/teams/${teamId}/members/${memberId}`,
 
     // Sessions
     ListSessions        : () => "/api/sessions",

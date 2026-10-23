@@ -100,6 +100,32 @@ class Team(Base):
     updated_at     = Column(DateTime(timezone=True), onupdate=func.now())
 
 
+class TeamMember(Base):
+    """One slot in a team's roster — a base Agent, optionally with per-team
+    overrides, so the same reusable agent can be added to a team more than
+    once in different roles (e.g. "Claude" once as a web-design specialist,
+    again as a researcher, each with its own system prompt/skills/tools).
+    A null override field means that field LIVE-inherits from the base
+    Agent — editing the base agent's system prompt later updates every
+    member slot that hasn't overridden it, without needing to touch the
+    TeamMember row. Team.agent_ids_json is superseded by this table."""
+    __tablename__ = "team_members"
+
+    id                        = Column(Integer, primary_key=True, index=True)
+    team_id                   = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id                  = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    position                  = Column(Integer, nullable=False)   # ordering, esp. for collaborate mode's sequence
+    override_name             = Column(String, nullable=True)     # display name within this team, e.g. "Claude (Research)"
+    override_system_prompt    = Column(Text, nullable=True)
+    override_tools_json       = Column(Text, nullable=True)       # null = inherit agent.tools_json
+    override_mcp_servers_json = Column(Text, nullable=True)
+    override_skill_ids_json   = Column(Text, nullable=True)
+    override_knowledge_base_ids_json = Column(Text, nullable=True)
+    can_delegate              = Column(Boolean, default=True, nullable=False)  # per-member "cannot delegate further" guard (open threads, Part 1)
+    created_at                = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at                = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class Session(Base):
     """A chat session (conversation thread)."""
     __tablename__ = "sessions"

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import logging
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
@@ -61,7 +62,7 @@ if DATABASE_TYPE == "mongo":
     from models_mongo import (
         UserCollection, APIClientCollection, LLMProviderCollection,
         AgentCollection, TeamCollection, WorkflowCollection, WorkflowRunCollection,
-        SessionCollection, MessageCollection, AgentThreadMessageCollection, ToolDefinitionCollection, SkillCollection, MCPServerCollection,
+        SessionCollection, MessageCollection, AgentThreadMessageCollection, TeamMemberCollection, ToolDefinitionCollection, SkillCollection, MCPServerCollection,
         UserSecretCollection, FileAttachmentCollection,
         KnowledgeBaseCollection, KBDocumentCollection,
         WorkflowScheduleCollection, HITLApprovalCollection,
@@ -229,6 +230,64 @@ def _run_sqlite_migrations(engine):
             conn.execute(sqlalchemy.text(
                 "CREATE INDEX IF NOT EXISTS ix_agent_thread_messages_thread_id ON agent_thread_messages(thread_id)"
             ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Create team_members table if missing — a Team's roster is now rows here
+        # (base agent + optional per-team overrides) rather than Team.agent_ids_json,
+        # so the same reusable agent can be added to one team more than once in
+        # different roles. The column stays on Team (removing it is disruptive for
+        # no benefit) but is no longer read or written anywhere once backfilled.
+        try:
+            conn.execute(sqlalchemy.text("""
+                CREATE TABLE IF NOT EXISTS team_members (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    position INTEGER NOT NULL,
+                    override_name TEXT,
+                    override_system_prompt TEXT,
+                    override_tools_json TEXT,
+                    override_mcp_servers_json TEXT,
+                    override_skill_ids_json TEXT,
+                    override_knowledge_base_ids_json TEXT,
+                    can_delegate BOOLEAN NOT NULL DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        try:
+            conn.execute(sqlalchemy.text(
+                "CREATE INDEX IF NOT EXISTS ix_team_members_team_id ON team_members(team_id)"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # One-time backfill: every existing team's agent_ids_json entries become
+        # TeamMember rows (position = array index, no overrides — pure inheritance,
+        # identical behavior to today). Idempotent: only backfills a team that has
+        # zero team_members rows yet, so this is safe to run on every startup.
+        try:
+            teams_needing_backfill = conn.execute(sqlalchemy.text("""
+                SELECT t.id, t.agent_ids_json FROM teams t
+                LEFT JOIN team_members tm ON tm.team_id = t.id
+                WHERE tm.id IS NULL AND t.agent_ids_json IS NOT NULL
+                GROUP BY t.id
+            """)).fetchall()
+            for team_id, agent_ids_json in teams_needing_backfill:
+                try:
+                    agent_ids = json.loads(agent_ids_json) if agent_ids_json else []
+                except (TypeError, ValueError):
+                    agent_ids = []
+                for position, agent_id in enumerate(agent_ids):
+                    conn.execute(sqlalchemy.text(
+                        "INSERT INTO team_members (team_id, agent_id, position, can_delegate) VALUES (:team_id, :agent_id, :position, 1)"
+                    ), {"team_id": team_id, "agent_id": int(agent_id), "position": position})
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1273,6 +1332,7 @@ async def lifespan(app: FastAPI):
         await SessionCollection.create_indexes(db)
         await MessageCollection.create_indexes(db)
         await AgentThreadMessageCollection.create_indexes(db)
+        await TeamMemberCollection.create_indexes(db)
         await ToolDefinitionCollection.create_indexes(db)
         await SkillCollection.create_indexes(db)
         await MCPServerCollection.create_indexes(db)
@@ -1306,6 +1366,24 @@ async def lifespan(app: FastAPI):
                         )
                 except Exception:
                     pass
+
+        # One-time backfill: every existing team's agent_ids_json entries become
+        # TeamMember docs (position = array index, no overrides — pure inheritance,
+        # identical behavior to today). Idempotent: only backfills a team with zero
+        # team_members docs yet, so this is safe to run on every startup.
+        async for team in db.teams.find({"agent_ids_json": {"$exists": True, "$ne": None}}):
+            try:
+                existing = await TeamMemberCollection.find_by_team(db, str(team["_id"]))
+                if existing:
+                    continue
+                agent_ids_raw = team.get("agent_ids_json")
+                agent_ids = json.loads(agent_ids_raw) if isinstance(agent_ids_raw, str) else (agent_ids_raw or [])
+                for position, agent_id in enumerate(agent_ids):
+                    await TeamMemberCollection.create(db, {
+                        "team_id": str(team["_id"]), "agent_id": str(agent_id), "position": position,
+                    })
+            except Exception:
+                pass
 
     # Start APScheduler
     from scheduler import scheduler as _scheduler, configure_scheduler

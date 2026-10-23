@@ -550,18 +550,13 @@ async def start_team_sandbox(
         )
         # Teams don't carry skill_ids_json themselves — seed the files of every
         # member agent's attached skills, since any of them may act in this
-        # shared sandbox.
-        from models_mongo import AgentCollection as _AgentColl
-        team_agent_ids_raw = team.get("agent_ids_json") or team.get("agent_ids", [])
-        if isinstance(team_agent_ids_raw, str):
-            try:
-                team_agent_ids = json.loads(team_agent_ids_raw) if team_agent_ids_raw else []
-            except (json.JSONDecodeError, TypeError):
-                team_agent_ids = []
-        else:
-            team_agent_ids = team_agent_ids_raw or []
-        for member_id in team_agent_ids:
-            member_agent = await _AgentColl.find_by_id(db, str(member_id))
+        # shared sandbox. Member roster now comes from TeamMember docs, not
+        # Team.agent_ids_json (Part 2) — duplicate agent_ids across members
+        # (the same base agent in two roles) harmlessly re-seed the same files.
+        from models_mongo import AgentCollection as _AgentColl, TeamMemberCollection as _TeamMemberColl
+        team_members = await _TeamMemberColl.find_by_team(db, str(team["_id"]))
+        for member in team_members:
+            member_agent = await _AgentColl.find_by_id(db, str(member["agent_id"]))
             if member_agent:
                 await _seed_skill_files_mongo(container_id, db, member_agent.get("skill_ids_json"))
         return {"container_id": container_id, "host_port": host_port, "status": "running"}
@@ -591,14 +586,12 @@ async def start_team_sandbox(
             db.commit()
             # Teams don't carry skill_ids_json themselves — seed the files of
             # every member agent's attached skills, since any of them may
-            # act in this shared sandbox.
-            from models import Agent as _AgentModel
-            try:
-                team_agent_ids = json.loads(team.agent_ids_json) if team.agent_ids_json else []
-            except (json.JSONDecodeError, TypeError):
-                team_agent_ids = []
-            for member_id in team_agent_ids:
-                member_agent = db.query(_AgentModel).filter(_AgentModel.id == int(member_id)).first()
+            # act in this shared sandbox. Member roster now comes from
+            # TeamMember rows, not Team.agent_ids_json (Part 2).
+            from models import Agent as _AgentModel, TeamMember as _TeamMemberModel
+            team_members = db.query(_TeamMemberModel).filter(_TeamMemberModel.team_id == team.id).all()
+            for member in team_members:
+                member_agent = db.query(_AgentModel).filter(_AgentModel.id == member.agent_id).first()
                 if member_agent:
                     await _seed_skill_files_sqlite(container_id, db, member_agent.skill_ids_json)
             return {"container_id": container_id, "host_port": host_port, "status": "running"}

@@ -73,7 +73,7 @@ export function ModelSelector() {
 
     if (!selectedTeam) return null
 
-    const teamAgents = agents.filter((a) => selectedTeam.agent_ids.includes(a.id))
+    const teamAgents = agents.filter((a) => selectedTeam.members.some((m) => m.agent_id === a.id))
     const teamAgentModels = teamAgents.map((ag) => {
       const pr = ag.provider_id ? providers.find((p) => p.id === ag.provider_id) : null
       return { agent: ag, provider: pr }

@@ -12,7 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from config import DATABASE_TYPE
 from database import get_db
-from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, SkillFile, AsyncJob, VaultFile, AgentThreadMessage
+from models import Session as SessionModel, Message, Agent, LLMProvider, ToolDefinition, Team, TeamMember, MCPServer, FileAttachment, KnowledgeBase, HITLApproval, AgentMemory, TraceSpan, ToolProposal, Skill, SkillFile, AsyncJob, VaultFile, AgentThreadMessage
 from schemas import ChatRequest, RateMessageRequest, HITLApprovalResponse, HITLPendingListResponse, ToolProposalResponse, ToolProposalPendingListResponse, AsyncJobResponse, AsyncJobPendingListResponse, AgentThreadMessageResponse, AgentThreadMessageListResponse
 from auth import get_current_user, TokenData
 from encryption import decrypt_api_key
@@ -35,7 +35,7 @@ from builtin_tools import BUILTIN_TOOL_SCHEMAS, execute_builtin_tool, is_builtin
 
 if DATABASE_TYPE == "mongo":
     from database_mongo import get_database
-    from models_mongo import SessionCollection, MessageCollection, AgentCollection, LLMProviderCollection, ToolDefinitionCollection, SkillCollection, TeamCollection, MCPServerCollection, FileAttachmentCollection, KnowledgeBaseCollection, HITLApprovalCollection, AgentMemoryCollection, ToolProposalCollection, AsyncJobCollection, VaultFileCollection, AgentThreadMessageCollection
+    from models_mongo import SessionCollection, MessageCollection, AgentCollection, LLMProviderCollection, ToolDefinitionCollection, SkillCollection, TeamCollection, TeamMemberCollection, MCPServerCollection, FileAttachmentCollection, KnowledgeBaseCollection, HITLApprovalCollection, AgentMemoryCollection, ToolProposalCollection, AsyncJobCollection, VaultFileCollection, AgentThreadMessageCollection
 
 logger = logging.getLogger(__name__)
 
@@ -2540,20 +2540,24 @@ async def _chat_sqlite(request: ChatRequest, current_user: TokenData, db: DBSess
         if not team:
             raise HTTPException(status_code=404, detail="Team not found")
 
-        agent_ids = json.loads(team.agent_ids_json) if team.agent_ids_json else []
-        team_agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
-        if not team_agents:
+        from team_delegation_tools import _resolve_effective_agent
+        team_members = db.query(TeamMember).filter(TeamMember.team_id == team.id).order_by(TeamMember.position).all()
+        if not team_members:
             raise HTTPException(status_code=400, detail="Team has no valid agents")
 
-        # Build a map of agents with their providers ready
+        # Build a map of (effective) agents with their providers ready — each
+        # member's overrides are merged onto its base Agent (live, not a
+        # snapshot: see _resolve_effective_agent), so the same base agent can
+        # appear as multiple distinct members with different roles.
         agents_with_providers = []
-        for ag in team_agents:
-            if not ag.provider_id:
+        for member in team_members:
+            base_agent = db.query(Agent).filter(Agent.id == member.agent_id).first()
+            if not base_agent or not base_agent.provider_id:
                 continue
-            pr = db.query(LLMProvider).filter(LLMProvider.id == ag.provider_id).first()
+            pr = db.query(LLMProvider).filter(LLMProvider.id == base_agent.provider_id).first()
             if not pr:
                 continue
-            agents_with_providers.append((ag, pr))
+            agents_with_providers.append((_resolve_effective_agent(member, base_agent), pr))
 
         if not agents_with_providers:
             raise HTTPException(status_code=400, detail="No agents in team have a configured provider")
@@ -5236,15 +5240,12 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
         if not team:
             raise HTTPException(status_code=404, detail="Team not found")
 
-        agent_ids_raw = team.get("agent_ids_json") or team.get("agent_ids", [])
-        if isinstance(agent_ids_raw, str):
-            agent_ids = json.loads(agent_ids_raw)
-        else:
-            agent_ids = agent_ids_raw
+        from team_delegation_tools import _resolve_effective_agent_mongo
+        team_members = await TeamMemberCollection.find_by_team(mongo_db, str(team["_id"]))
 
         agents_with_providers = []
-        for aid in agent_ids:
-            ag = await AgentCollection.find_by_id(mongo_db, str(aid))
+        for member in team_members:
+            ag = await AgentCollection.find_by_id(mongo_db, str(member["agent_id"]))
             if not ag:
                 continue
             pid = ag.get("provider_id")
@@ -5253,7 +5254,7 @@ async def _chat_mongo(request: ChatRequest, current_user: TokenData, start_time:
             pr = await LLMProviderCollection.find_by_id(mongo_db, str(pid))
             if not pr:
                 continue
-            agents_with_providers.append((ag, pr))
+            agents_with_providers.append((_resolve_effective_agent_mongo(member, ag), pr))
 
         if not agents_with_providers:
             raise HTTPException(status_code=400, detail="No agents in team have a configured provider")

@@ -16,6 +16,9 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
   CreateTeamRequest,
+  UpdateTeamRequest,
+  TeamMember,
+  TeamMemberCreate,
   CreateWorkflowRequest,
   UpdateWorkflowRequest,
   N8nImportRequest,
@@ -397,7 +400,7 @@ class ApiClient {
     })
   }
 
-  async updateTeam(id: string, data: Partial<CreateTeamRequest>): Promise<Team> {
+  async updateTeam(id: string, data: UpdateTeamRequest): Promise<Team> {
     return this.request<Team>(AppRoutes.UpdateTeam(id), {
       method: "PUT",
       body: JSON.stringify(data),
@@ -406,6 +409,26 @@ class ApiClient {
 
   async deleteTeam(id: string): Promise<void> {
     await this.request<void>(AppRoutes.DeleteTeam(id), {
+      method: "DELETE",
+    })
+  }
+
+  async addTeamMember(teamId: string, data: TeamMemberCreate): Promise<TeamMember> {
+    return this.request<TeamMember>(AppRoutes.AddTeamMember(teamId), {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateTeamMember(teamId: string, memberId: string, data: Partial<TeamMemberCreate>): Promise<TeamMember> {
+    return this.request<TeamMember>(AppRoutes.UpdateTeamMember(teamId, memberId), {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async removeTeamMember(teamId: string, memberId: string): Promise<void> {
+    await this.request<void>(AppRoutes.RemoveTeamMember(teamId, memberId), {
       method: "DELETE",
     })
   }

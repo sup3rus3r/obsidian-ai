@@ -197,16 +197,26 @@ async def execute_call_teammate(
     if thread_state is None:
         return json.dumps({"error": "Delegation is not available in this context."})
 
+    # Matched/excluded by member_id, NOT the base agent's id: the whole point of
+    # TeamMember overrides (Part 2) is the same base agent can appear as two+
+    # distinct team members with different names/roles. Keying self-exclusion
+    # and cycle detection on the base agent's id would make two such members
+    # indistinguishable to this logic (either wrongly blocking delegation
+    # between them, or wrongly treating one as unable to "delegate to itself"
+    # when it's really delegating to a different member). member_id is always
+    # present (see _resolve_effective_agent / _resolve_effective_agent_mongo)
+    # — every agent reaching this function came from team_delegation_tools'
+    # own effective-agent resolution, which always sets it.
     if db_type == "mongo":
         target = next(
             (ag_pr for ag_pr in agents_with_providers
-             if ag_pr[0].get("name", "").lower() == teammate_name.lower() and str(ag_pr[0]["_id"]) != str(current_agent_id)),
+             if ag_pr[0].get("name", "").lower() == teammate_name.lower() and str(ag_pr[0].get("member_id")) != str(current_agent_id)),
             None,
         )
     else:
         target = next(
             (ag_pr for ag_pr in agents_with_providers
-             if ag_pr[0].name.lower() == teammate_name.lower() and ag_pr[0].id != current_agent_id),
+             if ag_pr[0].name.lower() == teammate_name.lower() and ag_pr[0].member_id != current_agent_id),
             None,
         )
 
@@ -218,27 +228,39 @@ async def execute_call_teammate(
         return json.dumps({"error": f"No teammate named '{teammate_name}' found. Available: {', '.join(names)}"})
 
     target_agent, target_provider = target
+    _target_member_id = target_agent.get("member_id") if db_type == "mongo" else target_agent.member_id
+    # The REAL base Agent id — needed wherever this must be a genuine FK into
+    # the agents table (AgentThreadMessage.from_agent_id/to_agent_id below),
+    # as opposed to member_id's role of disambiguating delegation identity.
     _target_agent_id = target_agent.get("_id") if db_type == "mongo" else target_agent.id
 
     # Per-agent "cannot delegate further" gate — a design-level loop guard
     # independent of the runtime hop counter (matches CrewAI's pattern of
-    # marking leaf specialists allow_delegation=False). Only meaningful once
-    # TeamMember overrides exist (Part 2 of the plan); until then this field
-    # simply won't be present and every agent is delegatable, same as today.
+    # marking leaf specialists allow_delegation=False). Set per-TeamMember
+    # (see _resolve_effective_agent / _resolve_effective_agent_mongo), default
+    # True — every member is delegatable unless explicitly turned off.
     _can_delegate = target_agent.get("can_delegate", True) if db_type == "mongo" else getattr(target_agent, "can_delegate", True)
 
     # Hop check — refuses cycles/hard-ceiling with an error string the calling
     # agent can read and react to; raises ThreadSoftCapReached (propagated,
-    # not caught here) once the soft cap is reached.
-    _hop_error = thread_state.check_and_record_hop(current_agent_id, _target_agent_id)
+    # not caught here) once the soft cap is reached. Keyed on member_id for
+    # both sides (not the base agent id) — same reasoning as the self-exclusion
+    # match above: two members sharing a base agent must be distinct hop
+    # participants, or cycle detection would conflate them.
+    _hop_error = thread_state.check_and_record_hop(current_agent_id, _target_member_id)
     if _hop_error:
         return json.dumps({"error": _hop_error})
 
-    _from_name = (
-        next((ag.get("name") for ag, _ in agents_with_providers if str(ag.get("_id")) == str(current_agent_id)), None)
-        if db_type == "mongo" else
-        next((ag.name for ag, _ in agents_with_providers if ag.id == current_agent_id), None)
-    ) or "unknown"
+    _caller = next(
+        (ag for ag, _ in agents_with_providers
+         if (str(ag.get("member_id")) if db_type == "mongo" else ag.member_id) == (str(current_agent_id) if db_type == "mongo" else current_agent_id)),
+        None,
+    )
+    _from_name = (_caller.get("name") if db_type == "mongo" else _caller.name) if _caller else "unknown"
+    # The REAL base Agent id for the agent that initiated this hop — needed
+    # for AgentThreadMessage.from_agent_id's FK, same distinction as
+    # _target_agent_id vs _target_member_id above.
+    _from_agent_id = (_caller.get("_id") if db_type == "mongo" else _caller.id) if _caller else current_agent_id
     _to_name = target_agent.get("name") if db_type == "mongo" else target_agent.name
     _hop_start = time.time()
     _hop_index = thread_state.hop_count
@@ -262,8 +284,10 @@ async def execute_call_teammate(
     # The delegate gets call_teammate too (if it's allowed to delegate further)
     # — this is what makes delegation recursive instead of one-hop. Passing
     # thread_state (not a fresh one) keeps the hop counter/cycle window shared
-    # across the whole chain no matter how deep it goes.
-    _sub_team_context = (agents_with_providers, _target_agent_id, thread_state) if _can_delegate else None
+    # across the whole chain no matter how deep it goes. Uses member_id as the
+    # delegate's own identity for its own future self-exclusion/cycle checks —
+    # same reasoning throughout this function.
+    _sub_team_context = (agents_with_providers, _target_member_id, thread_state) if _can_delegate else None
 
     try:
         if db_type == "mongo":
@@ -323,7 +347,7 @@ async def execute_call_teammate(
         )
 
     await _persist_thread_message(
-        db_type, db, thread_state, _hop_index, current_agent_id, _target_agent_id, message, content,
+        db_type, db, thread_state, _hop_index, _from_agent_id, _target_agent_id, message, content,
     )
 
     _emit("agent_hop_message", response=content, duration_ms=int((time.time() - _hop_start) * 1000))
@@ -360,3 +384,81 @@ async def _persist_thread_message(db_type, db, thread_state: "ThreadState", hop_
             db.commit()
     except Exception:
         pass
+
+
+class _EffectiveAgentView:
+    """A read-only view over a TeamMember + its base Agent, exposing the same
+    attribute surface every team-mode function and _build_tools_for_llm /
+    _load_mcp_server_configs already read off a plain SQLAlchemy Agent row
+    (name, system_prompt, tools_json, mcp_servers_json, skill_ids_json,
+    knowledge_base_ids_json, plus passthrough for id/provider_id/model_id/
+    sandbox_*/user_id/config_json, which are never overridden at the team
+    level). An overridden field returns the TeamMember's value; everything
+    else falls through to the LIVE base_agent attribute via __getattr__, so
+    editing the base agent later is picked up automatically by any member
+    slot that hasn't overridden that specific field — no snapshot, no copy.
+
+    Because this matches Agent's attribute surface exactly, nothing downstream
+    (_build_tools_for_llm, _load_mcp_server_configs, execute_call_teammate's
+    name-matching, any _team_chat_* function) needs to change to use it."""
+
+    _OVERRIDE_MAP = {
+        "name": "override_name",
+        "system_prompt": "override_system_prompt",
+        "tools_json": "override_tools_json",
+        "mcp_servers_json": "override_mcp_servers_json",
+        "skill_ids_json": "override_skill_ids_json",
+        "knowledge_base_ids_json": "override_knowledge_base_ids_json",
+    }
+
+    def __init__(self, member, base_agent):
+        object.__setattr__(self, "_member", member)
+        object.__setattr__(self, "_base_agent", base_agent)
+        # id intentionally stays the BASE agent's id, not the TeamMember's —
+        # every existing caller (call_teammate's name/id matching, trace spans,
+        # AgentThreadMessage.from_agent_id/to_agent_id, sandbox skill seeding)
+        # expects a real Agent id it can look up / persist as a FK. The
+        # TeamMember row's own id is exposed separately as member_id for
+        # anything that specifically needs the slot's identity.
+        object.__setattr__(self, "member_id", getattr(member, "id", None))
+        object.__setattr__(self, "can_delegate", getattr(member, "can_delegate", True))
+
+    def __getattr__(self, name):
+        override_field = self._OVERRIDE_MAP.get(name)
+        if override_field is not None:
+            override_value = getattr(self._member, override_field, None)
+            if override_value is not None:
+                return override_value
+        return getattr(self._base_agent, name)
+
+
+def _resolve_effective_agent(member, base_agent):
+    """SQLite: build an _EffectiveAgentView over a TeamMember ORM row + its
+    base Agent ORM row. See _EffectiveAgentView's docstring for why overrides
+    are resolved lazily via live attribute access, not a one-time merge."""
+    return _EffectiveAgentView(member, base_agent)
+
+
+def _resolve_effective_agent_mongo(member: dict, base_agent: dict) -> dict:
+    """Mongo: build a plain dict merging a TeamMember doc's overrides onto its
+    base Agent doc — matches every Mongo call site's existing `.get()` usage
+    on agent documents. Unlike the SQLite view this is a one-time merge, not
+    lazy live attribute access, since Mongo docs are already point-in-time
+    snapshots fetched fresh per request (same staleness window a plain Agent
+    doc already has between requests)."""
+    effective = dict(base_agent)
+    override_map = {
+        "name": "override_name",
+        "system_prompt": "override_system_prompt",
+        "tools_json": "override_tools_json",
+        "mcp_servers_json": "override_mcp_servers_json",
+        "skill_ids_json": "override_skill_ids_json",
+        "knowledge_base_ids_json": "override_knowledge_base_ids_json",
+    }
+    for field, override_field in override_map.items():
+        override_value = member.get(override_field)
+        if override_value is not None:
+            effective[field] = override_value
+    effective["member_id"] = str(member.get("_id")) if member.get("_id") is not None else None
+    effective["can_delegate"] = member.get("can_delegate", True)
+    return effective

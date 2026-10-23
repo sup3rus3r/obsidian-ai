@@ -423,7 +423,7 @@ export function ChatArea() {
   const selectedAgent = mode === "agent" ? agents.find((a) => a.id === selectedAgentId) : undefined
   const selectedTeam = mode === "team" ? teams.find((t) => t.id === selectedTeamId) : undefined
   const teamAgents = selectedTeam
-    ? agents.filter((a) => selectedTeam.agent_ids.includes(a.id))
+    ? agents.filter((a) => selectedTeam.members.some((m) => m.agent_id === a.id))
     : undefined
 
   const showSuggestions = hasEntity && messages.length === 0 && !isStreaming && !selectedSessionId

@@ -11,6 +11,9 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
   CreateTeamRequest,
+  UpdateTeamRequest,
+  TeamMember,
+  TeamMemberCreate,
   CreateWorkflowRequest,
   CreateSessionRequest,
 } from "@/types/playground"
@@ -143,7 +146,7 @@ export async function createTeam(accessToken: string, data: CreateTeamRequest): 
   return res.json()
 }
 
-export async function updateTeam(accessToken: string, id: string, data: Partial<CreateTeamRequest>): Promise<Team> {
+export async function updateTeam(accessToken: string, id: string, data: UpdateTeamRequest): Promise<Team> {
   const res = await fetch(AppRoutes.UpdateTeam(id), {
     method: "PUT",
     headers: headers(accessToken),
@@ -151,6 +154,34 @@ export async function updateTeam(accessToken: string, id: string, data: Partial<
   })
   if (!res.ok) await throwWithDetail(res, "Failed to update team")
   return res.json()
+}
+
+export async function addTeamMember(accessToken: string, teamId: string, data: TeamMemberCreate): Promise<TeamMember> {
+  const res = await fetch(AppRoutes.AddTeamMember(teamId), {
+    method: "POST",
+    headers: headers(accessToken),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) await throwWithDetail(res, "Failed to add team member")
+  return res.json()
+}
+
+export async function updateTeamMember(accessToken: string, teamId: string, memberId: string, data: Partial<TeamMemberCreate>): Promise<TeamMember> {
+  const res = await fetch(AppRoutes.UpdateTeamMember(teamId, memberId), {
+    method: "PATCH",
+    headers: headers(accessToken),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) await throwWithDetail(res, "Failed to update team member")
+  return res.json()
+}
+
+export async function removeTeamMember(accessToken: string, teamId: string, memberId: string): Promise<void> {
+  const res = await fetch(AppRoutes.RemoveTeamMember(teamId, memberId), {
+    method: "DELETE",
+    headers: headers(accessToken),
+  })
+  if (!res.ok) await throwWithDetail(res, "Failed to remove team member")
 }
 
 export async function deleteTeam(accessToken: string, id: string): Promise<void> {

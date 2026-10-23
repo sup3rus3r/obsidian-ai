@@ -71,12 +71,38 @@ export interface SkillFile {
   created_at: string
 }
 
+export interface TeamMember {
+  id: string
+  agent_id: string
+  agent_name: string          // base agent's current name, for display when no override_name
+  position: number
+  override_name?: string | null
+  override_system_prompt?: string | null
+  override_tool_ids?: string[] | null
+  override_mcp_server_ids?: string[] | null
+  override_skill_ids?: string[] | null
+  override_knowledge_base_ids?: string[] | null
+  can_delegate: boolean
+}
+
+export interface TeamMemberCreate {
+  agent_id: string
+  position: number
+  override_name?: string | null
+  override_system_prompt?: string | null
+  override_tool_ids?: string[] | null
+  override_mcp_server_ids?: string[] | null
+  override_skill_ids?: string[] | null
+  override_knowledge_base_ids?: string[] | null
+  can_delegate?: boolean
+}
+
 export interface Team {
   id: string
   name: string
   description?: string
   mode: "coordinate" | "route" | "collaborate"
-  agent_ids: string[]
+  members: TeamMember[]
   sandbox_enabled?: boolean
   sandbox_container_id?: string | null
   sandbox_host_port?: number | null
@@ -346,7 +372,18 @@ export interface CreateTeamRequest {
   name: string
   description?: string
   mode?: string
-  agent_ids: string[]
+  members: TeamMemberCreate[]
+  sandbox_enabled?: boolean
+  config?: Record<string, unknown>
+}
+
+// For PUT /teams/{id} — does NOT include members; member changes go through
+// the dedicated addTeamMember/updateTeamMember/removeTeamMember endpoints.
+export interface UpdateTeamRequest {
+  name?: string
+  description?: string
+  mode?: string
+  sandbox_enabled?: boolean
   config?: Record<string, unknown>
 }
 
