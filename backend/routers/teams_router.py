@@ -21,9 +21,16 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 def _member_create_to_row_fields(data: TeamMemberCreate) -> dict:
     """Convert a TeamMemberCreate's list fields to the *_json string columns
     TeamMember actually stores (same convention Agent.tools_json/
-    mcp_servers_json/etc. already use)."""
+    mcp_servers_json/etc. already use).
+
+    agent_id is intentionally left as the raw string here — shared by both
+    DB backends. SQLite's caller passes it straight to a SQLAlchemy Integer
+    column (which coerces a numeric string fine); Mongo's caller needs the
+    string as-is (an ObjectId hex string, not an int). A previous version did
+    int(data.agent_id) here unconditionally, which crashed on Mongo's hex
+    agent ids before the Mongo branch could overwrite it."""
     return {
-        "agent_id": int(data.agent_id),
+        "agent_id": data.agent_id,
         "position": data.position,
         "override_name": data.override_name,
         "override_system_prompt": data.override_system_prompt,
